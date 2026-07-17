@@ -169,6 +169,29 @@ bool nio_disk_info(uint8_t slot, nio_disk_info_t far *info)
   return true;
 }
 
+bool nio_disk_begin_host_session(uint8_t slot)
+{
+  uint8_t req[2];
+  uint8_t resp[16];
+  nio_response_t nr;
+
+  nio_disk_build_slot_request(slot, req, sizeof(req));
+
+  if (!nio_call(NIO_DEVICEID_DISK,
+                NIO_DISK_CMD_BEGIN_HOST_SESSION,
+                req,
+                NIO_DISK_SLOT_REQUEST_SIZE,
+                resp,
+                sizeof(resp),
+                &nr))
+    return false;
+  if (!nio_status_ok(nr.status) || !nio_disk_validate_response(resp, nr.payload_length, 4))
+    return nio_fail(nio_status_ok(nr.status) ? NIO_ERR_PAYLOAD : NIO_ERR_STATUS,
+                    nio_last_rx_len,
+                    nio_last_expected_len);
+  return true;
+}
+
 bool nio_disk_clear_changed(uint8_t slot)
 {
   uint8_t req[2];

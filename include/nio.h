@@ -65,6 +65,8 @@ enum
   NIO_DISK_CMD_CREATE = 0x07,
   NIO_DISK_CMD_READ_SECTORS = 0x08,
   NIO_DISK_CMD_WRITE_SECTORS = 0x09,
+  NIO_DISK_CMD_RESTORE_BOOT = 0x0A,
+  NIO_DISK_CMD_BEGIN_HOST_SESSION = 0x0B,
 };
 
 enum
@@ -102,6 +104,7 @@ extern bool nio_call(uint8_t device,
                      nio_response_t far *response);
 
 extern bool nio_disk_info(uint8_t slot, nio_disk_info_t far *info);
+extern bool nio_disk_begin_host_session(uint8_t slot);
 extern bool nio_disk_clear_changed(uint8_t slot);
 extern bool nio_disk_read_sector(
     uint8_t slot, uint32_t lba, void far *buffer, uint16_t buffer_length, uint16_t far *bytes_read);

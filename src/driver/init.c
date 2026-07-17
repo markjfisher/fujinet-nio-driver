@@ -123,6 +123,10 @@ uint8_t probe_fujinet_nio()
 {
   nio_disk_info_t info;
 
+  if (!nio_disk_begin_host_session(1)) {
+    consolef("Unable to reset FujiNet NIO host session; continuing.\n");
+  }
+
   if (!nio_disk_info(1, &info)) {
     consolef("Unable to contact FujiNet NIO DiskService.\nAborted.\n");
     return 1;
