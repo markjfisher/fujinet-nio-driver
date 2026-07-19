@@ -401,12 +401,14 @@ uint16_t Media_check_cmd(SYSREQ far *req)
   if (!disk_info_cached(req->unit, &info))
     return ERROR_BIT | NOT_READY;
 
-  if (!(info.flags & NIO_DISK_INFO_INSERTED))
-    req->media.return_info = 0;
-  else if (info.flags & NIO_DISK_INFO_CHANGED)
+  if (info.flags & NIO_DISK_INFO_CHANGED) {
+    info_cache_valid[req->unit] = 0;
     req->media.return_info = -1;
-  else
+  } else if (!(info.flags & NIO_DISK_INFO_INSERTED)) {
+    req->media.return_info = 0;
+  } else {
     req->media.return_info = 1;
+  }
 
   return OP_COMPLETE;
 }
@@ -426,7 +428,8 @@ uint16_t Build_bpb_cmd(SYSREQ far *req)
   // DOS gave us a buffer to use
   buf = req->bpb.buffer_ptr;
 
-  if (disk_info_cached(req->unit, &info) && !(info.flags & NIO_DISK_INFO_INSERTED)) {
+  if (disk_info_cached(req->unit, &info) &&
+      !(info.flags & (NIO_DISK_INFO_INSERTED | NIO_DISK_INFO_CHANGED))) {
     req->bpb.table = MK_FP(getCS(), fn_bpb_pointers[req->unit]);
     return OP_COMPLETE;
   }
