@@ -1,0 +1,44 @@
+#ifndef FUJINET_DISK_DRIVER_H
+#define FUJINET_DISK_DRIVER_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "fujinet-nio.h"
+
+#define FUJINET_DISK_UNIT_COUNT 1U
+#define FUJINET_DISK_UNIT_ZERO 0U
+#define FUJINET_DISK_SLOT_ONE 1U
+#define FUJINET_DISK_BLOCK_SIZE 512U
+
+typedef struct fujinet_disk_client {
+    uint8_t (*init)(void *context);
+    uint8_t (*mount)(void *context, uint8_t slot, const char *uri,
+                     uint8_t readonly, uint8_t type,
+                     uint16_t sector_size_hint, fn_disk_info_t *info);
+    uint8_t (*read_sector)(void *context, uint8_t slot, uint32_t lba,
+                           uint8_t *data, uint16_t capacity,
+                           uint16_t *length);
+} fujinet_disk_client_t;
+
+typedef struct fujinet_disk_driver {
+    const fujinet_disk_client_t *client;
+    void *client_context;
+    fn_disk_info_t media;
+    uint8_t client_initialized;
+    uint8_t mounted;
+} fujinet_disk_driver_t;
+
+void fujinet_disk_driver_init(fujinet_disk_driver_t *driver,
+                              const fujinet_disk_client_t *client,
+                              void *client_context);
+uint8_t fujinet_disk_unit_to_slot(uint32_t unit, uint8_t *slot);
+uint8_t fujinet_disk_mount(fujinet_disk_driver_t *driver, uint32_t unit,
+                           const char *uri);
+uint8_t fujinet_disk_read(fujinet_disk_driver_t *driver, uint32_t unit,
+                          uint32_t byte_offset, uint8_t *data,
+                          uint32_t byte_length, uint32_t *actual);
+
+extern const fujinet_disk_client_t fujinet_nio_disk_client;
+
+#endif
