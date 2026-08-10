@@ -3,6 +3,7 @@
 #include <exec/io.h>
 #include <exec/libraries.h>
 #include <exec/resident.h>
+#include <exec/semaphores.h>
 #include <exec/types.h>
 #include <exec/memory.h>
 #include <devices/newstyle.h>
@@ -32,6 +33,8 @@ struct fujinet_disk_device_base {
     struct Unit unit;
     BPTR segment_list;
     fujinet_disk_driver_t driver;
+    fujinet_nio_disk_context_t nio_context;
+    struct SignalSemaphore io_lock;
     struct IORequest *change_request;
     struct fujinet_disk_trace trace;
 };
@@ -64,7 +67,10 @@ static struct fujinet_disk_device_base *device_init(
 {
     SysBase = sys_base;
     base->segment_list = segment_list;
-    fujinet_disk_driver_init(&base->driver, &fujinet_nio_disk_client, NULL);
+    InitSemaphore(&base->io_lock);
+    fujinet_nio_disk_context_init(&base->nio_context);
+    fujinet_disk_driver_init(&base->driver, &fujinet_nio_disk_client,
+                             &base->nio_context);
     return base;
 }
 
@@ -126,6 +132,7 @@ static void device_begin_io(
 
     request->io_Error = 0;
     io->io_Actual = 0;
+    ObtainSemaphore(&base->io_lock);
 
     if (request->io_Command != FUJINET_DISK_CMD_TRACE &&
         base->trace.count < FUJINET_DISK_TRACE_CAPACITY) {
@@ -214,6 +221,7 @@ static void device_begin_io(
         base->trace.actuals[trace_index] = io->io_Actual;
         base->trace.errors[trace_index] = request->io_Error;
         request->io_Flags &= (UBYTE)~IOF_QUICK;
+        ReleaseSemaphore(&base->io_lock);
         return;
     case TD_REMCHANGEINT:
         if (base->change_request != NULL) {
@@ -247,6 +255,7 @@ static void device_begin_io(
         base->trace.errors[trace_index] = request->io_Error;
     }
 
+    ReleaseSemaphore(&base->io_lock);
     if ((request->io_Flags & IOF_QUICK) == 0) {
         ReplyMsg(&request->io_Message);
     }
@@ -256,12 +265,15 @@ static LONG device_abort_io(
     register struct IORequest *request __asm("a1"),
     register struct fujinet_disk_device_base *base __asm("a6"))
 {
+    ObtainSemaphore(&base->io_lock);
     if (request == base->change_request) {
         base->change_request = NULL;
         request->io_Error = IOERR_ABORTED;
         ReplyMsg(&request->io_Message);
+        ReleaseSemaphore(&base->io_lock);
         return 0;
     }
+    ReleaseSemaphore(&base->io_lock);
     return IOERR_NOCMD;
 }
 

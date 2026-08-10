@@ -33,6 +33,10 @@ typedef struct fujinet_disk_driver {
     uint8_t mounted;
 } fujinet_disk_driver_t;
 
+typedef struct fujinet_nio_disk_context {
+    fn_disk_client_context_t client;
+} fujinet_nio_disk_context_t;
+
 void fujinet_disk_driver_init(fujinet_disk_driver_t *driver,
                               const fujinet_disk_client_t *client,
                               void *client_context);
@@ -46,5 +50,6 @@ uint8_t fujinet_disk_read(fujinet_disk_driver_t *driver, uint32_t unit,
                           uint32_t byte_length, uint32_t *actual);
 
 extern const fujinet_disk_client_t fujinet_nio_disk_client;
+uint8_t fujinet_nio_disk_context_init(fujinet_nio_disk_context_t *context);
 
 #endif

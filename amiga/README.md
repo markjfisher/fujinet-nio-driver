@@ -14,10 +14,13 @@ has been integration-tested with a standard 880 KiB ADF.
 - The RS-232 binding calls the typed `fujinet-nio-lib` API. That library's
   Amiga transport owns the shared stream session and FujiBus framing; the
   driver does not encode packets itself.
-- The client is initialized once and requests are synchronous. This is the
-  explicit one-client/one-outstanding-request invariant for the read-only
-  skeleton. The Stage 7 architecture gate must revisit that invariant before
-  writes, request queuing, additional units, or hot swap are added.
+- The unit owns an explicit DiskDevice client context containing packet
+  request/response and codec scratch storage. The context API does not use the
+  legacy process-global raw request, response, or parser state.
+- `BeginIO()` runs in its caller's task context. A unit-owned Exec
+  `SignalSemaphore` serializes all commands across callers and protects the
+  single physical RS-232 session; requests do not overlap or queue in an
+  internal device task in this read-only implementation.
 - Native linkage uses the `fujinet-nio-amiga-driver.a` library variant. It
   omits application `atexit()` registration because a resident Exec device
   owns its lifecycle and has no process-exit startup code.
@@ -25,12 +28,8 @@ has been integration-tested with a standard 880 KiB ADF.
   The CLI that configures the resident device exits before AmigaDOS performs
   later reads, so retaining that CLI's message port would leave the driver
   waiting on a dead task.
-- The resident library variant defines `FN_DISK_STATIC_BUFFERS`. Disk codec
-  calls are synchronous, so this safely keeps their 1 KiB scratch buffer out
-  of caller-owned filesystem task stacks. Ordinary Amiga application builds
-  retain stack-local codec storage. This distinction alone does not make the
-  complete library path reentrant because raw transport/parser state remains
-  shared; Stage 7 tracks replacement with explicit driver-owned contexts.
+- Large packet and codec buffers therefore live in the resident device base,
+  not caller-owned filesystem stacks or mutable library statics.
 
 The native device exposes `FUJINET_DISK_CMD_MOUNT` as its private Mount
 command: `io_Data` points to a NUL-terminated URI. The command is deliberately
@@ -48,7 +47,9 @@ and out-of-range reads are rejected by named host contract tests.
 
 The workspace Amiberry `diskdevice-adf` test creates a deterministic standard
 ADF, mounts it through `fujinet-disk.device`, and validates native block reads
-through AmigaDOS `Dir` and `Type` commands.
+through AmigaDOS `Dir` and `Type` commands. It also launches two independent
+CLI processes that issue simultaneous reads, validating the unit's native
+cross-task serialization rule.
 
 Run the portable contract tests with `make tests` from this directory. Run
 `make native` to build `build/amiga/fujinet-disk.device`; this additionally

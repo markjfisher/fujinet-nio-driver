@@ -11,15 +11,17 @@ SOURCES := common/fujinet_disk_driver.c \
 	disk.device/fujinet_disk_device.c
 OBJECTS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SOURCES))
 
-.PHONY: all native tests clean
+.PHONY: all native library tests clean
 
 all: tests native
 
-native: $(DEVICE) $(MOUNT_TOOL)
+native: library $(DEVICE) $(MOUNT_TOOL)
 
-$(LIBRARY):
+library:
 	$(MAKE) -C $(LIB_ROOT) -f makefiles/build.mk \
 		TARGET=amiga-driver PROGRAM=fujinet-nio lib
+
+$(LIBRARY): library
 
 $(DEVICE): $(OBJECTS) $(LIBRARY)
 	$(CC) -nostartfiles -mcpu=68000 -msoft-float $^ -lamiga -o $@
