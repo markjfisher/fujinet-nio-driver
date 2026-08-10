@@ -34,6 +34,7 @@ static uint8_t ensure_client(fujinet_disk_driver_t *driver)
 
     if (driver == NULL || driver->client == NULL ||
         driver->client->init == NULL || driver->client->mount == NULL ||
+        driver->client->info == NULL ||
         driver->client->read_sector == NULL) {
         return FN_ERR_INVALID;
     }
@@ -46,6 +47,44 @@ static uint8_t ensure_client(fujinet_disk_driver_t *driver)
         driver->client_initialized = 1;
     }
     return result;
+}
+
+static uint8_t validate_standard_adf(const fn_disk_info_t *info)
+{
+    if (info == NULL ||
+        (info->flags & (FN_DISK_FLAG_MOUNTED | FN_DISK_FLAG_READONLY)) !=
+            (FN_DISK_FLAG_MOUNTED | FN_DISK_FLAG_READONLY) ||
+        info->slot != FUJINET_DISK_SLOT_ONE ||
+        info->type != FN_DISK_TYPE_RAW ||
+        info->sector_size != FUJINET_DISK_BLOCK_SIZE ||
+        info->sector_count != FUJINET_ADF_BLOCK_COUNT) {
+        return FN_ERR_INVALID;
+    }
+    return FN_OK;
+}
+
+uint8_t fujinet_disk_info(fujinet_disk_driver_t *driver, uint32_t unit,
+                          fn_disk_info_t *info)
+{
+    uint8_t slot;
+    uint8_t result;
+
+    if (driver == NULL || info == NULL) {
+        return FN_ERR_INVALID;
+    }
+    result = fujinet_disk_unit_to_slot(unit, &slot);
+    if (result != FN_OK) {
+        return result;
+    }
+    result = ensure_client(driver);
+    if (result != FN_OK) {
+        return result;
+    }
+    result = driver->client->info(driver->client_context, slot, info);
+    if (result != FN_OK) {
+        return result;
+    }
+    return validate_standard_adf(info);
 }
 
 uint8_t fujinet_disk_mount(fujinet_disk_driver_t *driver, uint32_t unit,
@@ -70,6 +109,14 @@ uint8_t fujinet_disk_mount(fujinet_disk_driver_t *driver, uint32_t unit,
     result = driver->client->mount(
         driver->client_context, slot, uri, 1, FN_DISK_TYPE_AUTO,
         FUJINET_DISK_BLOCK_SIZE, &driver->media);
+    if (result != FN_OK) {
+        return result;
+    }
+    result = validate_standard_adf(&driver->media);
+    if (result != FN_OK) {
+        return result;
+    }
+    result = fujinet_disk_info(driver, unit, &driver->media);
     if (result == FN_OK) {
         driver->mounted = 1;
     }
@@ -91,7 +138,9 @@ uint8_t fujinet_disk_read(fujinet_disk_driver_t *driver, uint32_t unit,
     if (driver == NULL || data == NULL || actual == NULL ||
         byte_length == 0 ||
         (byte_offset % FUJINET_DISK_BLOCK_SIZE) != 0 ||
-        (byte_length % FUJINET_DISK_BLOCK_SIZE) != 0) {
+        (byte_length % FUJINET_DISK_BLOCK_SIZE) != 0 ||
+        byte_offset >= FUJINET_ADF_BYTE_SIZE ||
+        byte_length > FUJINET_ADF_BYTE_SIZE - byte_offset) {
         return FN_ERR_INVALID;
     }
     result = fujinet_disk_unit_to_slot(unit, &slot);

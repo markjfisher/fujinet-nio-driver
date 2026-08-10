@@ -22,8 +22,15 @@ static uint8_t nio_read_sector(void *context, uint8_t slot, uint32_t lba,
     return fn_disk_read_sector(slot, lba, data, capacity, length);
 }
 
+static uint8_t nio_info(void *context, uint8_t slot, fn_disk_info_t *info)
+{
+    (void)context;
+    return fn_disk_info(slot, info);
+}
+
 const fujinet_disk_client_t fujinet_nio_disk_client = {
     nio_init,
     nio_mount,
+    nio_info,
     nio_read_sector
 };

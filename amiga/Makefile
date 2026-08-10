@@ -5,6 +5,7 @@ CPPFLAGS := -Iinclude -I$(LIB_ROOT)/include
 BUILD_DIR := ../build/amiga
 LIBRARY := $(LIB_ROOT)/build/fujinet-nio-amiga-driver.a
 DEVICE := $(BUILD_DIR)/fujinet-disk.device
+MOUNT_TOOL := $(BUILD_DIR)/fujinet-mount
 SOURCES := common/fujinet_disk_driver.c \
 	channels/rs232/fujinet_nio_client.c \
 	disk.device/fujinet_disk_device.c
@@ -14,7 +15,7 @@ OBJECTS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SOURCES))
 
 all: tests native
 
-native: $(DEVICE)
+native: $(DEVICE) $(MOUNT_TOOL)
 
 $(LIBRARY):
 	$(MAKE) -C $(LIB_ROOT) -f makefiles/build.mk \
@@ -26,6 +27,10 @@ $(DEVICE): $(OBJECTS) $(LIBRARY)
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(MOUNT_TOOL): tools/fujinet-mount.c include/fujinet_disk_device.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 $< -lamiga -o $@
 
 tests:
 	$(MAKE) -C tests test LIB_ROOT=$(abspath $(LIB_ROOT))

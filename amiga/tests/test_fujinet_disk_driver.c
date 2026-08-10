@@ -6,6 +6,7 @@
 typedef struct fake_client {
     unsigned init_calls;
     unsigned mount_calls;
+    unsigned info_calls;
     unsigned read_calls;
     uint8_t slot;
     uint8_t readonly;
@@ -13,6 +14,10 @@ typedef struct fake_client {
     uint16_t sector_size_hint;
     uint32_t first_lba;
     const char *uri;
+    uint8_t info_result;
+    uint8_t read_result;
+    uint16_t read_length;
+    fn_disk_info_t media;
 } fake_client_t;
 
 static unsigned failures;
@@ -45,7 +50,22 @@ static uint8_t fake_mount(void *context, uint8_t slot, const char *uri,
     memset(info, 0, sizeof(*info));
     info->slot = slot;
     info->flags = FN_DISK_FLAG_MOUNTED | FN_DISK_FLAG_READONLY;
+    info->type = FN_DISK_TYPE_RAW;
     info->sector_size = FUJINET_DISK_BLOCK_SIZE;
+    info->sector_count = FUJINET_ADF_BLOCK_COUNT;
+    fake->media = *info;
+    return FN_OK;
+}
+
+static uint8_t fake_info(void *context, uint8_t slot, fn_disk_info_t *info)
+{
+    fake_client_t *fake = (fake_client_t *)context;
+    ++fake->info_calls;
+    fake->slot = slot;
+    if (fake->info_result != FN_OK) {
+        return fake->info_result;
+    }
+    *info = fake->media;
     return FN_OK;
 }
 
@@ -55,6 +75,9 @@ static uint8_t fake_read(void *context, uint8_t slot, uint32_t lba,
     fake_client_t *fake = (fake_client_t *)context;
     unsigned i;
 
+    if (fake->read_result != FN_OK) {
+        return fake->read_result;
+    }
     if (fake->read_calls == 0) {
         fake->first_lba = lba;
     }
@@ -63,13 +86,14 @@ static uint8_t fake_read(void *context, uint8_t slot, uint32_t lba,
     for (i = 0; i < capacity; ++i) {
         data[i] = (uint8_t)lba;
     }
-    *length = capacity;
+    *length = fake->read_length != 0 ? fake->read_length : capacity;
     return FN_OK;
 }
 
 static const fujinet_disk_client_t fake_ops = {
     fake_init,
     fake_mount,
+    fake_info,
     fake_read
 };
 
@@ -98,8 +122,61 @@ static void test_mount_is_explicitly_read_only_auto_detected_and_512_bytes(void)
           fake.type == FN_DISK_TYPE_AUTO);
     CHECK("Mount supplies the Amiga 512-byte block hint",
           fake.sector_size_hint == 512);
+    CHECK("Mount verifies geometry with an Info request", fake.info_calls == 1);
     CHECK("Mount passes the configured URI",
           strcmp(fake.uri, "tnfs://host/workbench.adf") == 0);
+}
+
+static void test_standard_adf_info_requires_read_only_raw_512_by_1760_geometry(void)
+{
+    fake_client_t fake = {0};
+    fujinet_disk_driver_t driver;
+
+    fujinet_disk_driver_init(&driver, &fake_ops, &fake);
+    CHECK("valid standard ADF mounts",
+          fujinet_disk_mount(&driver, 0, "disk.adf") == FN_OK);
+    fake.media.sector_count = 1759;
+    CHECK("non-standard block count is rejected",
+          fujinet_disk_info(&driver, 0, &driver.media) == FN_ERR_INVALID);
+    fake.media.sector_count = FUJINET_ADF_BLOCK_COUNT;
+    fake.media.sector_size = 256;
+    CHECK("non-512-byte geometry is rejected",
+          fujinet_disk_info(&driver, 0, &driver.media) == FN_ERR_INVALID);
+    fake.media.sector_size = FUJINET_DISK_BLOCK_SIZE;
+    fake.media.flags &= (uint8_t)~FN_DISK_FLAG_READONLY;
+    CHECK("writable effective media is rejected in read-only stage",
+          fujinet_disk_info(&driver, 0, &driver.media) == FN_ERR_INVALID);
+}
+
+static void test_info_and_media_read_failures_are_reported(void)
+{
+    fake_client_t fake = {0};
+    fujinet_disk_driver_t driver;
+    uint8_t data[512];
+    uint32_t actual = 99;
+
+    fujinet_disk_driver_init(&driver, &fake_ops, &fake);
+    fake.info_result = FN_ERR_IO;
+    CHECK("Info transport failure fails Mount",
+          fujinet_disk_mount(&driver, 0, "disk.adf") == FN_ERR_IO);
+    CHECK("failed Info leaves media unmounted", driver.mounted == 0);
+
+    fake.info_result = FN_OK;
+    CHECK("retry mounts standard ADF",
+          fujinet_disk_mount(&driver, 0, "disk.adf") == FN_OK);
+    fake.read_result = FN_ERR_TIMEOUT;
+    CHECK("media read error is preserved",
+          fujinet_disk_read(&driver, 0, 0, data, sizeof(data), &actual) ==
+              FN_ERR_TIMEOUT);
+    CHECK("failed read reports no transferred bytes", actual == 0);
+    fake.read_result = FN_OK;
+    fake.read_length = 511;
+    CHECK("short sector response is rejected",
+          fujinet_disk_read(&driver, 0, 0, data, sizeof(data), &actual) ==
+              FN_ERR_IO);
+    CHECK("read beyond standard ADF is rejected",
+          fujinet_disk_read(&driver, 0, FUJINET_ADF_BYTE_SIZE, data,
+                            sizeof(data), &actual) == FN_ERR_INVALID);
 }
 
 static void test_repeated_mounts_share_one_initialized_session(void)
@@ -141,6 +218,8 @@ int main(void)
     test_only_amiga_unit_zero_maps_to_diskdevice_slot_one();
     test_mount_is_explicitly_read_only_auto_detected_and_512_bytes();
     test_repeated_mounts_share_one_initialized_session();
+    test_standard_adf_info_requires_read_only_raw_512_by_1760_geometry();
+    test_info_and_media_read_failures_are_reported();
     test_reads_are_512_byte_aligned_sector_requests_on_slot_one();
 
     if (failures != 0) {

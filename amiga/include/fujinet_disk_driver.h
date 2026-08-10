@@ -10,12 +10,16 @@
 #define FUJINET_DISK_UNIT_ZERO 0U
 #define FUJINET_DISK_SLOT_ONE 1U
 #define FUJINET_DISK_BLOCK_SIZE 512U
+#define FUJINET_ADF_BLOCK_COUNT 1760UL
+#define FUJINET_ADF_BYTE_SIZE \
+    (FUJINET_DISK_BLOCK_SIZE * FUJINET_ADF_BLOCK_COUNT)
 
 typedef struct fujinet_disk_client {
     uint8_t (*init)(void *context);
     uint8_t (*mount)(void *context, uint8_t slot, const char *uri,
                      uint8_t readonly, uint8_t type,
                      uint16_t sector_size_hint, fn_disk_info_t *info);
+    uint8_t (*info)(void *context, uint8_t slot, fn_disk_info_t *info);
     uint8_t (*read_sector)(void *context, uint8_t slot, uint32_t lba,
                            uint8_t *data, uint16_t capacity,
                            uint16_t *length);
@@ -35,6 +39,8 @@ void fujinet_disk_driver_init(fujinet_disk_driver_t *driver,
 uint8_t fujinet_disk_unit_to_slot(uint32_t unit, uint8_t *slot);
 uint8_t fujinet_disk_mount(fujinet_disk_driver_t *driver, uint32_t unit,
                            const char *uri);
+uint8_t fujinet_disk_info(fujinet_disk_driver_t *driver, uint32_t unit,
+                          fn_disk_info_t *info);
 uint8_t fujinet_disk_read(fujinet_disk_driver_t *driver, uint32_t unit,
                           uint32_t byte_offset, uint8_t *data,
                           uint32_t byte_length, uint32_t *actual);
