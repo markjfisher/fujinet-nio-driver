@@ -1,9 +1,11 @@
-# FujiNet NIO MS-DOS Driver
+# FujiNet NIO Driver
 
-This repository contains the MS-DOS `FUJINET.SYS` driver for the FujiNet NIO
-protocol only. It was extracted from `fujinet-msdos` so the NIO driver can
-evolve without carrying the original firmware transport, bundled DOS apps, or
-transport-selection ifdefs.
+This repository currently contains the MS-DOS `FUJINET.SYS` driver for the
+FujiNet NIO protocol. It was extracted from `fujinet-msdos` so the NIO driver
+can evolve without carrying the original firmware transport, bundled DOS
+apps, or transport-selection ifdefs. It is now the home for additional native
+FujiNet drivers, beginning with the MS-DOS implementation and the planned
+Amiga driver.
 
 ## Build
 
