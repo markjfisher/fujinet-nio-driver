@@ -1,5 +1,5 @@
-#ifndef FUJINET_MSDOS_NIO_DISK_PROTOCOL_H
-#define FUJINET_MSDOS_NIO_DISK_PROTOCOL_H
+#ifndef FUJINET_NIO_DRIVER_MSDOS_NIO_DISK_PROTOCOL_H
+#define FUJINET_NIO_DRIVER_MSDOS_NIO_DISK_PROTOCOL_H
 
 #include "nio_protocol.h"
 #include <nio.h>
@@ -57,4 +57,4 @@ bool nio_disk_parse_read_sectors_response(const uint8_t NIO_PROTO_PTR *resp,
 }
 #endif
 
-#endif /* FUJINET_MSDOS_NIO_DISK_PROTOCOL_H */
+#endif /* FUJINET_NIO_DRIVER_MSDOS_NIO_DISK_PROTOCOL_H */

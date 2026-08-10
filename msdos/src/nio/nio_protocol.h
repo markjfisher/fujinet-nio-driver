@@ -1,5 +1,5 @@
-#ifndef FUJINET_MSDOS_NIO_PROTOCOL_H
-#define FUJINET_MSDOS_NIO_PROTOCOL_H
+#ifndef FUJINET_NIO_DRIVER_MSDOS_NIO_PROTOCOL_H
+#define FUJINET_NIO_DRIVER_MSDOS_NIO_PROTOCOL_H
 
 #include <stdint.h>
 
@@ -7,11 +7,11 @@
 #define NIO_PROTO_PTR far
 #else
 #define NIO_PROTO_PTR
-#endif
+#endif /* __WATCOMC__ */
 
 #ifdef __cplusplus
 extern "C" {
-#endif
+#endif /* FUJINET_NIO_DRIVER_MSDOS_NIO_PROTOCOL_H */
 
 #define NIO_FRAME_HEADER_SIZE 6
 

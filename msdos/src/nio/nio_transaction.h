@@ -1,5 +1,5 @@
-#ifndef FUJINET_MSDOS_NIO_TRANSACTION_H
-#define FUJINET_MSDOS_NIO_TRANSACTION_H
+#ifndef FUJINET_NIO_DRIVER_MSDOS_NIO_TRANSACTION_H
+#define FUJINET_NIO_DRIVER_MSDOS_NIO_TRANSACTION_H
 
 #include "nio_protocol.h"
 #include <nio.h>
@@ -75,4 +75,4 @@ bool nio_transaction_call(const nio_transaction_port_t *port,
 }
 #endif
 
-#endif /* FUJINET_MSDOS_NIO_TRANSACTION_H */
+#endif /* FUJINET_NIO_DRIVER_MSDOS_NIO_TRANSACTION_H */

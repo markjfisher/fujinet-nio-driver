@@ -8,8 +8,8 @@ fi
 
 files=$(
   git diff --cached --name-only --diff-filter=ACMR |
-    grep -E '^(include|src|tests)/.*\.(c|h|cpp)$' |
-    grep -v '^tests/doctest\.h$' || true
+    grep -E '^msdos/(include|src|tests)/.*\.(c|h|cpp)$' |
+    grep -v '^msdos/tests/doctest\.h$' || true
 )
 
 if [ -z "$files" ]; then

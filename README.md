@@ -1,11 +1,27 @@
 # FujiNet NIO Driver
 
 This repository currently contains the MS-DOS `FUJINET.SYS` driver for the
-FujiNet NIO protocol. It was extracted from `fujinet-msdos` so the NIO driver
-can evolve without carrying the original firmware transport, bundled DOS
+FujiNet NIO protocol. It contains the native MS-DOS NIO driver and its
+protocol tests, without carrying unrelated firmware transports, bundled DOS
 apps, or transport-selection ifdefs. It is now the home for additional native
-FujiNet drivers, beginning with the MS-DOS implementation and the planned
-Amiga driver.
+FujiNet drivers, beginning with the MS-DOS implementation. The MS-DOS source
+and tests now live under `msdos/`; the root build entry points and generated
+artifact path remains the workspace standard.
+
+## Repository layout
+
+```text
+msdos/
+  include/            DOS-facing public headers
+  src/                MS-DOS driver and NIO protocol implementation
+  tests/              host-side protocol tests
+common/               reserved for future shared driver-side interfaces
+amiga/                reserved for the later Amiga driver implementation
+```
+
+The generated driver remains `build/dos/fujinet.sys`. Future native drivers
+will be added only after the MS-DOS relocation and its validation checks are
+reviewed.
 
 ## Build
 
@@ -38,8 +54,9 @@ The repository uses `.editorconfig` for line endings and whitespace, and
 `.clang-format` for C/C++ formatting. To format source manually:
 
 ```sh
-clang-format -i include/*.h src/driver/*.[ch] src/nio/*.[ch] \
-  src/serial/*.[ch] src/util/*.[ch] tests/*.cpp
+clang-format -i msdos/include/*.h msdos/src/driver/*.[ch] \
+  msdos/src/nio/*.[ch] msdos/src/serial/*.[ch] msdos/src/util/*.[ch] \
+  msdos/tests/*.cpp
 ```
 
 There is also an optional pre-commit hook which formats staged C/C++ files and
@@ -50,8 +67,8 @@ git config core.hooksPath scripts/git-hooks
 ```
 
 The hook requires `clang-format` on `PATH`. It formats project files under
-`include/`, `src/`, and `tests/*.cpp`, and intentionally leaves vendored
-`tests/doctest.h` untouched.
+`msdos/include/`, `msdos/src/`, and `msdos/tests/*.cpp`, and intentionally
+leaves vendored `msdos/tests/doctest.h` untouched.
 
 ## MS-DOS Setup
 

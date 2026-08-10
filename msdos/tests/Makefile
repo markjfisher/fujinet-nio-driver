@@ -5,8 +5,8 @@ CPPFLAGS += -Dfar= -I. -I../include -I../src/nio
 CXXFLAGS += -std=c++17 -Wall -Wextra -Werror -O2
 CFLAGS += -std=c99 -Wall -Wextra -Werror -O2
 
-BUILD_DIR ?= build
-TEST_BIN := $(BUILD_DIR)/fujinet-nio-msdos-tests
+BUILD_DIR ?= ../../build/msdos-tests
+TEST_BIN := $(BUILD_DIR)/fujinet-nio-driver-tests
 OBJS := \
 	$(BUILD_DIR)/run_main.o \
 	$(BUILD_DIR)/test_nio_protocol.o \
