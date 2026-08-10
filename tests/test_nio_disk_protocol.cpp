@@ -5,6 +5,7 @@ extern "C" {
 }
 
 #include <array>
+#include <algorithm>
 #include <cstdint>
 
 TEST_CASE("NIO disk builds slot requests used by info and clear-changed")
@@ -85,4 +86,21 @@ TEST_CASE("NIO disk parses info response including geometry and optional error")
   CHECK(info.sector_size == 512);
   CHECK(info.sector_count == 4001760UL);
   CHECK(info.last_error == NIO_STATUS_IO_ERROR);
+}
+
+TEST_CASE("NIO disk protocol uses the shared scalar request vectors")
+{
+  const std::array<std::uint8_t, 8> read_request = {0x01, 0x01, 0xDF, 0x06, 0x00, 0x00, 0x08, 0x00};
+  std::array<std::uint8_t, NIO_DISK_READ_SECTOR_REQUEST_SIZE> actual{};
+
+  CHECK(nio_disk_build_read_sector_request(1, 1759, 8, actual.data(), actual.size()) ==
+        actual.size());
+  CHECK(std::equal(actual.begin(), actual.end(), read_request.begin()));
+
+  const std::array<std::uint8_t, 15> read_response = {
+      0x01, 0x00, 0x00, 0x00, 0x01, 0xDF, 0x06, 0x00, 0x00, 0x04, 0x00, 'A', 'B', 'C', 'D'};
+  std::uint16_t data_len = 0;
+  CHECK(nio_disk_parse_read_sector_response(
+      read_response.data(), read_response.size(), 8, &data_len));
+  CHECK(data_len == 4);
 }
