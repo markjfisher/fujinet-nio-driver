@@ -1,12 +1,14 @@
 # FujiNet NIO Driver
 
-This repository currently contains the MS-DOS `FUJINET.SYS` driver for the
-FujiNet NIO protocol. It contains the native MS-DOS NIO driver and its
-protocol tests, without carrying unrelated firmware transports, bundled DOS
-apps, or transport-selection ifdefs. It is now the home for additional native
-FujiNet drivers, beginning with the MS-DOS implementation. The MS-DOS source
-and tests now live under `msdos/`; the root build entry points and generated
-artifact path remains the workspace standard.
+This repository contains native operating-system drivers for the FujiNet NIO
+protocol:
+
+- the MS-DOS `FUJINET.SYS` driver; and
+- the read-only Amiga `fujinet-disk.device` driver for a standard 880 KiB ADF.
+
+The Amiga driver consumes the typed DiskDevice client and RS-232 session from
+the separate `fujinet-nio-lib` repository. It does not require the larger
+FujiNet NIO workspace.
 
 ## Repository layout
 
@@ -16,14 +18,42 @@ msdos/
   src/                MS-DOS driver and NIO protocol implementation
   tests/              host-side protocol tests
 common/               reserved for future shared driver-side interfaces
-amiga/                reserved for the later Amiga driver implementation
+amiga/                Amiga Exec device, MountList, tools, and tests
 ```
 
-The generated driver remains `build/dos/fujinet.sys`. Future native drivers
-will be added only after the MS-DOS relocation and its validation checks are
-reviewed.
+Generated artifacts are placed under `build/dos/` and `build/amiga/`.
 
-## Build
+## Repository dependency layout
+
+The default Amiga build expects the driver and library to be sibling
+directories. This is suitable for adding both as submodules at the root of
+another repository:
+
+```text
+parent-repository/
+  fujinet-nio-driver/
+  fujinet-nio-lib/
+```
+
+Example:
+
+```bash
+git submodule add https://github.com/markjfisher/fujinet-nio-lib.git fujinet-nio-lib
+git submodule add https://github.com/markjfisher/fujinet-nio-driver.git fujinet-nio-driver
+git submodule update --init --recursive
+```
+
+The driver revision containing this contract is compatible with
+`fujinet-nio-lib` commit `4a5414b4` or later. A parent repository should pin
+both submodules to reviewed revisions.
+
+For another layout, pass an absolute or relative library path:
+
+```bash
+make amiga LIB_ROOT=/path/to/fujinet-nio-lib
+```
+
+## MS-DOS build
 
 The DOS driver build uses Open Watcom, so ensure it is on the path, e.g.
 
@@ -38,15 +68,87 @@ make
 
 The generated driver is `build/dos/fujinet.sys`.
 
-## Tests
+## Amiga build
 
-Host-side protocol tests use doctest:
+Requirements:
 
-```sh
-make -C tests test
+- [amiga-gcc](https://github.com/bebbo/amiga-gcc), including
+  `m68k-amigaos-gcc` and binutils;
+- readable NDK headers, `amiga.lib`, and clib2 in that toolchain;
+- GNU Make; and
+- host GCC for the portable driver tests.
+
+For a typical `/opt/amiga` installation:
+
+```bash
+export PATH=/opt/amiga/bin:$PATH
+make amiga
 ```
 
-These tests cover the portable NIO packet, timeout, and disk protocol helpers.
+This builds the required resident library variant from the sibling
+`fujinet-nio-lib` checkout, runs the portable tests, and produces:
+
+```text
+build/amiga/fujinet-disk.device
+build/amiga/fujinet-mount
+```
+
+The root `make` builds both MS-DOS and Amiga and therefore requires both
+cross-toolchains. Consumers interested only in Amiga should use `make amiga`.
+
+## Tests
+
+Run all portable driver tests with:
+
+```sh
+make tests
+```
+
+Run only the Amiga tests with:
+
+```sh
+make amiga-tests
+```
+
+The Amiga tests build the production adapter against
+`fujinet-nio-lib/build/fujinet-nio-linux.a`, so host GCC is required. Native
+Amiga compilation is performed by `make amiga`.
+
+## Amiga installation and first mount
+
+Install the generated files and supplied MountList entry on the Amiga:
+
+```text
+build/amiga/fujinet-disk.device  -> DEVS:fujinet-disk.device
+build/amiga/fujinet-mount        -> C:fujinet-mount
+amiga/config/DN0                 -> DEVS:DN0
+```
+
+The initial startup sequence is:
+
+```text
+C:LoadModule DEVS:fujinet-disk.device
+C:fujinet-mount host:/standard.adf
+C:Mount DN0: FROM DEVS:DN0
+```
+
+`host:/standard.adf` is a FujiNet NIO URI and must exist beneath the NIO
+server's configured `host:` root. A successful mount reports slot 1,
+read-only mode, 512-byte sectors, and 1760 sectors. `DN0:` can then be used
+through normal AmigaDOS commands such as `Dir DN0:` and `Type DN0:file`.
+
+Current Amiga limitations:
+
+- one native unit (`unit 0`) mapped to DiskDevice slot 1;
+- standard 880 KiB raw ADF geometry only;
+- read-only operation;
+- RS-232/`serial.device` correctness backend;
+- explicit mount for each stable media session; no hot swap; and
+- a silent peer can still block the first serial receive byte until the
+  timer-backed native deadline work is complete.
+
+The workspace Amiberry harness is additional integration coverage, not a
+build dependency of either repository.
 
 ## Formatting
 
