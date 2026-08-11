@@ -98,7 +98,7 @@ int main(int argc, char **argv)
                 "       fujinet-mount URI | --writable URI\n"
                 "       fujinet-mount --eject [DRIVE] | --update DRIVE\n"
                 "       fujinet-mount --status DRIVE | --trace | --read LBA [RESULT]\n"
-                "       fujinet-mount --boundary\n");
+                "       fujinet-mount --boundary | --malformed [DRIVE]\n");
         return 10;
     }
 
@@ -138,6 +138,8 @@ int main(int argc, char **argv)
         if (!parse_drive(argv[2], &drive)) return 10;
         status = 1;
     } else if (strcmp(argv[1], "--boundary") == 0 && (argc == 2 || argc == 3)) {
+        if (argc == 3 && !parse_drive(argv[2], &drive)) return 10;
+    } else if (strcmp(argv[1], "--malformed") == 0 && (argc == 2 || argc == 3)) {
         if (argc == 3 && !parse_drive(argv[2], &drive)) return 10;
     }
 
@@ -420,6 +422,26 @@ int main(int argc, char **argv)
         DeleteExtIO((struct IORequest *)request);
         DeletePort(port);
         return result == 0 ? 0 : 20;
+    }
+
+    if (strcmp(argv[1], "--malformed") == 0) {
+        static const char malformed_uri[] = "host:/standard.adf";
+        request->iotd_Req.io_Message.mn_Node.ln_Type = NT_MESSAGE;
+        request->iotd_Req.io_Flags = 0;
+        request->iotd_Req.io_Error = 0;
+        request->iotd_Req.io_Actual = 0;
+        request->iotd_Req.io_Command = FUJINET_DISK_CMD_MOUNT;
+        request->iotd_Req.io_Data = (APTR)malformed_uri;
+        request->iotd_Req.io_Length = sizeof(malformed_uri) - 1;
+        result = DoIO((struct IORequest *)request);
+        if (result == IOERR_BADLENGTH)
+            printf("MALFORMED URI REJECTED error=%ld\n", result);
+        else
+            fprintf(stderr, "fujinet-mount: malformed URI accepted (%ld)\n", result);
+        CloseDevice((struct IORequest *)request);
+        DeleteExtIO((struct IORequest *)request);
+        DeletePort(port);
+        return result == IOERR_BADLENGTH ? 0 : 20;
     }
 
     if (strcmp(argv[1], "--read") == 0 && (argc == 3 || argc == 4)) {
