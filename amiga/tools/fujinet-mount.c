@@ -1,4 +1,5 @@
 #include <devices/trackdisk.h>
+#include <exec/errors.h>
 #include <exec/io.h>
 #include <exec/types.h>
 #include <clib/alib_protos.h>
@@ -134,6 +135,65 @@ int main(int argc, char **argv)
             TD_CHANGENUM, CMD_STOP, CMD_START, CMD_FLUSH, TD_REMCHANGEINT
         };
         UWORD i;
+        LONG wait_result;
+
+        request->iotd_Req.io_Message.mn_Node.ln_Type = NT_MESSAGE;
+        request->iotd_Req.io_Flags = 0;
+        request->iotd_Req.io_Error = 0;
+        request->iotd_Req.io_Actual = 0;
+        request->iotd_Req.io_Command = TD_ADDCHANGEINT;
+        request->iotd_Req.io_Data = NULL;
+        request->iotd_Req.io_Length = 0;
+        SendIO((struct IORequest *)request);
+        request->iotd_Req.io_Command = TD_REMCHANGEINT;
+        result = DoIO((struct IORequest *)request);
+        if (result != 0) {
+            fprintf(stderr, "fujinet-mount: change removal failed (%ld)\n", result);
+            CloseDevice((struct IORequest *)request);
+            DeleteExtIO((struct IORequest *)request);
+            DeletePort(port);
+            return 20;
+        }
+
+        request->iotd_Req.io_Message.mn_Node.ln_Type = NT_MESSAGE;
+        request->iotd_Req.io_Flags = 0;
+        request->iotd_Req.io_Error = 0;
+        request->iotd_Req.io_Actual = 0;
+        request->iotd_Req.io_Command = TD_ADDCHANGEINT;
+        request->iotd_Req.io_Data = NULL;
+        request->iotd_Req.io_Length = 0;
+        SendIO((struct IORequest *)request);
+        AbortIO((struct IORequest *)request);
+        result = 0;
+        wait_result = WaitIO((struct IORequest *)request);
+        if (result != 0 || wait_result != IOERR_ABORTED) {
+            fprintf(stderr, "fujinet-mount: change abort failed (%ld/%ld)\n",
+                    result, wait_result);
+            CloseDevice((struct IORequest *)request);
+            DeleteExtIO((struct IORequest *)request);
+            DeletePort(port);
+            return 20;
+        }
+
+        request->iotd_Req.io_Message.mn_Node.ln_Type = NT_MESSAGE;
+        request->iotd_Req.io_Flags = 0;
+        request->iotd_Req.io_Error = 0;
+        request->iotd_Req.io_Actual = 0;
+        request->iotd_Req.io_Command = TD_REMOVE;
+        request->iotd_Req.io_Data = NULL;
+        request->iotd_Req.io_Length = 0;
+        SendIO((struct IORequest *)request);
+        AbortIO((struct IORequest *)request);
+        wait_result = WaitIO((struct IORequest *)request);
+        if (wait_result != IOERR_ABORTED) {
+            fprintf(stderr, "fujinet-mount: remove abort failed (%ld)\n",
+                    wait_result);
+            CloseDevice((struct IORequest *)request);
+            DeleteExtIO((struct IORequest *)request);
+            DeletePort(port);
+            return 20;
+        }
+
         for (i = 0; i < sizeof(commands) / sizeof(commands[0]); ++i) {
             request->iotd_Req.io_Message.mn_Node.ln_Type = NT_MESSAGE;
             request->iotd_Req.io_Flags = 0;
@@ -145,7 +205,7 @@ int main(int argc, char **argv)
             result = DoIO((struct IORequest *)request);
             if (result != 0) break;
         }
-        if (result == 0) printf("EXEC BOUNDARY PASS commands=%lu\n",
+        if (result == 0) printf("EXEC BOUNDARY PASS commands=%lu notifications=2 remove=1\n",
                                 (ULONG)(sizeof(commands) / sizeof(commands[0])));
         else fprintf(stderr, "fujinet-mount: boundary command %lu failed (%ld)\n",
                      (ULONG)i, result);
