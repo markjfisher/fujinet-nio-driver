@@ -201,6 +201,7 @@ int main(int argc, char **argv)
         struct MsgPort *event_port2;
         struct IOExtTD *event_request2;
         struct Interrupt event_interrupt;
+        struct Interrupt event_interrupt2;
         static const char worker_uri[] = "host:/standard.adf";
         static UBYTE parent_data[512];
         static UBYTE other_data[512];
@@ -336,6 +337,8 @@ int main(int argc, char **argv)
         }
         memset(&event_interrupt, 0, sizeof(event_interrupt));
         event_interrupt.is_Code = boundary_interrupt;
+        memset(&event_interrupt2, 0, sizeof(event_interrupt2));
+        event_interrupt2.is_Code = boundary_interrupt;
         boundary_causes = 0;
 
         request->iotd_Req.io_Message.mn_Node.ln_Type = NT_MESSAGE;
@@ -351,7 +354,7 @@ int main(int argc, char **argv)
         event_request2->iotd_Req.io_Error = 0;
         event_request2->iotd_Req.io_Actual = 0;
         event_request2->iotd_Req.io_Command = TD_ADDCHANGEINT;
-        event_request2->iotd_Req.io_Data = &event_interrupt;
+        event_request2->iotd_Req.io_Data = &event_interrupt2;
         event_request2->iotd_Req.io_Length = 0;
         SendIO((struct IORequest *)event_request2);
         event_request->iotd_Req.io_Message.mn_Node.ln_Type = NT_MESSAGE;
