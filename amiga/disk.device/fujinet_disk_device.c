@@ -55,10 +55,15 @@ struct fujinet_disk_device_base {
     /* BeginIO runs on the caller's task stack. Keep catalogue URI scratch in
      * the resident base along with the other serialized request state. */
     char catalog_uri[768];
+    char request_uri[768];
     struct List io_queue;
     UBYTE io_processing;
     struct fujinet_disk_trace trace;
 };
+
+static uint8_t remove_change_request(struct fujinet_disk_unit_state *unit,
+                                     struct IORequest *request);
+static void discard_change_requests(struct fujinet_disk_device_base *base);
 
 struct ExecBase *SysBase;
 
@@ -97,33 +102,38 @@ static uint8_t resolve_catalog_slot(struct fujinet_disk_device_base *base,
     return FN_OK;
 }
 
-static uint8_t save_mapping(struct fujinet_disk_device_base *base,
-                            uint8_t drive, uint8_t slot, uint8_t writable,
-                            uint8_t valid)
+static uint8_t load_mappings(struct fujinet_disk_device_base *base,
+                             UBYTE *mappings)
 {
     fn_appstore_io_t io = {base->service_buffer, sizeof(base->service_buffer)};
     fn_appstore_read_t read_result;
-    fn_appstore_write_t write_result;
-    UBYTE mappings[MAPPINGS_SIZE];
     uint8_t result;
-    memset(mappings, 0, sizeof(mappings));
+    memset(mappings, 0, MAPPINGS_SIZE);
     mappings[0] = 1;
     result = fn_init();
     if (result != FN_OK) return result;
     result = fn_appstore_read(&io, "config-nio", "mappings", 0,
-                              mappings, sizeof(mappings), &read_result);
+                              mappings, MAPPINGS_SIZE, &read_result);
     if (result != FN_OK) return result;
     if (!(read_result.flags & FN_APPSTORE_READ_EXISTS)) {
-        memset(mappings, 0, sizeof(mappings));
+        memset(mappings, 0, MAPPINGS_SIZE);
         mappings[0] = 1;
-    } else if (read_result.bytes_read != sizeof(mappings) || mappings[0] != 1) {
+    } else if (read_result.bytes_read != MAPPINGS_SIZE || mappings[0] != 1) {
         return FN_ERR_IO;
     }
-    mappings[1 + drive * 2] = valid ? (UBYTE)(1 | (writable ? 0 : 2)) : 0;
-    mappings[2 + drive * 2] = valid ? slot : 0;
+    return FN_OK;
+}
+
+static uint8_t store_mappings(struct fujinet_disk_device_base *base,
+                              const UBYTE *mappings)
+{
+    fn_appstore_io_t io = {base->service_buffer, sizeof(base->service_buffer)};
+    fn_appstore_write_t write_result;
+    uint8_t result = fn_init();
+    if (result != FN_OK) return result;
     result = fn_appstore_write(&io, "config-nio", "mappings", 0,
-                               mappings, sizeof(mappings), &write_result);
-    if (result != FN_OK || write_result.bytes_written != sizeof(mappings))
+                               mappings, MAPPINGS_SIZE, &write_result);
+    if (result != FN_OK || write_result.bytes_written != MAPPINGS_SIZE)
         return FN_ERR_IO;
     return FN_OK;
 }
@@ -209,6 +219,9 @@ static BPTR device_close(
     register struct IORequest *request __asm("a1"),
     register struct fujinet_disk_device_base *base __asm("a6"))
 {
+    uint8_t i;
+    for (i = 0; i < FUJINET_DISK_UNIT_COUNT; ++i)
+        (void)remove_change_request(&base->units[i], request);
     request->io_Device = NULL;
     request->io_Unit = NULL;
     if (base->device.dd_Library.lib_OpenCnt != 0) {
@@ -222,6 +235,7 @@ static BPTR device_expunge(
 {
     /* The serial-backed session is process-global today, so unloading is
      * deliberately deferred until Stage 7 defines explicit lifecycle. */
+    discard_change_requests(base);
     base->device.dd_Library.lib_Flags |= LIBF_DELEXP;
     return 0;
 }
@@ -262,6 +276,20 @@ static uint8_t remove_change_request(struct fujinet_disk_unit_state *unit,
         }
     }
     return 0;
+}
+
+static void discard_change_requests(struct fujinet_disk_device_base *base)
+{
+    uint8_t i;
+    for (i = 0; i < FUJINET_DISK_UNIT_COUNT; ++i) {
+        struct Node *node = base->units[i].change_requests.lh_Head;
+        while (node->ln_Succ != NULL) {
+            struct Node *next = node->ln_Succ;
+            Remove(node);
+            FreeMem(node, sizeof(struct fujinet_change_registration));
+            node = next;
+        }
+    }
 }
 
 static struct IORequest *next_runnable_request(
@@ -357,22 +385,32 @@ process_request:
     case FUJINET_DISK_CMD_MOUNT_WRITABLE:
         {
         uint32_t old_count = unit->driver.change_count;
+        if (io->io_Data == NULL || io->io_Length == 0 ||
+            io->io_Length > sizeof(base->request_uri) ||
+            ((const char *)io->io_Data)[io->io_Length - 1] != '\0') {
+            request->io_Error = IOERR_BADLENGTH;
+        } else {
+            memcpy(base->request_uri, io->io_Data, io->io_Length);
         if (request->io_Command == FUJINET_DISK_CMD_MOUNT_WRITABLE)
             result = fujinet_disk_mount_mode(&unit->driver,
                                              unit_index,
-                                             (const char *)io->io_Data, 1);
+                                             base->request_uri, 1);
         else
             result = fujinet_disk_mount(&unit->driver,
                                         unit_index,
-                                        (const char *)io->io_Data);
+                                        base->request_uri);
         request->io_Error = result_to_io_error(result);
         if (unit->driver.change_count != old_count) signal_media_change(unit);
+        }
         }
         break;
     case FUJINET_DISK_CMD_MOUNT_CATALOG:
         {
         struct fujinet_disk_catalog_mount *catalog =
             (struct fujinet_disk_catalog_mount *)io->io_Data;
+        UBYTE old_mappings[MAPPINGS_SIZE];
+        UBYTE new_mappings[MAPPINGS_SIZE];
+        UBYTE mappings_loaded = 0;
         uint32_t old_count = unit->driver.change_count;
         if (catalog == NULL || io->io_Length < sizeof(*catalog)) {
             request->io_Error = IOERR_BADLENGTH;
@@ -382,12 +420,21 @@ process_request:
                                       base->catalog_uri,
                                       sizeof(base->catalog_uri));
         if (result == FN_OK)
+            result = load_mappings(base, old_mappings);
+        if (result == FN_OK) mappings_loaded = 1;
+        if (result == FN_OK) {
+            memcpy(new_mappings, old_mappings, MAPPINGS_SIZE);
+            new_mappings[1 + unit_index * 2] =
+                (UBYTE)(1 | (catalog->writable ? 0 : 2));
+            new_mappings[2 + unit_index * 2] = catalog->catalog_slot;
+            result = store_mappings(base, new_mappings);
+        }
+        if (result == FN_OK)
             result = fujinet_disk_mount_mode(&unit->driver, unit_index,
                                              base->catalog_uri,
                                              catalog->writable != 0);
-        if (result == FN_OK)
-            result = save_mapping(base, unit_index, catalog->catalog_slot,
-                                  catalog->writable != 0, 1);
+        if (result != FN_OK && mappings_loaded)
+            (void)store_mappings(base, old_mappings);
         request->io_Error = result_to_io_error(result);
         if (unit->driver.change_count != old_count) signal_media_change(unit);
         }
@@ -492,9 +539,22 @@ process_request:
         break;
     case TD_EJECT:
         {
+        UBYTE old_mappings[MAPPINGS_SIZE];
+        UBYTE new_mappings[MAPPINGS_SIZE];
+        UBYTE mappings_loaded = 0;
         uint32_t old_count = unit->driver.change_count;
-        result = fujinet_disk_eject(&unit->driver, unit_index);
-        if (result == FN_OK) result = save_mapping(base, unit_index, 0, 0, 0);
+        result = load_mappings(base, old_mappings);
+        if (result == FN_OK) mappings_loaded = 1;
+        if (result == FN_OK) {
+            memcpy(new_mappings, old_mappings, MAPPINGS_SIZE);
+            new_mappings[1 + unit_index * 2] = 0;
+            new_mappings[2 + unit_index * 2] = 0;
+            result = store_mappings(base, new_mappings);
+        }
+        if (result == FN_OK)
+            result = fujinet_disk_eject(&unit->driver, unit_index);
+        if (result != FN_OK && mappings_loaded)
+            (void)store_mappings(base, old_mappings);
         request->io_Error = result_to_io_error(result);
         if (unit->driver.change_count != old_count) signal_media_change(unit);
         }

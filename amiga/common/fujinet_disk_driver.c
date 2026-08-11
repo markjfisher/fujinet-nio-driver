@@ -67,6 +67,13 @@ static uint8_t validate_standard_adf(const fn_disk_info_t *info,
     return FN_OK;
 }
 
+static void clear_local_media(fujinet_disk_driver_t *driver)
+{
+    driver->mounted = 0;
+    driver->writable = 0;
+    memset(&driver->media, 0, sizeof(driver->media));
+}
+
 uint8_t fujinet_disk_info(fujinet_disk_driver_t *driver, uint32_t unit,
                           fn_disk_info_t *info)
 {
@@ -125,12 +132,14 @@ uint8_t fujinet_disk_mount_mode(fujinet_disk_driver_t *driver, uint32_t unit,
     result = validate_standard_adf(&driver->media, writable, slot);
     if (result != FN_OK) {
         (void)driver->client->unmount(driver->client_context, slot);
+        clear_local_media(driver);
         return result;
     }
     if (writable) {
         result = driver->client->flush(driver->client_context, slot);
         if (result != FN_OK) {
             (void)driver->client->unmount(driver->client_context, slot);
+            clear_local_media(driver);
             return result;
         }
     }
@@ -143,6 +152,10 @@ uint8_t fujinet_disk_mount_mode(fujinet_disk_driver_t *driver, uint32_t unit,
             driver->change_ack_pending = 1;
         else
             driver->change_ack_pending = 0;
+    }
+    if (result != FN_OK) {
+        (void)driver->client->unmount(driver->client_context, slot);
+        clear_local_media(driver);
     }
     return result;
 }
@@ -183,9 +196,12 @@ uint8_t fujinet_disk_eject(fujinet_disk_driver_t *driver, uint32_t unit)
     if (result != FN_OK) return result;
     result = driver->client->unmount(driver->client_context, slot);
     if (result == FN_OK) {
-        driver->mounted = driver->writable = 0;
-        memset(&driver->media, 0, sizeof(driver->media));
+        clear_local_media(driver);
         ++driver->change_count;
+        if (driver->client->clear_changed(driver->client_context, slot) != FN_OK)
+            driver->change_ack_pending = 1;
+        else
+            driver->change_ack_pending = 0;
     }
     return result;
 }

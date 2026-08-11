@@ -25,6 +25,7 @@ typedef struct fake_client {
     uint8_t flush_result;
     uint8_t unmount_result;
     uint8_t clear_result;
+    uint8_t invalid_mount;
     unsigned fail_write_call;
     uint16_t read_length;
     fn_disk_info_t media;
@@ -65,6 +66,7 @@ static uint8_t fake_mount(void *context, uint8_t slot, const char *uri,
     info->type = FN_DISK_TYPE_RAW;
     info->sector_size = FUJINET_DISK_BLOCK_SIZE;
     info->sector_count = FUJINET_ADF_BLOCK_COUNT;
+    if (fake->invalid_mount) info->sector_count = FUJINET_ADF_BLOCK_COUNT - 1;
     fake->media = *info;
     return FN_OK;
 }
@@ -313,6 +315,40 @@ static void test_failed_replacement_and_eject_keep_old_media(void)
     CHECK("failed eject keeps media inserted", driver.mounted);
 }
 
+static void test_invalid_replacement_clears_committed_remote_media(void)
+{
+    fake_client_t fake = {0};
+    fujinet_disk_driver_t driver;
+
+    fujinet_disk_driver_init(&driver, &fake_ops, &fake, 0);
+    CHECK("initial mount succeeds",
+          fujinet_disk_mount(&driver, 0, "old.adf") == FN_OK);
+    fake.invalid_mount = 1;
+    CHECK("invalid replacement is rejected",
+          fujinet_disk_mount(&driver, 0, "bad.adf") == FN_ERR_INVALID);
+    CHECK("invalid replacement leaves no stale local media",
+          !driver.mounted && driver.media.sector_count == 0 &&
+              fake.unmount_calls == 1);
+}
+
+static void test_eject_acknowledges_media_change_and_retries(void)
+{
+    fake_client_t fake = {0};
+    fujinet_disk_driver_t driver;
+
+    fujinet_disk_driver_init(&driver, &fake_ops, &fake, 0);
+    CHECK("mount succeeds",
+          fujinet_disk_mount(&driver, 0, "disk.adf") == FN_OK);
+    fake.clear_result = FN_ERR_IO;
+    CHECK("eject succeeds despite acknowledgement failure",
+          fujinet_disk_eject(&driver, 0) == FN_OK &&
+              driver.change_ack_pending);
+    fake.clear_result = FN_OK;
+    CHECK("eject acknowledgement retries",
+          fujinet_disk_acknowledge_change(&driver, 0) == FN_OK &&
+              !driver.change_ack_pending && fake.clear_calls == 3);
+}
+
 static void test_change_acknowledgement_is_retried(void)
 {
     fake_client_t fake = {0};
@@ -340,6 +376,8 @@ int main(void)
     test_units_keep_independent_media_and_change_state();
     test_writes_preserve_partial_progress_and_flush_errors();
     test_failed_replacement_and_eject_keep_old_media();
+    test_invalid_replacement_clears_committed_remote_media();
+    test_eject_acknowledges_media_change_and_retries();
     test_change_acknowledgement_is_retried();
 
     if (failures != 0) {

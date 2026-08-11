@@ -73,8 +73,8 @@ int main(int argc, char **argv)
         mount_uri = argv[2];
     } else if (argv[1][0] != '-' && argc == 2) {
         mount_uri = argv[1];
-    } else if (strcmp(argv[1], "--eject") == 0 && argc == 3) {
-        if (!parse_drive(argv[2], &drive)) return 10;
+    } else if (strcmp(argv[1], "--eject") == 0 && (argc == 2 || argc == 3)) {
+        if (argc == 3 && !parse_drive(argv[2], &drive)) return 10;
     } else if (strcmp(argv[1], "--update") == 0 && argc == 3) {
         if (!parse_drive(argv[2], &drive)) return 10;
         update = 1;
