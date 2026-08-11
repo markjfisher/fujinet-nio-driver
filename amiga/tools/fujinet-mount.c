@@ -1,9 +1,11 @@
 #include <devices/trackdisk.h>
+#include <dos/dostags.h>
 #include <exec/errors.h>
 #include <exec/io.h>
 #include <exec/types.h>
 #include <clib/alib_protos.h>
 #include <proto/exec.h>
+#include <proto/dos.h>
 #include <proto/dos.h>
 
 #include <stdio.h>
@@ -12,6 +14,52 @@
 
 #include "fujinet_disk_device.h"
 #define MAX_DRIVES 8
+
+struct boundary_worker_state {
+    ULONG started;
+    ULONG done;
+    LONG result;
+    ULONG drive;
+};
+
+static struct boundary_worker_state boundary_worker;
+
+static void boundary_worker_entry(void)
+{
+    struct MsgPort *worker_port;
+    struct IOExtTD *worker_request;
+    static UBYTE data[512];
+
+    worker_port = CreatePort(NULL, 0);
+    if (worker_port == NULL) {
+        boundary_worker.result = IOERR_OPENFAIL;
+        boundary_worker.done = 1;
+        return;
+    }
+    worker_request = (struct IOExtTD *)CreateExtIO(worker_port,
+                                                    sizeof(*worker_request));
+    if (worker_request == NULL ||
+        OpenDevice((CONST_STRPTR)FUJINET_DISK_DEVICE_NAME,
+                   boundary_worker.drive,
+                   (struct IORequest *)worker_request, 0) != 0) {
+        if (worker_request != NULL) DeleteExtIO((struct IORequest *)worker_request);
+        DeletePort(worker_port);
+        boundary_worker.result = IOERR_OPENFAIL;
+        boundary_worker.done = 1;
+        return;
+    }
+
+    worker_request->iotd_Req.io_Command = CMD_READ;
+    worker_request->iotd_Req.io_Data = data;
+    worker_request->iotd_Req.io_Length = sizeof(data);
+    worker_request->iotd_Req.io_Offset = 0;
+    boundary_worker.started = 1;
+    boundary_worker.result = DoIO((struct IORequest *)worker_request);
+    CloseDevice((struct IORequest *)worker_request);
+    DeleteExtIO((struct IORequest *)worker_request);
+    DeletePort(worker_port);
+    boundary_worker.done = 1;
+}
 
 static int parse_drive(const char *text, ULONG *drive)
 {
@@ -136,6 +184,72 @@ int main(int argc, char **argv)
         };
         UWORD i;
         LONG wait_result;
+        ULONG spins;
+        struct Process *worker_process;
+        static const char worker_uri[] = "host:/standard.adf";
+        static UBYTE parent_data[512];
+
+        request->iotd_Req.io_Message.mn_Node.ln_Type = NT_MESSAGE;
+        request->iotd_Req.io_Flags = 0;
+        request->iotd_Req.io_Error = 0;
+        request->iotd_Req.io_Actual = 0;
+        request->iotd_Req.io_Command = FUJINET_DISK_CMD_MOUNT;
+        request->iotd_Req.io_Data = (APTR)worker_uri;
+        request->iotd_Req.io_Length = sizeof(worker_uri);
+        result = DoIO((struct IORequest *)request);
+        if (result != 0) {
+            fprintf(stderr, "fujinet-mount: queue setup mount failed (%ld)\n", result);
+            CloseDevice((struct IORequest *)request);
+            DeleteExtIO((struct IORequest *)request);
+            DeletePort(port);
+            return 20;
+        }
+
+        memset(&boundary_worker, 0, sizeof(boundary_worker));
+        boundary_worker.drive = drive;
+        worker_process = CreateNewProcTags(
+            NP_Entry, (ULONG)boundary_worker_entry,
+            NP_StackSize, 8192,
+            NP_Name, (ULONG)"FujiNet boundary worker",
+            TAG_DONE);
+        if (worker_process == NULL) {
+            fprintf(stderr, "fujinet-mount: cannot create boundary worker\n");
+            CloseDevice((struct IORequest *)request);
+            DeleteExtIO((struct IORequest *)request);
+            DeletePort(port);
+            return 20;
+        }
+        for (spins = 0; spins < 100 && !boundary_worker.started; ++spins)
+            Delay(1);
+        if (!boundary_worker.started) {
+            fprintf(stderr, "fujinet-mount: boundary worker did not start\n");
+            while (!boundary_worker.done) Delay(1);
+            CloseDevice((struct IORequest *)request);
+            DeleteExtIO((struct IORequest *)request);
+            DeletePort(port);
+            return 20;
+        }
+
+        request->iotd_Req.io_Message.mn_Node.ln_Type = NT_MESSAGE;
+        request->iotd_Req.io_Flags = 0;
+        request->iotd_Req.io_Error = 0;
+        request->iotd_Req.io_Actual = 0;
+        request->iotd_Req.io_Command = CMD_READ;
+        request->iotd_Req.io_Data = parent_data;
+        request->iotd_Req.io_Length = sizeof(parent_data);
+        request->iotd_Req.io_Offset = 0;
+        SendIO((struct IORequest *)request);
+        AbortIO((struct IORequest *)request);
+        wait_result = WaitIO((struct IORequest *)request);
+        while (!boundary_worker.done) Delay(1);
+        if (wait_result != IOERR_ABORTED || boundary_worker.result != 0) {
+            fprintf(stderr, "fujinet-mount: queued abort failed (%ld/%ld)\n",
+                    wait_result, boundary_worker.result);
+            CloseDevice((struct IORequest *)request);
+            DeleteExtIO((struct IORequest *)request);
+            DeletePort(port);
+            return 20;
+        }
 
         request->iotd_Req.io_Message.mn_Node.ln_Type = NT_MESSAGE;
         request->iotd_Req.io_Flags = 0;
@@ -205,7 +319,7 @@ int main(int argc, char **argv)
             result = DoIO((struct IORequest *)request);
             if (result != 0) break;
         }
-        if (result == 0) printf("EXEC BOUNDARY PASS commands=%lu notifications=2 remove=1\n",
+        if (result == 0) printf("EXEC BOUNDARY PASS commands=%lu notifications=2 remove=1 queue=1\n",
                                 (ULONG)(sizeof(commands) / sizeof(commands[0])));
         else fprintf(stderr, "fujinet-mount: boundary command %lu failed (%ld)\n",
                      (ULONG)i, result);
