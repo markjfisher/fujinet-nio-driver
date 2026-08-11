@@ -44,7 +44,7 @@ git submodule update --init --recursive
 ```
 
 The driver revision containing this contract is compatible with
-`fujinet-nio-lib` commit `4a5414b4` or later. A parent repository should pin
+`fujinet-nio-lib` commit `247340f2` or later. A parent repository should pin
 both submodules to reviewed revisions.
 
 For another layout, pass an absolute or relative library path:

@@ -8,6 +8,10 @@ typedef struct fake_client {
     unsigned mount_calls;
     unsigned info_calls;
     unsigned read_calls;
+    unsigned write_calls;
+    unsigned flush_calls;
+    unsigned unmount_calls;
+    unsigned clear_calls;
     uint8_t slot;
     uint8_t readonly;
     uint8_t type;
@@ -15,7 +19,13 @@ typedef struct fake_client {
     uint32_t first_lba;
     const char *uri;
     uint8_t info_result;
+    uint8_t mount_result;
     uint8_t read_result;
+    uint8_t write_result;
+    uint8_t flush_result;
+    uint8_t unmount_result;
+    uint8_t clear_result;
+    unsigned fail_write_call;
     uint16_t read_length;
     fn_disk_info_t media;
 } fake_client_t;
@@ -47,6 +57,7 @@ static uint8_t fake_mount(void *context, uint8_t slot, const char *uri,
     fake->readonly = readonly;
     fake->type = type;
     fake->sector_size_hint = sector_size_hint;
+    if (fake->mount_result != FN_OK) return fake->mount_result;
     memset(info, 0, sizeof(*info));
     info->slot = slot;
     info->flags = FN_DISK_FLAG_MOUNTED |
@@ -93,9 +104,20 @@ static uint8_t fake_read(void *context, uint8_t slot, uint32_t lba,
 
 static uint8_t fake_write(void *context, uint8_t slot, uint32_t lba,
                           const uint8_t *data, uint16_t length)
-{ (void)context; (void)slot; (void)lba; (void)data; (void)length; return FN_OK; }
-static uint8_t fake_slot(void *context, uint8_t slot)
-{ (void)context; (void)slot; return FN_OK; }
+{
+    fake_client_t *fake = context;
+    (void)lba; (void)data; (void)length;
+    fake->slot = slot;
+    ++fake->write_calls;
+    if (fake->fail_write_call == fake->write_calls) return FN_ERR_IO;
+    return fake->write_result;
+}
+static uint8_t fake_flush(void *context, uint8_t slot)
+{ fake_client_t *fake = context; fake->slot = slot; ++fake->flush_calls; return fake->flush_result; }
+static uint8_t fake_unmount(void *context, uint8_t slot)
+{ fake_client_t *fake = context; fake->slot = slot; ++fake->unmount_calls; return fake->unmount_result; }
+static uint8_t fake_clear(void *context, uint8_t slot)
+{ fake_client_t *fake = context; fake->slot = slot; ++fake->clear_calls; return fake->clear_result; }
 
 static const fujinet_disk_client_t fake_ops = {
     fake_init,
@@ -103,9 +125,9 @@ static const fujinet_disk_client_t fake_ops = {
     fake_info,
     fake_read,
     fake_write,
-    fake_slot,
-    fake_slot,
-    fake_slot
+    fake_flush,
+    fake_unmount,
+    fake_clear
 };
 
 static void test_amiga_units_map_to_one_based_diskdevice_slots(void)
@@ -251,6 +273,62 @@ static void test_units_keep_independent_media_and_change_state(void)
               !unit1.mounted && unit1.change_count == 2);
 }
 
+static void test_writes_preserve_partial_progress_and_flush_errors(void)
+{
+    fake_client_t fake = {0};
+    fujinet_disk_driver_t driver;
+    uint8_t data[1024] = {0};
+    uint32_t actual = 0;
+
+    fujinet_disk_driver_init(&driver, &fake_ops, &fake, 0);
+    CHECK("writable mount succeeds",
+          fujinet_disk_mount_mode(&driver, 0, "work.adf", 1) == FN_OK);
+    CHECK("writable mount probes flush", fake.flush_calls == 1);
+    fake.fail_write_call = 2;
+    CHECK("second sector failure is reported",
+          fujinet_disk_write(&driver, 0, 0, data, sizeof(data), &actual) ==
+              FN_ERR_IO);
+    CHECK("partial write preserves first sector progress", actual == 512);
+    fake.flush_result = FN_ERR_IO;
+    CHECK("flush failure is preserved",
+          fujinet_disk_flush(&driver, 0) == FN_ERR_IO && driver.mounted);
+}
+
+static void test_failed_replacement_and_eject_keep_old_media(void)
+{
+    fake_client_t fake = {0};
+    fujinet_disk_driver_t driver;
+
+    fujinet_disk_driver_init(&driver, &fake_ops, &fake, 0);
+    CHECK("initial writable mount succeeds",
+          fujinet_disk_mount_mode(&driver, 0, "old.adf", 1) == FN_OK);
+    fake.mount_result = FN_ERR_IO;
+    CHECK("failed remote replacement is reported",
+          fujinet_disk_mount_mode(&driver, 0, "new.adf", 1) == FN_ERR_IO);
+    CHECK("failed replacement keeps old local media",
+          driver.mounted && driver.change_count == 1);
+    CHECK("eject fails when remote unmount fails",
+          (fake.mount_result = FN_OK, fake.unmount_result = FN_ERR_IO,
+           fujinet_disk_eject(&driver, 0) == FN_ERR_IO));
+    CHECK("failed eject keeps media inserted", driver.mounted);
+}
+
+static void test_change_acknowledgement_is_retried(void)
+{
+    fake_client_t fake = {0};
+    fujinet_disk_driver_t driver;
+
+    fujinet_disk_driver_init(&driver, &fake_ops, &fake, 0);
+    fake.clear_result = FN_ERR_IO;
+    CHECK("mount commits despite acknowledgement failure",
+          fujinet_disk_mount(&driver, 0, "disk.adf") == FN_OK &&
+              driver.change_ack_pending);
+    fake.clear_result = FN_OK;
+    CHECK("pending acknowledgement retries successfully",
+          fujinet_disk_acknowledge_change(&driver, 0) == FN_OK &&
+              !driver.change_ack_pending && fake.clear_calls == 2);
+}
+
 int main(void)
 {
     test_amiga_units_map_to_one_based_diskdevice_slots();
@@ -260,6 +338,9 @@ int main(void)
     test_info_and_media_read_failures_are_reported();
     test_reads_are_512_byte_aligned_sector_requests_on_slot_one();
     test_units_keep_independent_media_and_change_state();
+    test_writes_preserve_partial_progress_and_flush_errors();
+    test_failed_replacement_and_eject_keep_old_media();
+    test_change_acknowledgement_is_retried();
 
     if (failures != 0) {
         fprintf(stderr, "%u Amiga driver contract test(s) failed\n", failures);

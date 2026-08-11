@@ -141,6 +141,8 @@ uint8_t fujinet_disk_mount_mode(fujinet_disk_driver_t *driver, uint32_t unit,
         driver->change_count += replacing ? 2 : 1;
         if (driver->client->clear_changed(driver->client_context, slot) != FN_OK)
             driver->change_ack_pending = 1;
+        else
+            driver->change_ack_pending = 0;
     }
     return result;
 }
@@ -154,6 +156,21 @@ uint8_t fujinet_disk_flush(fujinet_disk_driver_t *driver, uint32_t unit)
     result = fujinet_disk_unit_to_slot(unit, &slot);
     if (result != FN_OK) return result;
     return driver->client->flush(driver->client_context, slot);
+}
+
+uint8_t fujinet_disk_acknowledge_change(fujinet_disk_driver_t *driver,
+                                        uint32_t unit)
+{
+    uint8_t slot, result;
+    if (driver == NULL) return FN_ERR_INVALID;
+    if (!driver->change_ack_pending) return FN_OK;
+    result = ensure_client(driver);
+    if (result != FN_OK) return result;
+    result = fujinet_disk_unit_to_slot(unit, &slot);
+    if (result != FN_OK) return result;
+    result = driver->client->clear_changed(driver->client_context, slot);
+    if (result == FN_OK) driver->change_ack_pending = 0;
+    return result;
 }
 
 uint8_t fujinet_disk_eject(fujinet_disk_driver_t *driver, uint32_t unit)

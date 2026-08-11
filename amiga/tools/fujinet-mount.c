@@ -3,6 +3,7 @@
 #include <exec/types.h>
 #include <clib/alib_protos.h>
 #include <proto/exec.h>
+#include <proto/dos.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +19,18 @@
 
 static UBYTE service_buffer[CATALOG_BUFFER_SIZE];
 
+static uint8_t init_transport_with_retry(void)
+{
+    unsigned attempt;
+    uint8_t result = FN_ERR_TRANSPORT;
+    for (attempt = 0; attempt < 10; ++attempt) {
+        result = fn_init();
+        if (result == FN_OK) return result;
+        Delay(2);
+    }
+    return result;
+}
+
 static int parse_drive(const char *text, ULONG *drive)
 {
     char *end;
@@ -32,8 +45,16 @@ static int resolve_catalog_slot(ULONG slot, char *uri, size_t capacity)
     fn_slot_catalog_io_t io = {service_buffer, sizeof(service_buffer)};
     fn_slot_catalog_entry_t entry;
     uint8_t result;
-    if (slot > 255 || fn_init() != FN_OK) return 0;
-    result = fn_slot_catalog_get(&io, (uint8_t)slot, &entry);
+    unsigned attempt;
+    if (slot > 255) return 0;
+    result = FN_ERR_TRANSPORT;
+    for (attempt = 0; attempt < 10; ++attempt) {
+        if (init_transport_with_retry() == FN_OK)
+            result = fn_slot_catalog_get(&io, (uint8_t)slot, &entry);
+        if (result == FN_OK) break;
+        fn_transport_close();
+        Delay(2);
+    }
     if (result != FN_OK || !(entry.flags & FN_SLOT_CATALOG_ENTRY_VALID) ||
         entry.uri_len == 0 || entry.uri_len >= capacity) {
         fn_transport_close();
@@ -51,29 +72,41 @@ static int save_mapping(ULONG drive, ULONG slot, int writable, int valid)
     fn_appstore_read_t read_result;
     fn_appstore_write_t write_result;
     UBYTE mappings[MAPPINGS_SIZE];
-    uint8_t result;
-    memset(mappings, 0, sizeof(mappings));
-    mappings[0] = 1;
-    if (fn_init() != FN_OK) return 0;
-    result = fn_appstore_read(&io, "config-nio", "mappings", 0, mappings,
-                              sizeof(mappings), &read_result);
-    if (result != FN_OK) {
-        fn_transport_close();
-        return 0;
-    }
-    if (!(read_result.flags & FN_APPSTORE_READ_EXISTS)) {
+    uint8_t result = FN_ERR_TRANSPORT;
+    unsigned attempt;
+
+    for (attempt = 0; attempt < 10; ++attempt) {
         memset(mappings, 0, sizeof(mappings));
         mappings[0] = 1;
-    } else if (read_result.bytes_read != sizeof(mappings) || mappings[0] != 1) {
+        if (init_transport_with_retry() == FN_OK) {
+            result = fn_appstore_read(&io, "config-nio", "mappings", 0,
+                                      mappings, sizeof(mappings), &read_result);
+            if (result == FN_OK) {
+                if (!(read_result.flags & FN_APPSTORE_READ_EXISTS)) {
+                    memset(mappings, 0, sizeof(mappings));
+                    mappings[0] = 1;
+                } else if (read_result.bytes_read != sizeof(mappings) ||
+                           mappings[0] != 1) {
+                    fn_transport_close();
+                    return 0;
+                }
+                mappings[1 + drive * 2] =
+                    valid ? (UBYTE)(1 | (writable ? 0 : 2)) : 0;
+                mappings[2 + drive * 2] = valid ? (UBYTE)slot : 0;
+                result = fn_appstore_write(&io, "config-nio", "mappings", 0,
+                                           mappings, sizeof(mappings),
+                                           &write_result);
+                if (result == FN_OK &&
+                    write_result.bytes_written == sizeof(mappings)) {
+                    fn_transport_close();
+                    return 1;
+                }
+            }
+        }
         fn_transport_close();
-        return 0;
+        Delay(2);
     }
-    mappings[1 + drive * 2] = valid ? (UBYTE)(1 | (writable ? 0 : 2)) : 0;
-    mappings[2 + drive * 2] = valid ? (UBYTE)slot : 0;
-    result = fn_appstore_write(&io, "config-nio", "mappings", 0, mappings,
-                               sizeof(mappings), &write_result);
-    fn_transport_close();
-    return result == FN_OK && write_result.bytes_written == sizeof(mappings);
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -86,6 +119,8 @@ int main(int argc, char **argv)
     int requested_writable = 0;
     int catalog_mount = 0;
     int eject = 0;
+    int update = 0;
+    int status = 0;
     ULONG catalog_slot = 0;
     ULONG drive = 0;
     char catalog_uri[768];
@@ -96,7 +131,8 @@ int main(int argc, char **argv)
                 "Usage: fujinet-mount SLOT DRIVE [RW|RO]\n"
                 "       fujinet-mount --uri DRIVE URI [RW|RO]\n"
                 "       fujinet-mount URI | --writable URI\n"
-                "       fujinet-mount --eject [DRIVE] | --trace | --read LBA [RESULT]\n");
+                "       fujinet-mount --eject [DRIVE] | --update DRIVE\n"
+                "       fujinet-mount --status DRIVE | --trace | --read LBA [RESULT]\n");
         return 10;
     }
 
@@ -136,6 +172,12 @@ int main(int argc, char **argv)
         mount_uri = argv[1];
     } else if (strcmp(argv[1], "--eject") == 0 && argc == 3) {
         if (!parse_drive(argv[2], &drive)) return 10;
+    } else if (strcmp(argv[1], "--update") == 0 && argc == 3) {
+        if (!parse_drive(argv[2], &drive)) return 10;
+        update = 1;
+    } else if (strcmp(argv[1], "--status") == 0 && argc == 3) {
+        if (!parse_drive(argv[2], &drive)) return 10;
+        status = 1;
     }
 
     port = CreatePort(NULL, 0);
@@ -205,7 +247,31 @@ int main(int argc, char **argv)
         return result == 0 ? 0 : 20;
     }
 
-    if (strcmp(argv[1], "--eject") == 0) {
+    if (status) {
+        ULONG change_count, change_state, protected_state;
+        request->iotd_Req.io_Command = TD_CHANGENUM;
+        result = DoIO((struct IORequest *)request);
+        change_count = request->iotd_Req.io_Actual;
+        request->iotd_Req.io_Command = TD_CHANGESTATE;
+        if (result == 0) result = DoIO((struct IORequest *)request);
+        change_state = request->iotd_Req.io_Actual;
+        request->iotd_Req.io_Command = TD_PROTSTATUS;
+        if (result == 0) result = DoIO((struct IORequest *)request);
+        protected_state = request->iotd_Req.io_Actual;
+        if (result == 0)
+            printf("STATUS drive=%lu change=%lu absent=%lu protected=%lu\n",
+                   drive, change_count, change_state, protected_state);
+        CloseDevice((struct IORequest *)request);
+        DeleteExtIO((struct IORequest *)request);
+        DeletePort(port);
+        return result == 0 ? 0 : 20;
+    }
+
+    if (update) {
+        request->iotd_Req.io_Command = CMD_UPDATE;
+        request->iotd_Req.io_Data = NULL;
+        request->iotd_Req.io_Length = 0;
+    } else if (strcmp(argv[1], "--eject") == 0) {
         eject = 1;
         request->iotd_Req.io_Command = TD_EJECT;
         request->iotd_Req.io_Data = NULL;
@@ -229,7 +295,9 @@ int main(int argc, char **argv)
     }
 
     if (result == 0) {
-        if (request->iotd_Req.io_Command == TD_GETGEOMETRY)
+        if (update)
+            printf("UPDATED drive=%lu slot=%lu\n", drive, drive + 1);
+        else if (request->iotd_Req.io_Command == TD_GETGEOMETRY)
             printf("MOUNTED drive=%lu slot=%lu readonly=%d sectorSize=%lu sectorCount=%lu\n",
                    drive, drive + 1, requested_writable ? 0 : 1, geometry.dg_SectorSize,
                    geometry.dg_TotalSectors);

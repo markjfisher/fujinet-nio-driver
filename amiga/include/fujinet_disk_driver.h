@@ -56,6 +56,8 @@ uint8_t fujinet_disk_mount_mode(fujinet_disk_driver_t *driver, uint32_t unit,
                                 const char *uri, uint8_t writable);
 uint8_t fujinet_disk_eject(fujinet_disk_driver_t *driver, uint32_t unit);
 uint8_t fujinet_disk_flush(fujinet_disk_driver_t *driver, uint32_t unit);
+uint8_t fujinet_disk_acknowledge_change(fujinet_disk_driver_t *driver,
+                                        uint32_t unit);
 uint8_t fujinet_disk_write(fujinet_disk_driver_t *driver, uint32_t unit,
                            uint32_t byte_offset, const uint8_t *data,
                            uint32_t byte_length, uint32_t *actual);
