@@ -198,6 +198,8 @@ int main(int argc, char **argv)
         struct IOExtTD *other_request;
         struct MsgPort *event_port;
         struct IOExtTD *event_request;
+        struct MsgPort *event_port2;
+        struct IOExtTD *event_request2;
         struct Interrupt event_interrupt;
         static const char worker_uri[] = "host:/standard.adf";
         static UBYTE parent_data[512];
@@ -315,6 +317,23 @@ int main(int argc, char **argv)
             DeletePort(port);
             return 20;
         }
+        event_port2 = CreatePort(NULL, 0);
+        event_request2 = event_port2 == NULL ? NULL :
+            (struct IOExtTD *)CreateExtIO(event_port2, sizeof(*event_request2));
+        if (event_request2 == NULL ||
+            OpenDevice((CONST_STRPTR)FUJINET_DISK_DEVICE_NAME, drive,
+                       (struct IORequest *)event_request2, 0) != 0) {
+            if (event_request2 != NULL) DeleteExtIO((struct IORequest *)event_request2);
+            if (event_port2 != NULL) DeletePort(event_port2);
+            CloseDevice((struct IORequest *)event_request);
+            DeleteExtIO((struct IORequest *)event_request);
+            DeletePort(event_port);
+            fprintf(stderr, "fujinet-mount: cannot open second notification request\n");
+            CloseDevice((struct IORequest *)request);
+            DeleteExtIO((struct IORequest *)request);
+            DeletePort(port);
+            return 20;
+        }
         memset(&event_interrupt, 0, sizeof(event_interrupt));
         event_interrupt.is_Code = boundary_interrupt;
         boundary_causes = 0;
@@ -327,6 +346,14 @@ int main(int argc, char **argv)
         request->iotd_Req.io_Data = &event_interrupt;
         request->iotd_Req.io_Length = 0;
         SendIO((struct IORequest *)request);
+        event_request2->iotd_Req.io_Message.mn_Node.ln_Type = NT_MESSAGE;
+        event_request2->iotd_Req.io_Flags = 0;
+        event_request2->iotd_Req.io_Error = 0;
+        event_request2->iotd_Req.io_Actual = 0;
+        event_request2->iotd_Req.io_Command = TD_ADDCHANGEINT;
+        event_request2->iotd_Req.io_Data = &event_interrupt;
+        event_request2->iotd_Req.io_Length = 0;
+        SendIO((struct IORequest *)event_request2);
         event_request->iotd_Req.io_Message.mn_Node.ln_Type = NT_MESSAGE;
         event_request->iotd_Req.io_Flags = 0;
         event_request->iotd_Req.io_Error = 0;
@@ -337,9 +364,16 @@ int main(int argc, char **argv)
         result = DoIO((struct IORequest *)event_request);
         for (spins = 0; spins < 20 && boundary_causes == 0; ++spins)
             Delay(1);
-        if (result != 0 || boundary_causes == 0) {
+        if (result != 0 || boundary_causes != 2) {
             fprintf(stderr, "fujinet-mount: notification cause failed (%ld/%lu)\n",
                     result, boundary_causes);
+            AbortIO((struct IORequest *)request);
+            WaitIO((struct IORequest *)request);
+            AbortIO((struct IORequest *)event_request2);
+            WaitIO((struct IORequest *)event_request2);
+            CloseDevice((struct IORequest *)event_request2);
+            DeleteExtIO((struct IORequest *)event_request2);
+            DeletePort(event_port2);
             CloseDevice((struct IORequest *)event_request);
             DeleteExtIO((struct IORequest *)event_request);
             DeletePort(event_port);
@@ -360,9 +394,51 @@ int main(int argc, char **argv)
             DeletePort(port);
             return 20;
         }
+        event_request->iotd_Req.io_Message.mn_Node.ln_Type = NT_MESSAGE;
+        event_request->iotd_Req.io_Flags = 0;
+        event_request->iotd_Req.io_Error = 0;
+        event_request->iotd_Req.io_Actual = 0;
+        event_request->iotd_Req.io_Command = FUJINET_DISK_CMD_MOUNT;
+        event_request->iotd_Req.io_Data = (APTR)worker_uri;
+        event_request->iotd_Req.io_Length = sizeof(worker_uri);
+        result = DoIO((struct IORequest *)event_request);
+        if (result != 0 || boundary_causes != 3) {
+            fprintf(stderr, "fujinet-mount: repeated notification failed (%ld/%lu)\n",
+                    result, boundary_causes);
+            CloseDevice((struct IORequest *)event_request2);
+            DeleteExtIO((struct IORequest *)event_request2);
+            DeletePort(event_port2);
+            CloseDevice((struct IORequest *)event_request);
+            DeleteExtIO((struct IORequest *)event_request);
+            DeletePort(event_port);
+            CloseDevice((struct IORequest *)request);
+            DeleteExtIO((struct IORequest *)request);
+            DeletePort(port);
+            return 20;
+        }
         CloseDevice((struct IORequest *)event_request);
         DeleteExtIO((struct IORequest *)event_request);
         DeletePort(event_port);
+
+        event_request2->iotd_Req.io_Message.mn_Node.ln_Type = NT_MESSAGE;
+        event_request2->iotd_Req.io_Flags = 0;
+        event_request2->iotd_Req.io_Error = 0;
+        event_request2->iotd_Req.io_Actual = 0;
+        event_request2->iotd_Req.io_Command = TD_REMCHANGEINT;
+        result = DoIO((struct IORequest *)event_request2);
+        if (result != 0) {
+            fprintf(stderr, "fujinet-mount: second change removal failed (%ld)\n", result);
+            CloseDevice((struct IORequest *)event_request2);
+            DeleteExtIO((struct IORequest *)event_request2);
+            DeletePort(event_port2);
+            CloseDevice((struct IORequest *)request);
+            DeleteExtIO((struct IORequest *)request);
+            DeletePort(port);
+            return 20;
+        }
+        CloseDevice((struct IORequest *)event_request2);
+        DeleteExtIO((struct IORequest *)event_request2);
+        DeletePort(event_port2);
 
         request->iotd_Req.io_Message.mn_Node.ln_Type = NT_MESSAGE;
         request->iotd_Req.io_Flags = 0;
@@ -414,7 +490,7 @@ int main(int argc, char **argv)
             result = DoIO((struct IORequest *)request);
             if (result != 0) break;
         }
-        if (result == 0) printf("EXEC BOUNDARY PASS commands=%lu notifications=3 remove=1 queue=1 multi=1 cause=1\n",
+        if (result == 0) printf("EXEC BOUNDARY PASS commands=%lu notifications=4 remove=1 queue=1 multi=2 cause=3\n",
                                 (ULONG)(sizeof(commands) / sizeof(commands[0])));
         else fprintf(stderr, "fujinet-mount: boundary command %lu failed (%ld)\n",
                      (ULONG)i, result);
