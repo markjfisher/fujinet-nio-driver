@@ -6,9 +6,9 @@
 
 #include "fujinet-nio.h"
 
-#define FUJINET_DISK_UNIT_COUNT 1U
+#define FUJINET_DISK_UNIT_COUNT 8U
 #define FUJINET_DISK_UNIT_ZERO 0U
-#define FUJINET_DISK_SLOT_ONE 1U
+#define FUJINET_DISK_FIRST_SLOT 1U
 #define FUJINET_DISK_BLOCK_SIZE 512U
 #define FUJINET_ADF_BLOCK_COUNT 1760UL
 #define FUJINET_ADF_BYTE_SIZE \
@@ -39,6 +39,7 @@ typedef struct fujinet_disk_driver {
     uint8_t writable;
     uint8_t change_ack_pending;
     uint32_t change_count;
+    uint8_t unit;
 } fujinet_disk_driver_t;
 
 typedef struct fujinet_nio_disk_context {
@@ -47,7 +48,7 @@ typedef struct fujinet_nio_disk_context {
 
 void fujinet_disk_driver_init(fujinet_disk_driver_t *driver,
                               const fujinet_disk_client_t *client,
-                              void *client_context);
+                              void *client_context, uint8_t unit);
 uint8_t fujinet_disk_unit_to_slot(uint32_t unit, uint8_t *slot);
 uint8_t fujinet_disk_mount(fujinet_disk_driver_t *driver, uint32_t unit,
                            const char *uri);

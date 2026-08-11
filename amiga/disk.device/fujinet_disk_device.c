@@ -14,6 +14,7 @@
 
 #include "fujinet_disk_driver.h"
 #include "fujinet_disk_device.h"
+#include "fn_platform.h"
 
 #define DEVICE_NAME FUJINET_DISK_DEVICE_NAME
 #define DEVICE_VERSION 0
@@ -29,17 +30,20 @@ static const UWORD supported_commands[] = {
     FUJINET_DISK_CMD_MOUNT_WRITABLE, 0
 };
 
-struct fujinet_disk_device_base {
-    struct Device device;
+struct fujinet_disk_unit_state {
     struct Unit unit;
-    BPTR segment_list;
     fujinet_disk_driver_t driver;
     fujinet_nio_disk_context_t nio_context;
-    struct SignalSemaphore io_lock;
+    UBYTE stopped;
+    struct IORequest *change_request;
+};
+
+struct fujinet_disk_device_base {
+    struct Device device;
+    BPTR segment_list;
+    struct fujinet_disk_unit_state units[FUJINET_DISK_UNIT_COUNT];
     struct List io_queue;
     UBYTE io_processing;
-    UBYTE io_stopped;
-    struct IORequest *change_request;
     struct fujinet_disk_trace trace;
 };
 
@@ -64,15 +68,25 @@ static BYTE result_to_io_error(uint8_t result)
     }
 }
 
-static void signal_media_change(struct fujinet_disk_device_base *base)
+static uint8_t request_unit_index(struct fujinet_disk_device_base *base,
+                                  const struct IORequest *request)
 {
-    struct IORequest *change = base->change_request;
+    uint8_t i;
+    for (i = 0; i < FUJINET_DISK_UNIT_COUNT; ++i) {
+        if (request->io_Unit == &base->units[i].unit) return i;
+    }
+    return FUJINET_DISK_UNIT_COUNT;
+}
+
+static void signal_media_change(struct fujinet_disk_unit_state *unit)
+{
+    struct IORequest *change = unit->change_request;
     if (change == NULL) return;
     if (change->io_Command == TD_ADDCHANGEINT) {
         struct IOStdReq *io = (struct IOStdReq *)change;
         if (io->io_Data != NULL) Cause((struct Interrupt *)io->io_Data);
     } else {
-        base->change_request = NULL;
+        unit->change_request = NULL;
         change->io_Error = 0;
         ReplyMsg(&change->io_Message);
     }
@@ -83,16 +97,19 @@ static struct fujinet_disk_device_base *device_init(
     register BPTR segment_list __asm("a0"),
     register struct ExecBase *sys_base __asm("a6"))
 {
+    uint8_t i;
     SysBase = sys_base;
     base->segment_list = segment_list;
-    InitSemaphore(&base->io_lock);
     base->io_queue.lh_Head = (struct Node *)&base->io_queue.lh_Tail;
     base->io_queue.lh_Tail = NULL;
     base->io_queue.lh_TailPred =
         (struct Node *)&base->io_queue.lh_Head;
-    fujinet_nio_disk_context_init(&base->nio_context);
-    fujinet_disk_driver_init(&base->driver, &fujinet_nio_disk_client,
-                             &base->nio_context);
+    for (i = 0; i < FUJINET_DISK_UNIT_COUNT; ++i) {
+        fujinet_nio_disk_context_init(&base->units[i].nio_context);
+        fujinet_disk_driver_init(&base->units[i].driver,
+                                 &fujinet_nio_disk_client,
+                                 &base->units[i].nio_context, i);
+    }
     return base;
 }
 
@@ -112,7 +129,7 @@ static struct Device *device_open(
 
     request->io_Error = 0;
     request->io_Device = &base->device;
-    request->io_Unit = &base->unit;
+    request->io_Unit = &base->units[unit_number].unit;
     ++base->device.dd_Library.lib_OpenCnt;
     base->device.dd_Library.lib_Flags &= (UBYTE)~LIBF_DELEXP;
     return &base->device;
@@ -144,23 +161,63 @@ static ULONG device_reserved(void)
     return 0;
 }
 
+static void abort_queued_unit(struct fujinet_disk_device_base *base,
+                              uint8_t unit_index)
+{
+    struct Node *node = base->io_queue.lh_Head;
+    while (node->ln_Succ != NULL) {
+        struct Node *next = node->ln_Succ;
+        struct IORequest *queued = (struct IORequest *)node;
+        if (request_unit_index(base, queued) == unit_index) {
+            Remove(node);
+            queued->io_Error = IOERR_ABORTED;
+            ReplyMsg(&queued->io_Message);
+        }
+        node = next;
+    }
+}
+
+static struct IORequest *next_runnable_request(
+    struct fujinet_disk_device_base *base)
+{
+    struct Node *node;
+    for (node = base->io_queue.lh_Head; node->ln_Succ != NULL;
+         node = node->ln_Succ) {
+        struct IORequest *queued = (struct IORequest *)node;
+        uint8_t index = request_unit_index(base, queued);
+        if (index < FUJINET_DISK_UNIT_COUNT &&
+            (!base->units[index].stopped ||
+             queued->io_Command == CMD_START ||
+             queued->io_Command == CMD_FLUSH)) {
+            Remove(node);
+            return queued;
+        }
+    }
+    return NULL;
+}
+
 static void device_begin_io(
     register struct IORequest *request __asm("a1"),
     register struct fujinet_disk_device_base *base __asm("a6"))
 {
     struct IOStdReq *io = (struct IOStdReq *)request;
+    struct fujinet_disk_unit_state *unit;
+    uint8_t unit_index;
     uint8_t result;
     UWORD trace_index = FUJINET_DISK_TRACE_CAPACITY;
 
     Disable();
+    unit_index = request_unit_index(base, request);
+    if (unit_index >= FUJINET_DISK_UNIT_COUNT) {
+        Enable();
+        request->io_Error = IOERR_OPENFAIL;
+        if ((request->io_Flags & IOF_QUICK) == 0)
+            ReplyMsg(&request->io_Message);
+        return;
+    }
     if (base->io_processing) {
         if (request->io_Command == CMD_FLUSH) {
-            while (!IsListEmpty(&base->io_queue)) {
-                struct IORequest *queued =
-                    (struct IORequest *)RemHead(&base->io_queue);
-                queued->io_Error = IOERR_ABORTED;
-                ReplyMsg(&queued->io_Message);
-            }
+            abort_queued_unit(base, unit_index);
             request->io_Error = 0;
             ((struct IOStdReq *)request)->io_Actual = 0;
             Enable();
@@ -177,6 +234,8 @@ static void device_begin_io(
     Enable();
 
 process_request:
+    unit_index = request_unit_index(base, request);
+    unit = &base->units[unit_index];
     request->io_Error = 0;
     io->io_Actual = 0;
 
@@ -192,17 +251,17 @@ process_request:
     case FUJINET_DISK_CMD_MOUNT:
     case FUJINET_DISK_CMD_MOUNT_WRITABLE:
         {
-        uint32_t old_count = base->driver.change_count;
+        uint32_t old_count = unit->driver.change_count;
         if (request->io_Command == FUJINET_DISK_CMD_MOUNT_WRITABLE)
-            result = fujinet_disk_mount_mode(&base->driver,
-                                             FUJINET_DISK_UNIT_ZERO,
+            result = fujinet_disk_mount_mode(&unit->driver,
+                                             unit_index,
                                              (const char *)io->io_Data, 1);
         else
-            result = fujinet_disk_mount(&base->driver,
-                                        FUJINET_DISK_UNIT_ZERO,
+            result = fujinet_disk_mount(&unit->driver,
+                                        unit_index,
                                         (const char *)io->io_Data);
         request->io_Error = result_to_io_error(result);
-        if (base->driver.change_count != old_count) signal_media_change(base);
+        if (unit->driver.change_count != old_count) signal_media_change(unit);
         }
         break;
     case FUJINET_DISK_CMD_TRACE:
@@ -215,7 +274,7 @@ process_request:
         break;
     case CMD_READ:
     case ETD_READ:
-        if (!base->driver.mounted) {
+        if (!unit->driver.mounted) {
             request->io_Error = TDERR_DiskChanged;
         } else if (io->io_Data == NULL || io->io_Offset >= FUJINET_ADF_BYTE_SIZE ||
                    io->io_Length > FUJINET_ADF_BYTE_SIZE - io->io_Offset) {
@@ -225,13 +284,13 @@ process_request:
                    (io->io_Length % FUJINET_DISK_BLOCK_SIZE) != 0) {
             request->io_Error = IOERR_BADLENGTH;
         } else if (request->io_Command == ETD_READ &&
-                   ((struct IOExtTD *)request)->iotd_Count < base->driver.change_count) {
+                   ((struct IOExtTD *)request)->iotd_Count < unit->driver.change_count) {
             request->io_Error = TDERR_DiskChanged;
         } else if (request->io_Command == ETD_READ &&
                    ((struct IOExtTD *)request)->iotd_SecLabel != NULL) {
             request->io_Error = IOERR_NOCMD;
         } else {
-            result = fujinet_disk_read(&base->driver, FUJINET_DISK_UNIT_ZERO,
+            result = fujinet_disk_read(&unit->driver, unit_index,
                                        io->io_Offset, (uint8_t *)io->io_Data,
                                        io->io_Length, &io->io_Actual);
             request->io_Error = result_to_io_error(result);
@@ -239,9 +298,9 @@ process_request:
         break;
     case CMD_WRITE:
     case ETD_WRITE:
-        if (!base->driver.mounted) {
+        if (!unit->driver.mounted) {
             request->io_Error = TDERR_DiskChanged;
-        } else if (!base->driver.writable) {
+        } else if (!unit->driver.writable) {
             request->io_Error = TDERR_WriteProt;
         } else if (io->io_Data == NULL || io->io_Offset >= FUJINET_ADF_BYTE_SIZE ||
                    io->io_Length > FUJINET_ADF_BYTE_SIZE - io->io_Offset) {
@@ -252,14 +311,14 @@ process_request:
             request->io_Error = IOERR_BADLENGTH;
         } else if (request->io_Command == ETD_WRITE &&
                    (((struct IOExtTD *)request)->iotd_Count <
-                    base->driver.change_count)) {
+                    unit->driver.change_count)) {
             request->io_Error = TDERR_DiskChanged;
         } else if (request->io_Command == ETD_WRITE &&
                    ((struct IOExtTD *)request)->iotd_SecLabel != NULL) {
             request->io_Error = IOERR_NOCMD;
         } else {
-            result = fujinet_disk_write(&base->driver,
-                                        FUJINET_DISK_UNIT_ZERO,
+            result = fujinet_disk_write(&unit->driver,
+                                        unit_index,
                                         io->io_Offset,
                                         (const uint8_t *)io->io_Data,
                                         io->io_Length, &io->io_Actual);
@@ -270,50 +329,45 @@ process_request:
     case CMD_UPDATE:
     case ETD_UPDATE:
         if (request->io_Command == ETD_UPDATE &&
-            ((struct IOExtTD *)request)->iotd_Count < base->driver.change_count)
+            ((struct IOExtTD *)request)->iotd_Count < unit->driver.change_count)
             request->io_Error = TDERR_DiskChanged;
         else {
-            result = fujinet_disk_flush(&base->driver, FUJINET_DISK_UNIT_ZERO);
+            result = fujinet_disk_flush(&unit->driver, unit_index);
             request->io_Error = result_to_io_error(result);
         }
         break;
     case CMD_CLEAR:
     case ETD_CLEAR:
         if (request->io_Command == ETD_CLEAR &&
-            ((struct IOExtTD *)request)->iotd_Count < base->driver.change_count)
+            ((struct IOExtTD *)request)->iotd_Count < unit->driver.change_count)
             request->io_Error = TDERR_DiskChanged;
         break;
     case CMD_START:
-        base->io_stopped = 0;
+        unit->stopped = 0;
         break;
     case CMD_STOP:
-        base->io_stopped = 1;
+        unit->stopped = 1;
         break;
     case CMD_FLUSH:
-        while (!IsListEmpty(&base->io_queue)) {
-            struct IORequest *queued =
-                (struct IORequest *)RemHead(&base->io_queue);
-            queued->io_Error = IOERR_ABORTED;
-            ReplyMsg(&queued->io_Message);
-        }
+        abort_queued_unit(base, unit_index);
     case TD_MOTOR:
     case TD_SEEK:
         break;
     case TD_CHANGENUM:
-        io->io_Actual = base->driver.change_count;
+        io->io_Actual = unit->driver.change_count;
         break;
     case TD_CHANGESTATE:
-        io->io_Actual = base->driver.mounted ? 0 : 1;
+        io->io_Actual = unit->driver.mounted ? 0 : 1;
         break;
     case TD_PROTSTATUS:
-        io->io_Actual = (!base->driver.mounted || !base->driver.writable) ? 1 : 0;
+        io->io_Actual = (!unit->driver.mounted || !unit->driver.writable) ? 1 : 0;
         break;
     case TD_EJECT:
         {
-        uint32_t old_count = base->driver.change_count;
-        result = fujinet_disk_eject(&base->driver, FUJINET_DISK_UNIT_ZERO);
+        uint32_t old_count = unit->driver.change_count;
+        result = fujinet_disk_eject(&unit->driver, unit_index);
         request->io_Error = result_to_io_error(result);
-        if (base->driver.change_count != old_count) signal_media_change(base);
+        if (unit->driver.change_count != old_count) signal_media_change(unit);
         }
         break;
     case TD_GETDRIVETYPE:
@@ -342,20 +396,20 @@ process_request:
         break;
     case TD_ADDCHANGEINT:
     case TD_REMOVE:
-        if (base->change_request != NULL) {
+        if (unit->change_request != NULL) {
             request->io_Error = IOERR_UNITBUSY;
             break;
         }
-        base->change_request = request;
+        unit->change_request = request;
         base->trace.actuals[trace_index] = io->io_Actual;
         base->trace.errors[trace_index] = request->io_Error;
         request->io_Flags &= (UBYTE)~IOF_QUICK;
         goto next_request;
     case TD_REMCHANGEINT:
-        if (base->change_request != NULL) {
-            base->change_request->io_Error = IOERR_ABORTED;
-            ReplyMsg(&base->change_request->io_Message);
-            base->change_request = NULL;
+        if (unit->change_request != NULL) {
+            unit->change_request->io_Error = IOERR_ABORTED;
+            ReplyMsg(&unit->change_request->io_Message);
+            unit->change_request = NULL;
         }
         break;
     case NSCMD_DEVICEQUERY:
@@ -389,12 +443,24 @@ process_request:
 
 next_request:
     Disable();
-    if (base->io_stopped || IsListEmpty(&base->io_queue)) {
-        base->io_processing = 0;
+    request = next_runnable_request(base);
+    if (request == NULL) {
+        uint8_t i;
         Enable();
-        return;
+        /* The serial backend cannot be opened independently by a CLI while
+         * the resident copy retains its handle. Release it between FIFO
+         * batches; the next driver request reconnects through ensure_client. */
+        fn_transport_close();
+        for (i = 0; i < FUJINET_DISK_UNIT_COUNT; ++i)
+            base->units[i].driver.client_initialized = 0;
+        Disable();
+        request = next_runnable_request(base);
+        if (request == NULL) {
+            base->io_processing = 0;
+            Enable();
+            return;
+        }
     }
-    request = (struct IORequest *)RemHead(&base->io_queue);
     io = (struct IOStdReq *)request;
     trace_index = FUJINET_DISK_TRACE_CAPACITY;
     Enable();
@@ -406,9 +472,11 @@ static LONG device_abort_io(
     register struct fujinet_disk_device_base *base __asm("a6"))
 {
     struct Node *node;
+    uint8_t unit_index = request_unit_index(base, request);
     Disable();
-    if (request == base->change_request) {
-        base->change_request = NULL;
+    if (unit_index < FUJINET_DISK_UNIT_COUNT &&
+        request == base->units[unit_index].change_request) {
+        base->units[unit_index].change_request = NULL;
         request->io_Error = IOERR_ABORTED;
         ReplyMsg(&request->io_Message);
         Enable();

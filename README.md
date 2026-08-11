@@ -121,7 +121,7 @@ Install the generated files and supplied MountList entry on the Amiga:
 ```text
 build/amiga/fujinet-disk.device  -> DEVS:fujinet-disk.device
 build/amiga/fujinet-mount        -> C:fujinet-mount
-amiga/config/DN0                 -> DEVS:DN0
+amiga/config/DN0 .. DN7          -> DEVS:DN0 .. DEVS:DN7
 ```
 
 The initial startup sequence is:
@@ -136,12 +136,24 @@ C:Mount DN0: FROM DEVS:DN0
 server's configured `host:` root. A successful mount reports slot 1,
 read-only mode, 512-byte sectors, and 1760 sectors. `DN0:` can then be used
 through normal AmigaDOS commands such as `Dir DN0:` and `Type DN0:file`.
-Read-only remains the default. Use `fujinet-mount --writable URI` to request
-writable media and `fujinet-mount --eject` to issue `TD_EJECT`.
+The normal FujiNet form resolves a persistent catalogue slot into an active
+drive and records the shared mapping:
+
+```text
+fujinet-mount 12 0 RO
+fujinet-mount 37 1 RW
+Mount DN0: FROM DEVS:DN0
+Mount DN1: FROM DEVS:DN1
+```
+
+Amiga drive N maps to DiskDevice slot N+1. `fujinet-mount --eject N` ejects
+that drive and clears its mapping. Direct URI mounting remains available as
+`fujinet-mount --uri DRIVE URI [RW|RO]`; the legacy one-URI form targets drive
+0 read-only.
 
 Current Amiga limitations:
 
-- one native unit (`unit 0`) mapped to DiskDevice slot 1;
+- eight native units (`unit 0..7`) mapped to DiskDevice slots 1..8;
 - standard 880 KiB raw ADF geometry only;
 - writable media requires DiskDevice `Flush (0x0E)` support;
 - RS-232/`serial.device` correctness backend;

@@ -43,5 +43,6 @@ once. After adopting NIO state the device calls `ClearChanged`; an
 acknowledgement failure remains pending for retry and never rolls back the
 local transition.
 
-Out-of-band changes to NIO slots are unsupported. Unit 0 maps to DiskDevice
-slot 1 and accepts only standard 512-byte, 1760-block ADF media.
+Out-of-band changes to NIO slots are unsupported. Units 0–7 map to DiskDevice
+slots 1–8; each accepts only standard 512-byte, 1760-block ADF media and owns
+its protection, change count, notification, and queued-request state.

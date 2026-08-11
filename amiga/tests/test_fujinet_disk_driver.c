@@ -49,7 +49,8 @@ static uint8_t fake_mount(void *context, uint8_t slot, const char *uri,
     fake->sector_size_hint = sector_size_hint;
     memset(info, 0, sizeof(*info));
     info->slot = slot;
-    info->flags = FN_DISK_FLAG_MOUNTED | FN_DISK_FLAG_READONLY;
+    info->flags = FN_DISK_FLAG_MOUNTED |
+                  (readonly ? FN_DISK_FLAG_READONLY : 0);
     info->type = FN_DISK_TYPE_RAW;
     info->sector_size = FUJINET_DISK_BLOCK_SIZE;
     info->sector_count = FUJINET_ADF_BLOCK_COUNT;
@@ -107,15 +108,20 @@ static const fujinet_disk_client_t fake_ops = {
     fake_slot
 };
 
-static void test_only_amiga_unit_zero_maps_to_diskdevice_slot_one(void)
+static void test_amiga_units_map_to_one_based_diskdevice_slots(void)
 {
     uint8_t slot = 0;
 
     CHECK("unit zero is accepted",
           fujinet_disk_unit_to_slot(0, &slot) == FN_OK);
     CHECK("unit zero maps to slot one", slot == 1);
-    CHECK("additional units are rejected",
-          fujinet_disk_unit_to_slot(1, &slot) == FN_ERR_NOT_FOUND);
+    CHECK("unit one is accepted",
+          fujinet_disk_unit_to_slot(1, &slot) == FN_OK);
+    CHECK("unit one maps to slot two", slot == 2);
+    CHECK("unit seven maps to slot eight",
+          fujinet_disk_unit_to_slot(7, &slot) == FN_OK && slot == 8);
+    CHECK("unit eight is rejected",
+          fujinet_disk_unit_to_slot(8, &slot) == FN_ERR_NOT_FOUND);
 }
 
 static void test_mount_is_explicitly_read_only_auto_detected_and_512_bytes(void)
@@ -123,7 +129,7 @@ static void test_mount_is_explicitly_read_only_auto_detected_and_512_bytes(void)
     fake_client_t fake = {0};
     fujinet_disk_driver_t driver;
 
-    fujinet_disk_driver_init(&driver, &fake_ops, &fake);
+    fujinet_disk_driver_init(&driver, &fake_ops, &fake, 0);
     CHECK("mount succeeds",
           fujinet_disk_mount(&driver, 0, "tnfs://host/workbench.adf") == FN_OK);
     CHECK("Mount uses DiskDevice slot one", fake.slot == 1);
@@ -142,7 +148,7 @@ static void test_standard_adf_info_requires_read_only_raw_512_by_1760_geometry(v
     fake_client_t fake = {0};
     fujinet_disk_driver_t driver;
 
-    fujinet_disk_driver_init(&driver, &fake_ops, &fake);
+    fujinet_disk_driver_init(&driver, &fake_ops, &fake, 0);
     CHECK("valid standard ADF mounts",
           fujinet_disk_mount(&driver, 0, "disk.adf") == FN_OK);
     fake.media.sector_count = 1759;
@@ -165,7 +171,7 @@ static void test_info_and_media_read_failures_are_reported(void)
     uint8_t data[512];
     uint32_t actual = 99;
 
-    fujinet_disk_driver_init(&driver, &fake_ops, &fake);
+    fujinet_disk_driver_init(&driver, &fake_ops, &fake, 0);
     fake.info_result = FN_ERR_IO;
     CHECK("Info transport failure fails Mount",
           fujinet_disk_mount(&driver, 0, "disk.adf") == FN_ERR_IO);
@@ -194,7 +200,7 @@ static void test_repeated_mounts_share_one_initialized_session(void)
     fake_client_t fake = {0};
     fujinet_disk_driver_t driver;
 
-    fujinet_disk_driver_init(&driver, &fake_ops, &fake);
+    fujinet_disk_driver_init(&driver, &fake_ops, &fake, 0);
     CHECK("first mount succeeds",
           fujinet_disk_mount(&driver, 0, "one.adf") == FN_OK);
     CHECK("second mount succeeds",
@@ -210,7 +216,7 @@ static void test_reads_are_512_byte_aligned_sector_requests_on_slot_one(void)
     uint8_t data[1024];
     uint32_t actual = 0;
 
-    fujinet_disk_driver_init(&driver, &fake_ops, &fake);
+    fujinet_disk_driver_init(&driver, &fake_ops, &fake, 0);
     CHECK("mount before read succeeds",
           fujinet_disk_mount(&driver, 0, "disk.adf") == FN_OK);
     CHECK("two-block read succeeds",
@@ -223,14 +229,37 @@ static void test_reads_are_512_byte_aligned_sector_requests_on_slot_one(void)
           fujinet_disk_read(&driver, 0, 1, data, 512, &actual) == FN_ERR_INVALID);
 }
 
+static void test_units_keep_independent_media_and_change_state(void)
+{
+    fake_client_t first = {0};
+    fake_client_t second = {0};
+    fujinet_disk_driver_t unit0;
+    fujinet_disk_driver_t unit1;
+
+    fujinet_disk_driver_init(&unit0, &fake_ops, &first, 0);
+    fujinet_disk_driver_init(&unit1, &fake_ops, &second, 1);
+    CHECK("unit zero mounts slot one",
+          fujinet_disk_mount(&unit0, 0, "zero.adf") == FN_OK &&
+              first.slot == 1);
+    CHECK("unit one mounts slot two writable",
+          fujinet_disk_mount_mode(&unit1, 1, "one.adf", 1) == FN_OK &&
+              second.slot == 2 && second.readonly == 0);
+    CHECK("each insertion has its own change count",
+          unit0.change_count == 1 && unit1.change_count == 1);
+    CHECK("ejecting unit one leaves unit zero mounted",
+          fujinet_disk_eject(&unit1, 1) == FN_OK && unit0.mounted &&
+              !unit1.mounted && unit1.change_count == 2);
+}
+
 int main(void)
 {
-    test_only_amiga_unit_zero_maps_to_diskdevice_slot_one();
+    test_amiga_units_map_to_one_based_diskdevice_slots();
     test_mount_is_explicitly_read_only_auto_detected_and_512_bytes();
     test_repeated_mounts_share_one_initialized_session();
     test_standard_adf_info_requires_read_only_raw_512_by_1760_geometry();
     test_info_and_media_read_failures_are_reported();
     test_reads_are_512_byte_aligned_sector_requests_on_slot_one();
+    test_units_keep_independent_media_and_change_state();
 
     if (failures != 0) {
         fprintf(stderr, "%u Amiga driver contract test(s) failed\n", failures);

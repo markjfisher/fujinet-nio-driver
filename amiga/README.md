@@ -1,12 +1,12 @@
 # Amiga FujiNet disk device
 
 This directory contains the Amiga `fujinet-disk.device` implementation. It
-provides one Amiga unit over the RS-232 client binding and
+provides eight Amiga units over the RS-232 client binding and
 has been integration-tested with a standard 880 KiB ADF.
 
 ## Stage 5 contract
 
-- Amiga unit 0 is the only accepted unit and maps to DiskDevice slot 1.
+- Amiga units 0–7 map to DiskDevice slots 1–8 and MountLists `DN0`–`DN7`.
 - Mount always sends `readonly=1`, `type=FN_DISK_TYPE_AUTO`, and a 512-byte
   sector-size hint. The configured URI is passed unchanged.
 - Reads must have 512-byte-aligned offsets and lengths. Each block becomes one
@@ -30,6 +30,11 @@ has been integration-tested with a standard 880 KiB ADF.
   waiting on a dead task.
 - Large packet and codec buffers therefore live in the resident device base,
   not caller-owned filesystem stacks or mutable library statics.
+
+The normal CLI form is `fujinet-mount CATALOG-SLOT DRIVE [RW|RO]`. It resolves
+the persistent Slot Catalog entry, mounts it into active drive `DRIVE`, and
+updates the shared `config-nio/mappings` record. Direct URI mounting is
+retained as `fujinet-mount --uri DRIVE URI [RW|RO]`.
 
 The native device exposes `FUJINET_DISK_CMD_MOUNT` as its private read-only
 Mount command and `FUJINET_DISK_CMD_MOUNT_WRITABLE` as the writable variant;

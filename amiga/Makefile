@@ -30,9 +30,9 @@ $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
-$(MOUNT_TOOL): tools/fujinet-mount.c include/fujinet_disk_device.h
+$(MOUNT_TOOL): tools/fujinet-mount.c include/fujinet_disk_device.h $(LIBRARY)
 	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 $< -lamiga -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 $< $(LIBRARY) -lamiga -o $@
 
 tests:
 	$(MAKE) -C tests test LIB_ROOT=$(abspath $(LIB_ROOT))
