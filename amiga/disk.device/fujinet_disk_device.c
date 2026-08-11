@@ -52,6 +52,9 @@ struct fujinet_disk_device_base {
     struct Unit exec_units[FUJINET_DISK_UNIT_COUNT];
     struct fujinet_disk_unit_state units[FUJINET_DISK_UNIT_COUNT];
     UBYTE service_buffer[SERVICE_BUFFER_SIZE];
+    /* BeginIO runs on the caller's task stack. Keep catalogue URI scratch in
+     * the resident base along with the other serialized request state. */
+    char catalog_uri[768];
     struct List io_queue;
     UBYTE io_processing;
     struct fujinet_disk_trace trace;
@@ -370,16 +373,17 @@ process_request:
         {
         struct fujinet_disk_catalog_mount *catalog =
             (struct fujinet_disk_catalog_mount *)io->io_Data;
-        char uri[768];
         uint32_t old_count = unit->driver.change_count;
         if (catalog == NULL || io->io_Length < sizeof(*catalog)) {
             request->io_Error = IOERR_BADLENGTH;
             break;
         }
-        result = resolve_catalog_slot(base, catalog->catalog_slot, uri,
-                                      sizeof(uri));
+        result = resolve_catalog_slot(base, catalog->catalog_slot,
+                                      base->catalog_uri,
+                                      sizeof(base->catalog_uri));
         if (result == FN_OK)
-            result = fujinet_disk_mount_mode(&unit->driver, unit_index, uri,
+            result = fujinet_disk_mount_mode(&unit->driver, unit_index,
+                                             base->catalog_uri,
                                              catalog->writable != 0);
         if (result == FN_OK)
             result = save_mapping(base, unit_index, catalog->catalog_slot,
