@@ -19,6 +19,8 @@
 #define DEVICE_NAME FUJINET_DISK_DEVICE_NAME
 #define DEVICE_VERSION 0
 #define DEVICE_REVISION 1
+#define SERVICE_BUFFER_SIZE 1024
+#define MAPPINGS_SIZE 17
 
 static const UWORD supported_commands[] = {
     CMD_RESET, CMD_READ, CMD_WRITE, CMD_UPDATE, CMD_CLEAR, CMD_START, CMD_STOP,
@@ -28,11 +30,10 @@ static const UWORD supported_commands[] = {
     TD_EJECT, TD_REMOVE, TD_ADDCHANGEINT, TD_REMCHANGEINT,
     TD_GETDRIVETYPE, TD_GETNUMTRACKS, TD_GETGEOMETRY,
     NSCMD_DEVICEQUERY, FUJINET_DISK_CMD_MOUNT,
-    FUJINET_DISK_CMD_MOUNT_WRITABLE, 0
+    FUJINET_DISK_CMD_MOUNT_WRITABLE, FUJINET_DISK_CMD_MOUNT_CATALOG, 0
 };
 
 struct fujinet_disk_unit_state {
-    struct Unit unit;
     fujinet_disk_driver_t driver;
     fujinet_nio_disk_context_t nio_context;
     UBYTE stopped;
@@ -40,10 +41,17 @@ struct fujinet_disk_unit_state {
     struct IORequest *remove_request;
 };
 
+struct fujinet_change_registration {
+    struct Node node;
+    struct IORequest *request;
+};
+
 struct fujinet_disk_device_base {
     struct Device device;
     BPTR segment_list;
+    struct Unit exec_units[FUJINET_DISK_UNIT_COUNT];
     struct fujinet_disk_unit_state units[FUJINET_DISK_UNIT_COUNT];
+    UBYTE service_buffer[SERVICE_BUFFER_SIZE];
     struct List io_queue;
     UBYTE io_processing;
     struct fujinet_disk_trace trace;
@@ -70,12 +78,59 @@ static BYTE result_to_io_error(uint8_t result)
     }
 }
 
+static uint8_t resolve_catalog_slot(struct fujinet_disk_device_base *base,
+                                    uint8_t slot, char *uri,
+                                    uint16_t capacity)
+{
+    fn_slot_catalog_io_t io = {base->service_buffer,
+                               sizeof(base->service_buffer)};
+    fn_slot_catalog_entry_t entry;
+    uint8_t result = fn_init();
+    if (result == FN_OK) result = fn_slot_catalog_get(&io, slot, &entry);
+    if (result != FN_OK || !(entry.flags & FN_SLOT_CATALOG_ENTRY_VALID) ||
+        entry.uri_len == 0 || entry.uri_len >= capacity) return FN_ERR_NOT_FOUND;
+    memcpy(uri, entry.uri, entry.uri_len);
+    uri[entry.uri_len] = '\0';
+    return FN_OK;
+}
+
+static uint8_t save_mapping(struct fujinet_disk_device_base *base,
+                            uint8_t drive, uint8_t slot, uint8_t writable,
+                            uint8_t valid)
+{
+    fn_appstore_io_t io = {base->service_buffer, sizeof(base->service_buffer)};
+    fn_appstore_read_t read_result;
+    fn_appstore_write_t write_result;
+    UBYTE mappings[MAPPINGS_SIZE];
+    uint8_t result;
+    memset(mappings, 0, sizeof(mappings));
+    mappings[0] = 1;
+    result = fn_init();
+    if (result != FN_OK) return result;
+    result = fn_appstore_read(&io, "config-nio", "mappings", 0,
+                              mappings, sizeof(mappings), &read_result);
+    if (result != FN_OK) return result;
+    if (!(read_result.flags & FN_APPSTORE_READ_EXISTS)) {
+        memset(mappings, 0, sizeof(mappings));
+        mappings[0] = 1;
+    } else if (read_result.bytes_read != sizeof(mappings) || mappings[0] != 1) {
+        return FN_ERR_IO;
+    }
+    mappings[1 + drive * 2] = valid ? (UBYTE)(1 | (writable ? 0 : 2)) : 0;
+    mappings[2 + drive * 2] = valid ? slot : 0;
+    result = fn_appstore_write(&io, "config-nio", "mappings", 0,
+                               mappings, sizeof(mappings), &write_result);
+    if (result != FN_OK || write_result.bytes_written != sizeof(mappings))
+        return FN_ERR_IO;
+    return FN_OK;
+}
+
 static uint8_t request_unit_index(struct fujinet_disk_device_base *base,
                                   const struct IORequest *request)
 {
     uint8_t i;
     for (i = 0; i < FUJINET_DISK_UNIT_COUNT; ++i) {
-        if (request->io_Unit == &base->units[i].unit) return i;
+        if (request->io_Unit == &base->exec_units[i]) return i;
     }
     return FUJINET_DISK_UNIT_COUNT;
 }
@@ -83,10 +138,13 @@ static uint8_t request_unit_index(struct fujinet_disk_device_base *base,
 static void signal_media_change(struct fujinet_disk_unit_state *unit)
 {
     struct Node *node;
-    for (node = unit->change_requests.lh_Head; node->ln_Succ != NULL;
-         node = node->ln_Succ) {
-        struct IOStdReq *io = (struct IOStdReq *)node;
+    for (node = unit->change_requests.lh_Head; node->ln_Succ != NULL;) {
+        struct Node *next = node->ln_Succ;
+        struct fujinet_change_registration *registration =
+            (struct fujinet_change_registration *)node;
+        struct IOStdReq *io = (struct IOStdReq *)registration->request;
         if (io->io_Data != NULL) Cause((struct Interrupt *)io->io_Data);
+        node = next;
     }
     if (unit->remove_request != NULL) {
         struct IORequest *remove = unit->remove_request;
@@ -138,7 +196,7 @@ static struct Device *device_open(
 
     request->io_Error = 0;
     request->io_Device = &base->device;
-    request->io_Unit = &base->units[unit_number].unit;
+    request->io_Unit = &base->exec_units[unit_number];
     ++base->device.dd_Library.lib_OpenCnt;
     base->device.dd_Library.lib_Flags &= (UBYTE)~LIBF_DELEXP;
     return &base->device;
@@ -186,6 +244,23 @@ static void abort_queued_unit(struct fujinet_disk_device_base *base,
     }
 }
 
+static uint8_t remove_change_request(struct fujinet_disk_unit_state *unit,
+                                     struct IORequest *request)
+{
+    struct Node *node;
+    for (node = unit->change_requests.lh_Head; node->ln_Succ != NULL;
+         node = node->ln_Succ) {
+        struct fujinet_change_registration *registration =
+            (struct fujinet_change_registration *)node;
+        if (registration->request == request) {
+            Remove(node);
+            FreeMem(registration, sizeof(*registration));
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static struct IORequest *next_runnable_request(
     struct fujinet_disk_device_base *base)
 {
@@ -220,6 +295,20 @@ static void device_begin_io(
     if (unit_index >= FUJINET_DISK_UNIT_COUNT) {
         Enable();
         request->io_Error = IOERR_OPENFAIL;
+        if ((request->io_Flags & IOF_QUICK) == 0)
+            ReplyMsg(&request->io_Message);
+        return;
+    }
+    /* TD_REMCHANGEINT reuses the same IORequest retained by
+     * TD_ADDCHANGEINT. It is therefore already linked into change_requests
+     * and must never be linked into the ordinary FIFO as well. Removal is a
+     * local bookkeeping operation and is safe to complete immediately even
+     * while a media request is active. */
+    if (request->io_Command == TD_REMCHANGEINT) {
+        remove_change_request(&base->units[unit_index], request);
+        request->io_Error = 0;
+        ((struct IOStdReq *)request)->io_Actual = 0;
+        Enable();
         if ((request->io_Flags & IOF_QUICK) == 0)
             ReplyMsg(&request->io_Message);
         return;
@@ -273,6 +362,28 @@ process_request:
             result = fujinet_disk_mount(&unit->driver,
                                         unit_index,
                                         (const char *)io->io_Data);
+        request->io_Error = result_to_io_error(result);
+        if (unit->driver.change_count != old_count) signal_media_change(unit);
+        }
+        break;
+    case FUJINET_DISK_CMD_MOUNT_CATALOG:
+        {
+        struct fujinet_disk_catalog_mount *catalog =
+            (struct fujinet_disk_catalog_mount *)io->io_Data;
+        char uri[768];
+        uint32_t old_count = unit->driver.change_count;
+        if (catalog == NULL || io->io_Length < sizeof(*catalog)) {
+            request->io_Error = IOERR_BADLENGTH;
+            break;
+        }
+        result = resolve_catalog_slot(base, catalog->catalog_slot, uri,
+                                      sizeof(uri));
+        if (result == FN_OK)
+            result = fujinet_disk_mount_mode(&unit->driver, unit_index, uri,
+                                             catalog->writable != 0);
+        if (result == FN_OK)
+            result = save_mapping(base, unit_index, catalog->catalog_slot,
+                                  catalog->writable != 0, 1);
         request->io_Error = result_to_io_error(result);
         if (unit->driver.change_count != old_count) signal_media_change(unit);
         }
@@ -379,6 +490,7 @@ process_request:
         {
         uint32_t old_count = unit->driver.change_count;
         result = fujinet_disk_eject(&unit->driver, unit_index);
+        if (result == FN_OK) result = save_mapping(base, unit_index, 0, 0, 0);
         request->io_Error = result_to_io_error(result);
         if (unit->driver.change_count != old_count) signal_media_change(unit);
         }
@@ -408,10 +520,20 @@ process_request:
         }
         break;
     case TD_ADDCHANGEINT:
-        request->io_Message.mn_Node.ln_Type = NT_MESSAGE;
-        AddTail(&unit->change_requests, &request->io_Message.mn_Node);
-        base->trace.actuals[trace_index] = io->io_Actual;
-        base->trace.errors[trace_index] = request->io_Error;
+        {
+        struct fujinet_change_registration *registration =
+            AllocMem(sizeof(*registration), MEMF_PUBLIC | MEMF_CLEAR);
+        if (registration == NULL) {
+            request->io_Error = TDERR_NotSpecified;
+            break;
+        }
+        registration->request = request;
+        AddTail(&unit->change_requests, &registration->node);
+        }
+        if (trace_index < FUJINET_DISK_TRACE_CAPACITY) {
+            base->trace.actuals[trace_index] = io->io_Actual;
+            base->trace.errors[trace_index] = request->io_Error;
+        }
         request->io_Flags &= (UBYTE)~IOF_QUICK;
         goto next_request;
     case TD_REMOVE:
@@ -420,21 +542,14 @@ process_request:
             break;
         }
         unit->remove_request = request;
-        base->trace.actuals[trace_index] = io->io_Actual;
-        base->trace.errors[trace_index] = request->io_Error;
+        if (trace_index < FUJINET_DISK_TRACE_CAPACITY) {
+            base->trace.actuals[trace_index] = io->io_Actual;
+            base->trace.errors[trace_index] = request->io_Error;
+        }
         request->io_Flags &= (UBYTE)~IOF_QUICK;
         goto next_request;
     case TD_REMCHANGEINT:
-        {
-        struct Node *node;
-        for (node = unit->change_requests.lh_Head; node->ln_Succ != NULL;
-             node = node->ln_Succ) {
-            if (node == &request->io_Message.mn_Node) {
-                Remove(node);
-                break;
-            }
-        }
-        }
+        remove_change_request(unit, request);
         break;
     case NSCMD_DEVICEQUERY:
         if (io->io_Data == NULL ||
@@ -509,8 +624,11 @@ static LONG device_abort_io(
     if (unit_index < FUJINET_DISK_UNIT_COUNT) {
         for (node = base->units[unit_index].change_requests.lh_Head;
              node->ln_Succ != NULL; node = node->ln_Succ) {
-            if (node == &request->io_Message.mn_Node) {
+            struct fujinet_change_registration *registration =
+                (struct fujinet_change_registration *)node;
+            if (registration->request == request) {
                 Remove(node);
+                FreeMem(registration, sizeof(*registration));
                 request->io_Error = IOERR_ABORTED;
                 ReplyMsg(&request->io_Message);
                 Enable();

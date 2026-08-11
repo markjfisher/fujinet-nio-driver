@@ -5,11 +5,12 @@ LIB_ROOT ?= ../../../fujinet-nio-lib
 BUILD_DIR := build
 TEST := $(BUILD_DIR)/test_fujinet_disk_driver
 LINK_TEST := $(BUILD_DIR)/test_fujinet_nio_client_link
+QUEUE_TEST := $(BUILD_DIR)/test_fujinet_io_queue
 LIBRARY := $(LIB_ROOT)/build/fujinet-nio-linux.a
 
 .PHONY: all test library clean
 
-all: $(TEST) $(LINK_TEST)
+all: $(TEST) $(LINK_TEST) $(QUEUE_TEST)
 
 $(TEST): test_fujinet_disk_driver.c $(DRIVER_ROOT)/common/fujinet_disk_driver.c
 	@mkdir -p $(BUILD_DIR)
@@ -29,9 +30,14 @@ $(LINK_TEST): library test_fujinet_nio_client_link.c \
 		$(DRIVER_ROOT)/channels/rs232/fujinet_nio_client.c \
 		$(LIBRARY) -o $@
 
-test: $(TEST) $(LINK_TEST)
+$(QUEUE_TEST): test_fujinet_io_queue.c $(DRIVER_ROOT)/common/fujinet_io_queue.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/include $^ -o $@
+
+test: $(TEST) $(LINK_TEST) $(QUEUE_TEST)
 	./$(TEST)
 	./$(LINK_TEST)
+	./$(QUEUE_TEST)
 
 clean:
 	rm -rf $(BUILD_DIR)

@@ -62,8 +62,8 @@ the image, mounts a fresh DN2 handler, and verifies persisted content. An
 unused unit also exercises explicit eject without opening a DOS requester.
 
 Current limitations are deliberate Phase 1 boundaries: standard 880 KiB ADF
-only, unit-mediated hot swap only, RS-232 only, static DD MountLists, and a
-DOS-handler dismount/remount around replacement. The
+only, unit-mediated hot swap only, RS-232 only, static DD MountLists, and an
+explicit DOS-handler dismount/remount around replacement. The
 workspace Phase 2 media architecture owns inferred DD/HD/nonstandard geometry,
 RDB/HDF media, dynamic DOS nodes, seamless handler coordination, and
 consolidation onto standard tools.

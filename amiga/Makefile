@@ -7,6 +7,7 @@ LIBRARY := $(LIB_ROOT)/build/fujinet-nio-amiga-driver.a
 DEVICE := $(BUILD_DIR)/fujinet-disk.device
 MOUNT_TOOL := $(BUILD_DIR)/fujinet-mount
 SOURCES := common/fujinet_disk_driver.c \
+	common/fujinet_io_queue.c \
 	channels/rs232/fujinet_nio_client.c \
 	disk.device/fujinet_disk_device.c
 OBJECTS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SOURCES))
