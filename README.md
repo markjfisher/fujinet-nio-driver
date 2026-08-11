@@ -4,7 +4,7 @@ This repository contains native operating-system drivers for the FujiNet NIO
 protocol:
 
 - the MS-DOS `FUJINET.SYS` driver; and
-- the read-only Amiga `fujinet-disk.device` driver for a standard 880 KiB ADF.
+- the Amiga `fujinet-disk.device` driver for standard 880 KiB ADF media.
 
 The Amiga driver consumes the typed DiskDevice client and RS-232 session from
 the separate `fujinet-nio-lib` repository. It does not require the larger
@@ -136,14 +136,16 @@ C:Mount DN0: FROM DEVS:DN0
 server's configured `host:` root. A successful mount reports slot 1,
 read-only mode, 512-byte sectors, and 1760 sectors. `DN0:` can then be used
 through normal AmigaDOS commands such as `Dir DN0:` and `Type DN0:file`.
+Read-only remains the default. Use `fujinet-mount --writable URI` to request
+writable media and `fujinet-mount --eject` to issue `TD_EJECT`.
 
 Current Amiga limitations:
 
 - one native unit (`unit 0`) mapped to DiskDevice slot 1;
 - standard 880 KiB raw ADF geometry only;
-- read-only operation;
+- writable media requires DiskDevice `Flush (0x0E)` support;
 - RS-232/`serial.device` correctness backend;
-- explicit mount for each stable media session; no hot swap; and
+- driver-mediated mount/eject only (out-of-band slot changes are not seen); and
 - a silent peer can still block the first serial receive byte until the
   timer-backed native deadline work is complete.
 

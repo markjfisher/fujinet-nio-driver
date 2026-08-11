@@ -1,7 +1,7 @@
 # Amiga FujiNet disk device
 
 This directory contains the Amiga `fujinet-disk.device` implementation. It
-currently provides one read-only Amiga unit over the RS-232 client binding and
+provides one Amiga unit over the RS-232 client binding and
 has been integration-tested with a standard 880 KiB ADF.
 
 ## Stage 5 contract
@@ -31,11 +31,13 @@ has been integration-tested with a standard 880 KiB ADF.
 - Large packet and codec buffers therefore live in the resident device base,
   not caller-owned filesystem stacks or mutable library statics.
 
-The native device exposes `FUJINET_DISK_CMD_MOUNT` as its private Mount
-command: `io_Data` points to a NUL-terminated URI. The command is deliberately
-outside the trackdisk command range. `CMD_READ` accepts standard byte offsets
-and lengths subject to the 512-byte alignment contract; `CMD_WRITE` remains
-unsupported.
+The native device exposes `FUJINET_DISK_CMD_MOUNT` as its private read-only
+Mount command and `FUJINET_DISK_CMD_MOUNT_WRITABLE` as the writable variant;
+`io_Data` points to a NUL-terminated URI. Both are outside the trackdisk
+command range. Reads and writes accept standard byte offsets and lengths
+subject to the 512-byte alignment contract. See
+[`WRITE_MEDIA_POLICY.md`](WRITE_MEDIA_POLICY.md) for update, queue-flush, ETD,
+and media-change semantics.
 
 ## Standard ADF profile
 

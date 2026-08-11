@@ -17,10 +17,11 @@ int main(int argc, char **argv)
     struct DriveGeometry geometry;
     struct fujinet_disk_trace trace;
     LONG result;
+    int requested_writable = 0;
 
     if ((argc < 2 || argc > 4) || argv[1][0] == '\0') {
         fprintf(stderr,
-                "Usage: fujinet-mount URI | --trace | --read LBA [RESULT]\n");
+                "Usage: fujinet-mount URI | --writable URI | --eject | --trace | --read LBA [RESULT]\n");
         return 10;
     }
 
@@ -91,11 +92,22 @@ int main(int argc, char **argv)
         return result == 0 ? 0 : 20;
     }
 
-    request->iotd_Req.io_Command = FUJINET_DISK_CMD_MOUNT;
-    request->iotd_Req.io_Data = argv[1];
-    request->iotd_Req.io_Length = (ULONG)strlen(argv[1]) + 1;
+    if (strcmp(argv[1], "--eject") == 0) {
+        request->iotd_Req.io_Command = TD_EJECT;
+        request->iotd_Req.io_Data = NULL;
+        request->iotd_Req.io_Length = 0;
+    } else if (strcmp(argv[1], "--writable") == 0 && argc == 3) {
+        requested_writable = 1;
+        request->iotd_Req.io_Command = FUJINET_DISK_CMD_MOUNT_WRITABLE;
+        request->iotd_Req.io_Data = argv[2];
+        request->iotd_Req.io_Length = (ULONG)strlen(argv[2]) + 1;
+    } else {
+        request->iotd_Req.io_Command = FUJINET_DISK_CMD_MOUNT;
+        request->iotd_Req.io_Data = argv[1];
+        request->iotd_Req.io_Length = (ULONG)strlen(argv[1]) + 1;
+    }
     result = DoIO((struct IORequest *)request);
-    if (result == 0) {
+    if (result == 0 && request->iotd_Req.io_Command != TD_EJECT) {
         memset(&geometry, 0, sizeof(geometry));
         request->iotd_Req.io_Command = TD_GETGEOMETRY;
         request->iotd_Req.io_Data = &geometry;
@@ -104,8 +116,12 @@ int main(int argc, char **argv)
     }
 
     if (result == 0) {
-        printf("MOUNTED slot=1 readonly=1 sectorSize=%lu sectorCount=%lu\n",
-               geometry.dg_SectorSize, geometry.dg_TotalSectors);
+        if (request->iotd_Req.io_Command == TD_GETGEOMETRY)
+            printf("MOUNTED slot=1 readonly=%d sectorSize=%lu sectorCount=%lu\n",
+                   requested_writable ? 0 : 1, geometry.dg_SectorSize,
+                   geometry.dg_TotalSectors);
+        else
+            printf("EJECTED slot=1\n");
     } else {
         fprintf(stderr, "fujinet-mount: request failed (%ld)\n", result);
     }

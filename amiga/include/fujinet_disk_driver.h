@@ -23,6 +23,11 @@ typedef struct fujinet_disk_client {
     uint8_t (*read_sector)(void *context, uint8_t slot, uint32_t lba,
                            uint8_t *data, uint16_t capacity,
                            uint16_t *length);
+    uint8_t (*write_sector)(void *context, uint8_t slot, uint32_t lba,
+                            const uint8_t *data, uint16_t length);
+    uint8_t (*flush)(void *context, uint8_t slot);
+    uint8_t (*unmount)(void *context, uint8_t slot);
+    uint8_t (*clear_changed)(void *context, uint8_t slot);
 } fujinet_disk_client_t;
 
 typedef struct fujinet_disk_driver {
@@ -31,6 +36,9 @@ typedef struct fujinet_disk_driver {
     fn_disk_info_t media;
     uint8_t client_initialized;
     uint8_t mounted;
+    uint8_t writable;
+    uint8_t change_ack_pending;
+    uint32_t change_count;
 } fujinet_disk_driver_t;
 
 typedef struct fujinet_nio_disk_context {
@@ -43,6 +51,13 @@ void fujinet_disk_driver_init(fujinet_disk_driver_t *driver,
 uint8_t fujinet_disk_unit_to_slot(uint32_t unit, uint8_t *slot);
 uint8_t fujinet_disk_mount(fujinet_disk_driver_t *driver, uint32_t unit,
                            const char *uri);
+uint8_t fujinet_disk_mount_mode(fujinet_disk_driver_t *driver, uint32_t unit,
+                                const char *uri, uint8_t writable);
+uint8_t fujinet_disk_eject(fujinet_disk_driver_t *driver, uint32_t unit);
+uint8_t fujinet_disk_flush(fujinet_disk_driver_t *driver, uint32_t unit);
+uint8_t fujinet_disk_write(fujinet_disk_driver_t *driver, uint32_t unit,
+                           uint32_t byte_offset, const uint8_t *data,
+                           uint32_t byte_length, uint32_t *actual);
 uint8_t fujinet_disk_info(fujinet_disk_driver_t *driver, uint32_t unit,
                           fn_disk_info_t *info);
 uint8_t fujinet_disk_read(fujinet_disk_driver_t *driver, uint32_t unit,

@@ -90,11 +90,21 @@ static uint8_t fake_read(void *context, uint8_t slot, uint32_t lba,
     return FN_OK;
 }
 
+static uint8_t fake_write(void *context, uint8_t slot, uint32_t lba,
+                          const uint8_t *data, uint16_t length)
+{ (void)context; (void)slot; (void)lba; (void)data; (void)length; return FN_OK; }
+static uint8_t fake_slot(void *context, uint8_t slot)
+{ (void)context; (void)slot; return FN_OK; }
+
 static const fujinet_disk_client_t fake_ops = {
     fake_init,
     fake_mount,
     fake_info,
-    fake_read
+    fake_read,
+    fake_write,
+    fake_slot,
+    fake_slot,
+    fake_slot
 };
 
 static void test_only_amiga_unit_zero_maps_to_diskdevice_slot_one(void)
@@ -144,8 +154,8 @@ static void test_standard_adf_info_requires_read_only_raw_512_by_1760_geometry(v
           fujinet_disk_info(&driver, 0, &driver.media) == FN_ERR_INVALID);
     fake.media.sector_size = FUJINET_DISK_BLOCK_SIZE;
     fake.media.flags &= (uint8_t)~FN_DISK_FLAG_READONLY;
-    CHECK("writable effective media is rejected in read-only stage",
-          fujinet_disk_info(&driver, 0, &driver.media) == FN_ERR_INVALID);
+    CHECK("read-only mount tolerates effective writable media",
+          fujinet_disk_info(&driver, 0, &driver.media) == FN_OK);
 }
 
 static void test_info_and_media_read_failures_are_reported(void)

@@ -7,6 +7,7 @@
  * CMD_NONSTD itself is TD_MOTOR and must never be repurposed. */
 #define FUJINET_DISK_CMD_MOUNT (CMD_NONSTD + 0x100)
 #define FUJINET_DISK_CMD_TRACE (CMD_NONSTD + 0x101)
+#define FUJINET_DISK_CMD_MOUNT_WRITABLE (CMD_NONSTD + 0x102)
 #define FUJINET_DISK_TRACE_CAPACITY 32
 
 struct fujinet_disk_trace {
