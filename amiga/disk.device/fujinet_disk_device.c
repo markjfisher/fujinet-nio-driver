@@ -14,6 +14,7 @@
 
 #include "fujinet_disk_driver.h"
 #include "fujinet_disk_device.h"
+#include "fujinet_io_queue.h"
 #include "fn_platform.h"
 
 #define DEVICE_NAME FUJINET_DISK_DEVICE_NAME
@@ -56,7 +57,7 @@ struct fujinet_disk_device_base {
      * the resident base along with the other serialized request state. */
     char catalog_uri[768];
     char request_uri[768];
-    struct List io_queue;
+    fujinet_io_queue_t io_queue;
     UBYTE io_processing;
     struct fujinet_disk_trace trace;
 };
@@ -182,7 +183,7 @@ static struct fujinet_disk_device_base *device_init(
     uint8_t i;
     SysBase = sys_base;
     base->segment_list = segment_list;
-    init_list(&base->io_queue);
+    fujinet_io_queue_init(&base->io_queue);
     for (i = 0; i < FUJINET_DISK_UNIT_COUNT; ++i) {
         init_list(&base->units[i].change_requests);
         fujinet_nio_disk_context_init(&base->units[i].nio_context);
@@ -248,16 +249,12 @@ static ULONG device_reserved(void)
 static void abort_queued_unit(struct fujinet_disk_device_base *base,
                               uint8_t unit_index)
 {
-    struct Node *node = base->io_queue.lh_Head;
-    while (node->ln_Succ != NULL) {
-        struct Node *next = node->ln_Succ;
-        struct IORequest *queued = (struct IORequest *)node;
-        if (request_unit_index(base, queued) == unit_index) {
-            Remove(node);
-            queued->io_Error = IOERR_ABORTED;
-            ReplyMsg(&queued->io_Message);
-        }
-        node = next;
+    fujinet_io_queue_node_t *node;
+    while ((node = fujinet_io_queue_take_unit(&base->io_queue, unit_index)) != NULL) {
+        struct IORequest *queued = (struct IORequest *)node->request;
+        FreeMem(node, sizeof(*node));
+        queued->io_Error = IOERR_ABORTED;
+        ReplyMsg(&queued->io_Message);
     }
 }
 
@@ -295,20 +292,20 @@ static void discard_change_requests(struct fujinet_disk_device_base *base)
 static struct IORequest *next_runnable_request(
     struct fujinet_disk_device_base *base)
 {
-    struct Node *node;
-    for (node = base->io_queue.lh_Head; node->ln_Succ != NULL;
-         node = node->ln_Succ) {
-        struct IORequest *queued = (struct IORequest *)node;
-        uint8_t index = request_unit_index(base, queued);
-        if (index < FUJINET_DISK_UNIT_COUNT &&
-            (!base->units[index].stopped ||
-             queued->io_Command == CMD_START ||
-             queued->io_Command == CMD_FLUSH)) {
-            Remove(node);
-            return queued;
-        }
+    uint8_t stopped[FUJINET_DISK_UNIT_COUNT];
+    uint8_t i;
+    fujinet_io_queue_node_t *node;
+    for (i = 0; i < FUJINET_DISK_UNIT_COUNT; ++i)
+        stopped[i] = base->units[i].stopped;
+    node = fujinet_io_queue_next(&base->io_queue, stopped,
+                                 FUJINET_DISK_UNIT_COUNT, CMD_START,
+                                 CMD_FLUSH);
+    if (node == NULL) return NULL;
+    {
+        struct IORequest *request = (struct IORequest *)node->request;
+        FreeMem(node, sizeof(*node));
+        return request;
     }
-    return NULL;
 }
 
 static void device_begin_io(
@@ -355,7 +352,19 @@ static void device_begin_io(
             return;
         }
         request->io_Flags &= (UBYTE)~IOF_QUICK;
-        AddTail(&base->io_queue, &request->io_Message.mn_Node);
+        {
+            fujinet_io_queue_node_t *node =
+                AllocMem(sizeof(*node), MEMF_PUBLIC | MEMF_CLEAR);
+            if (node == NULL) {
+                request->io_Error = TDERR_NotSpecified;
+                Enable();
+                if ((request->io_Flags & IOF_QUICK) == 0)
+                    ReplyMsg(&request->io_Message);
+                return;
+            }
+            fujinet_io_queue_append(&base->io_queue, node, request,
+                                    unit_index, request->io_Command);
+        }
         Enable();
         return;
     }
@@ -700,10 +709,11 @@ static LONG device_abort_io(
             }
         }
     }
-    for (node = base->io_queue.lh_Head; node->ln_Succ != NULL;
-         node = node->ln_Succ) {
-        if (node == &request->io_Message.mn_Node) {
-            Remove(node);
+    {
+        fujinet_io_queue_node_t *queued =
+            fujinet_io_queue_remove_request(&base->io_queue, request);
+        if (queued != NULL) {
+            FreeMem(queued, sizeof(*queued));
             request->io_Error = IOERR_ABORTED;
             ReplyMsg(&request->io_Message);
             Enable();
