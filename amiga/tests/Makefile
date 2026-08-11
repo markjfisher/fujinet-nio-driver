@@ -6,11 +6,12 @@ BUILD_DIR := build
 TEST := $(BUILD_DIR)/test_fujinet_disk_driver
 LINK_TEST := $(BUILD_DIR)/test_fujinet_nio_client_link
 QUEUE_TEST := $(BUILD_DIR)/test_fujinet_io_queue
+EXEC_BOUNDARY_TEST := $(BUILD_DIR)/test_fujinet_exec_boundary
 LIBRARY := $(LIB_ROOT)/build/fujinet-nio-linux.a
 
 .PHONY: all test library clean
 
-all: $(TEST) $(LINK_TEST) $(QUEUE_TEST)
+all: $(TEST) $(LINK_TEST) $(QUEUE_TEST) $(EXEC_BOUNDARY_TEST)
 
 $(TEST): test_fujinet_disk_driver.c $(DRIVER_ROOT)/common/fujinet_disk_driver.c
 	@mkdir -p $(BUILD_DIR)
@@ -34,10 +35,16 @@ $(QUEUE_TEST): test_fujinet_io_queue.c $(DRIVER_ROOT)/common/fujinet_io_queue.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/include $^ -o $@
 
-test: $(TEST) $(LINK_TEST) $(QUEUE_TEST)
+$(EXEC_BOUNDARY_TEST): test_fujinet_exec_boundary.c \
+		$(DRIVER_ROOT)/common/fujinet_io_queue.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/include $^ -o $@
+
+test: $(TEST) $(LINK_TEST) $(QUEUE_TEST) $(EXEC_BOUNDARY_TEST)
 	./$(TEST)
 	./$(LINK_TEST)
 	./$(QUEUE_TEST)
+	./$(EXEC_BOUNDARY_TEST)
 
 clean:
 	rm -rf $(BUILD_DIR)

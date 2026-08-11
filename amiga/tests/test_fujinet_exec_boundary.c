@@ -1,0 +1,177 @@
+#include "fujinet_io_queue.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#define UNIT_COUNT 2U
+#define START 1U
+#define FLUSH 2U
+#define READ 3U
+#define WRITE 4U
+
+typedef struct fake_request {
+    unsigned id;
+    unsigned replied;
+    unsigned aborted;
+} fake_request_t;
+
+typedef struct registration {
+    fake_request_t *request;
+    unsigned causes;
+} registration_t;
+
+typedef struct boundary {
+    fujinet_io_queue_t queue;
+    fujinet_io_queue_node_t nodes[4];
+    uint8_t stopped[UNIT_COUNT];
+    registration_t registrations[UNIT_COUNT][2];
+    unsigned registration_counts[UNIT_COUNT];
+} boundary_t;
+
+static unsigned failures;
+
+#define CHECK(name, expression) do {                                      \
+    if (!(expression)) {                                                  \
+        fprintf(stderr, "FAIL: %s (line %d)\n", name, __LINE__);         \
+        ++failures;                                                       \
+    }                                                                      \
+} while (0)
+
+static void boundary_init(boundary_t *boundary)
+{
+    memset(boundary, 0, sizeof(*boundary));
+    fujinet_io_queue_init(&boundary->queue);
+}
+
+static void queue_request(boundary_t *boundary, unsigned node_index,
+                          fake_request_t *request, uint8_t unit,
+                          uint16_t command)
+{
+    fujinet_io_queue_append(&boundary->queue, &boundary->nodes[node_index],
+                            request, unit, command);
+}
+
+static fake_request_t *next_request(boundary_t *boundary)
+{
+    fujinet_io_queue_node_t *node = fujinet_io_queue_next(
+        &boundary->queue, boundary->stopped, UNIT_COUNT, START, FLUSH);
+    return node == NULL ? NULL : (fake_request_t *)node->request;
+}
+
+static void add_change_registration(boundary_t *boundary, uint8_t unit,
+                                    fake_request_t *request)
+{
+    unsigned count = boundary->registration_counts[unit];
+    if (count < 2) {
+        boundary->registrations[unit][count].request = request;
+        boundary->registrations[unit][count].causes = 0;
+        boundary->registration_counts[unit] = count + 1;
+    }
+}
+
+static void signal_change(boundary_t *boundary, uint8_t unit)
+{
+    unsigned i;
+    for (i = 0; i < boundary->registration_counts[unit]; ++i)
+        ++boundary->registrations[unit][i].causes;
+}
+
+static void remove_change_registration(boundary_t *boundary, uint8_t unit,
+                                        fake_request_t *request)
+{
+    unsigned i;
+    for (i = 0; i < boundary->registration_counts[unit]; ++i) {
+        if (boundary->registrations[unit][i].request == request) {
+            unsigned last = boundary->registration_counts[unit] - 1;
+            boundary->registrations[unit][i] = boundary->registrations[unit][last];
+            boundary->registration_counts[unit] = last;
+            return;
+        }
+    }
+}
+
+static void close_request(boundary_t *boundary, fake_request_t *request)
+{
+    uint8_t unit;
+    for (unit = 0; unit < UNIT_COUNT; ++unit)
+        remove_change_registration(boundary, unit, request);
+}
+
+static void test_requests_are_fifo_but_stopped_units_do_not_block_others(void)
+{
+    boundary_t boundary;
+    fake_request_t held = {1, 0, 0};
+    fake_request_t other = {2, 0, 0};
+    fake_request_t start = {3, 0, 0};
+
+    boundary_init(&boundary);
+    boundary.stopped[0] = 1;
+    queue_request(&boundary, 0, &held, 0, READ);
+    queue_request(&boundary, 1, &other, 1, READ);
+    queue_request(&boundary, 2, &start, 0, START);
+
+    CHECK("other unit runs while unit is stopped", next_request(&boundary) == &other);
+    CHECK("start bypasses stopped unit", next_request(&boundary) == &start);
+    boundary.stopped[0] = 0;
+    CHECK("stopped work resumes", next_request(&boundary) == &held);
+}
+
+static void test_flush_and_abort_only_remove_queued_requests(void)
+{
+    boundary_t boundary;
+    fake_request_t active = {1, 0, 0};
+    fake_request_t queued = {2, 0, 0};
+    fake_request_t other = {3, 0, 0};
+    fujinet_io_queue_node_t *removed;
+
+    boundary_init(&boundary);
+    queue_request(&boundary, 0, &queued, 0, WRITE);
+    queue_request(&boundary, 1, &other, 1, READ);
+    removed = fujinet_io_queue_take_unit(&boundary.queue, 0);
+    CHECK("CMD_FLUSH removes queued work for one unit",
+          removed != NULL && removed->request == &queued);
+    queued.aborted = 1;
+    CHECK("active work is not abortable through the queue",
+          fujinet_io_queue_remove_request(&boundary.queue, &active) == NULL);
+    removed = fujinet_io_queue_remove_request(&boundary.queue, &other);
+    CHECK("AbortIO removes only its queued request",
+          removed != NULL && removed->request == &other);
+    CHECK("aborted request is marked by the boundary", queued.aborted == 1);
+}
+
+static void test_change_registrations_persist_until_remove_or_close(void)
+{
+    boundary_t boundary;
+    fake_request_t first = {1, 0, 0};
+    fake_request_t second = {2, 0, 0};
+
+    boundary_init(&boundary);
+    add_change_registration(&boundary, 0, &first);
+    add_change_registration(&boundary, 0, &second);
+    signal_change(&boundary, 0);
+    CHECK("all registrations receive the first transition",
+          boundary.registrations[0][0].causes == 1 &&
+              boundary.registrations[0][1].causes == 1);
+    remove_change_registration(&boundary, 0, &first);
+    signal_change(&boundary, 0);
+    CHECK("removed registration receives no later transition",
+          boundary.registration_counts[0] == 1 &&
+              boundary.registrations[0][0].causes == 2);
+    close_request(&boundary, &second);
+    CHECK("closing a request removes retained registration",
+          boundary.registration_counts[0] == 0);
+}
+
+int main(void)
+{
+    test_requests_are_fifo_but_stopped_units_do_not_block_others();
+    test_flush_and_abort_only_remove_queued_requests();
+    test_change_registrations_persist_until_remove_or_close();
+
+    if (failures != 0) {
+        fprintf(stderr, "%u Exec boundary test(s) failed\n", failures);
+        return 1;
+    }
+    puts("All Amiga Exec boundary contract tests passed");
+    return 0;
+}

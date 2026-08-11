@@ -72,3 +72,10 @@ Run the portable contract tests with `make tests` from this directory. Run
 `make native` to build `build/amiga/fujinet-disk.device`; this additionally
 requires the Amiga GCC toolchain, readable NDK headers, and
 `fujinet-nio-amiga-driver.a`.
+
+The host `test_fujinet_exec_boundary` test is the first resident-device
+boundary contract harness. It covers queue, request-removal, and retained
+change-registration rules without requiring Exec or an Amiga emulator. It is
+not a substitute for the next native harness, which must validate real
+message ports, `AbortIO()`, `Cause()`, and task/request lifetimes inside
+Amiberry.
