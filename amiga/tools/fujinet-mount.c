@@ -6,7 +6,6 @@
 #include <clib/alib_protos.h>
 #include <proto/exec.h>
 #include <proto/dos.h>
-#include <proto/dos.h>
 
 #include <stdio.h>
 #include <stdlib.h>
