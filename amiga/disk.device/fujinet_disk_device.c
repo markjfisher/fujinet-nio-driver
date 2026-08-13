@@ -175,6 +175,9 @@ static void init_list(struct List *list)
     list->lh_TailPred = (struct Node *)&list->lh_Head;
 }
 
+static uint8_t remove_all_change_requests(struct fujinet_disk_unit_state *unit,
+                                          struct IORequest *request);
+
 static struct fujinet_disk_device_base *device_init(
     register struct fujinet_disk_device_base *base __asm("d0"),
     register BPTR segment_list __asm("a0"),
@@ -222,7 +225,7 @@ static BPTR device_close(
 {
     uint8_t i;
     for (i = 0; i < FUJINET_DISK_UNIT_COUNT; ++i) {
-        (void)remove_change_request(&base->units[i], request);
+        (void)remove_all_change_requests(&base->units[i], request);
         if (base->units[i].remove_request == request)
             base->units[i].remove_request = NULL;
     }
@@ -282,6 +285,29 @@ static uint8_t remove_change_request(struct fujinet_disk_unit_state *unit,
         }
     }
     return 0;
+}
+
+static struct fujinet_change_registration *find_change_request(
+    struct fujinet_disk_unit_state *unit, struct IORequest *request)
+{
+    struct Node *node;
+    for (node = unit->change_requests.lh_Head; node->ln_Succ != NULL;
+         node = node->ln_Succ) {
+        struct fujinet_change_registration *registration =
+            (struct fujinet_change_registration *)node;
+        if (registration->request == request)
+            return registration;
+    }
+    return NULL;
+}
+
+static uint8_t remove_all_change_requests(struct fujinet_disk_unit_state *unit,
+                                          struct IORequest *request)
+{
+    uint8_t removed = 0;
+    while (remove_change_request(unit, request))
+        removed = 1;
+    return removed;
 }
 
 static void discard_change_requests(struct fujinet_disk_device_base *base)
@@ -621,14 +647,17 @@ process_request:
     case TD_ADDCHANGEINT:
         {
         struct fujinet_change_registration *registration =
-            AllocMem(sizeof(*registration), MEMF_PUBLIC | MEMF_CLEAR);
+            find_change_request(unit, request);
         if (registration == NULL) {
-            request->io_Error = TDERR_NotSpecified;
-            break;
+            registration = AllocMem(sizeof(*registration), MEMF_PUBLIC | MEMF_CLEAR);
+            if (registration == NULL) {
+                request->io_Error = TDERR_NotSpecified;
+                break;
+            }
+            registration->request = request;
+            AddTail(&unit->change_requests, &registration->node);
         }
-        registration->request = request;
         registration->interrupt = (struct Interrupt *)io->io_Data;
-        AddTail(&unit->change_requests, &registration->node);
         }
         if (trace_index < FUJINET_DISK_TRACE_CAPACITY) {
             base->trace.actuals[trace_index] = io->io_Actual;
@@ -649,7 +678,7 @@ process_request:
         request->io_Flags &= (UBYTE)~IOF_QUICK;
         goto next_request;
     case TD_REMCHANGEINT:
-        remove_change_request(unit, request);
+        (void)remove_all_change_requests(unit, request);
         break;
     case NSCMD_DEVICEQUERY:
         if (io->io_Data == NULL ||
@@ -727,8 +756,7 @@ static LONG device_abort_io(
             struct fujinet_change_registration *registration =
                 (struct fujinet_change_registration *)node;
             if (registration->request == request) {
-                Remove(node);
-                FreeMem(registration, sizeof(*registration));
+                (void)remove_all_change_requests(&base->units[unit_index], request);
                 request->io_Error = IOERR_ABORTED;
                 ReplyMsg(&request->io_Message);
                 Enable();

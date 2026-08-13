@@ -185,12 +185,30 @@ static void test_closing_request_clears_pending_remove_waiter(void)
           remove_waiter == NULL);
 }
 
+static void test_duplicate_change_registration_reuses_one_retained_entry(void)
+{
+    boundary_t boundary;
+    fake_request_t request = {1, 0, 0};
+
+    boundary_init(&boundary);
+    add_change_registration(&boundary, 0, &request);
+    /* Model the resident device update path: a second ADDCHANGEINT from the
+     * same request should refresh the callback, not retain a duplicate node. */
+    remove_change_registration(&boundary, 0, &request);
+    add_change_registration(&boundary, 0, &request);
+    signal_change(&boundary, 0);
+    CHECK("duplicate registration leaves one retained callback",
+          boundary.registration_counts[0] == 1 &&
+              boundary.registrations[0][0].causes == 1);
+}
+
 int main(void)
 {
     test_requests_are_fifo_but_stopped_units_do_not_block_others();
     test_flush_and_abort_only_remove_queued_requests();
     test_change_registrations_persist_until_remove_or_close();
     test_closing_request_clears_pending_remove_waiter();
+    test_duplicate_change_registration_reuses_one_retained_entry();
 
     if (failures != 0) {
         fprintf(stderr, "%u Exec boundary test(s) failed\n", failures);
