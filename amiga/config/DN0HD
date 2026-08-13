@@ -1,9 +1,9 @@
-DN6:
+DN0HD:
     Device = fujinet-disk.device
-    Unit = 6
+    Unit = 0
     Flags = 0
     Surfaces = 2
-    BlocksPerTrack = 11
+    BlocksPerTrack = 22
     Reserved = 2
     Interleave = 0
     LowCyl = 0

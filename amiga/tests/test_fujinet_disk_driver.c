@@ -65,8 +65,9 @@ static uint8_t fake_mount(void *context, uint8_t slot, const char *uri,
                   (readonly ? FN_DISK_FLAG_READONLY : 0);
     info->type = FN_DISK_TYPE_RAW;
     info->sector_size = FUJINET_DISK_BLOCK_SIZE;
-    info->sector_count = FUJINET_ADF_BLOCK_COUNT;
-    if (fake->invalid_mount) info->sector_count = FUJINET_ADF_BLOCK_COUNT - 1;
+    info->sector_count = fake->media.sector_count != 0 ?
+        fake->media.sector_count : FUJINET_DD_ADF_BLOCK_COUNT;
+    if (fake->invalid_mount) info->sector_count = FUJINET_DD_ADF_BLOCK_COUNT - 1;
     fake->media = *info;
     return FN_OK;
 }
@@ -167,18 +168,18 @@ static void test_mount_is_explicitly_read_only_auto_detected_and_512_bytes(void)
           strcmp(fake.uri, "tnfs://host/workbench.adf") == 0);
 }
 
-static void test_standard_adf_info_requires_read_only_raw_512_by_1760_geometry(void)
+static void test_adf_info_accepts_dd_and_hd_rejects_others(void)
 {
     fake_client_t fake = {0};
     fujinet_disk_driver_t driver;
 
     fujinet_disk_driver_init(&driver, &fake_ops, &fake, 0);
-    CHECK("valid standard ADF mounts",
+    CHECK("valid DD ADF mounts",
           fujinet_disk_mount(&driver, 0, "disk.adf") == FN_OK);
     fake.media.sector_count = 1759;
     CHECK("non-standard block count is rejected",
           fujinet_disk_info(&driver, 0, &driver.media) == FN_ERR_INVALID);
-    fake.media.sector_count = FUJINET_ADF_BLOCK_COUNT;
+    fake.media.sector_count = FUJINET_DD_ADF_BLOCK_COUNT;
     fake.media.sector_size = 256;
     CHECK("non-512-byte geometry is rejected",
           fujinet_disk_info(&driver, 0, &driver.media) == FN_ERR_INVALID);
@@ -186,6 +187,51 @@ static void test_standard_adf_info_requires_read_only_raw_512_by_1760_geometry(v
     fake.media.flags &= (uint8_t)~FN_DISK_FLAG_READONLY;
     CHECK("read-only mount tolerates effective writable media",
           fujinet_disk_info(&driver, 0, &driver.media) == FN_OK);
+
+    /* HD ADF: 3520 sectors is also accepted */
+    fake.media.sector_count = FUJINET_HD_ADF_BLOCK_COUNT;
+    fake.media.flags |= FN_DISK_FLAG_MOUNTED | FN_DISK_FLAG_READONLY;
+    CHECK("HD ADF geometry (3520 sectors) is accepted",
+          fujinet_disk_info(&driver, 0, &driver.media) == FN_OK);
+}
+
+static void test_hd_adf_mount_and_bounds(void)
+{
+    fake_client_t fake = {0};
+    fujinet_disk_driver_t driver;
+    uint8_t data[512];
+    uint32_t actual = 0;
+
+    fake.media.sector_count = FUJINET_HD_ADF_BLOCK_COUNT;
+    fake.media.sector_size = FUJINET_DISK_BLOCK_SIZE;
+    fake.media.flags = FN_DISK_FLAG_MOUNTED | FN_DISK_FLAG_READONLY;
+    fake.media.type = FN_DISK_TYPE_RAW;
+
+    fujinet_disk_driver_init(&driver, &fake_ops, &fake, 0);
+    CHECK("HD ADF mounts successfully",
+          fujinet_disk_mount(&driver, 0, "hd.adf") == FN_OK);
+    CHECK("mounted media records HD sector count",
+          driver.media.sector_count == FUJINET_HD_ADF_BLOCK_COUNT);
+
+    fake.read_length = 512;
+    CHECK("read within HD ADF succeeds",
+          fujinet_disk_read(&driver, 0, 0, data, sizeof(data), &actual) == FN_OK);
+
+    CHECK("read at last HD sector succeeds",
+          fujinet_disk_read(&driver, 0,
+                            (FUJINET_HD_ADF_BLOCK_COUNT - 1) * FUJINET_DISK_BLOCK_SIZE,
+                            data, sizeof(data), &actual) == FN_OK);
+
+    CHECK("read beyond HD ADF end is rejected",
+          fujinet_disk_read(&driver, 0,
+                            FUJINET_HD_ADF_BLOCK_COUNT * FUJINET_DISK_BLOCK_SIZE,
+                            data, sizeof(data), &actual) == FN_ERR_INVALID);
+
+    /* DD-sized read/write rejected on an HD unit */
+    CHECK("read at DD boundary on HD unit passes (HD is larger)",
+          fujinet_disk_read(&driver, 0,
+                            FUJINET_DD_ADF_BLOCK_COUNT * FUJINET_DISK_BLOCK_SIZE,
+                            data, sizeof(data), &actual) == FN_OK);
 }
 
 static void test_info_and_media_read_failures_are_reported(void)
@@ -214,9 +260,10 @@ static void test_info_and_media_read_failures_are_reported(void)
     CHECK("short sector response is rejected",
           fujinet_disk_read(&driver, 0, 0, data, sizeof(data), &actual) ==
               FN_ERR_IO);
-    CHECK("read beyond standard ADF is rejected",
-          fujinet_disk_read(&driver, 0, FUJINET_ADF_BYTE_SIZE, data,
-                            sizeof(data), &actual) == FN_ERR_INVALID);
+    CHECK("read beyond DD ADF end is rejected",
+          fujinet_disk_read(&driver, 0,
+                            FUJINET_DD_ADF_BLOCK_COUNT * FUJINET_DISK_BLOCK_SIZE,
+                            data, sizeof(data), &actual) == FN_ERR_INVALID);
 }
 
 static void test_repeated_mounts_share_one_initialized_session(void)
@@ -370,7 +417,8 @@ int main(void)
     test_amiga_units_map_to_one_based_diskdevice_slots();
     test_mount_is_explicitly_read_only_auto_detected_and_512_bytes();
     test_repeated_mounts_share_one_initialized_session();
-    test_standard_adf_info_requires_read_only_raw_512_by_1760_geometry();
+    test_adf_info_accepts_dd_and_hd_rejects_others();
+    test_hd_adf_mount_and_bounds();
     test_info_and_media_read_failures_are_reported();
     test_reads_are_512_byte_aligned_sector_requests_on_slot_one();
     test_units_keep_independent_media_and_change_state();

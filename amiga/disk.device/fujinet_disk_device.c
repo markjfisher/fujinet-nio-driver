@@ -458,10 +458,13 @@ process_request:
         break;
     case CMD_READ:
     case ETD_READ:
+        {
+        ULONG media_bytes = unit->driver.mounted ?
+            (ULONG)unit->driver.media.sector_count * unit->driver.media.sector_size : 0;
         if (!unit->driver.mounted) {
             request->io_Error = TDERR_DiskChanged;
-        } else if (io->io_Data == NULL || io->io_Offset >= FUJINET_ADF_BYTE_SIZE ||
-                   io->io_Length > FUJINET_ADF_BYTE_SIZE - io->io_Offset) {
+        } else if (io->io_Data == NULL || io->io_Offset >= media_bytes ||
+                   io->io_Length > media_bytes - io->io_Offset) {
             request->io_Error = IOERR_BADADDRESS;
         } else if (io->io_Length == 0 ||
                    (io->io_Offset % FUJINET_DISK_BLOCK_SIZE) != 0 ||
@@ -479,15 +482,19 @@ process_request:
                                        io->io_Length, &io->io_Actual);
             request->io_Error = result_to_io_error(result);
         }
+        }
         break;
     case CMD_WRITE:
     case ETD_WRITE:
+        {
+        ULONG media_bytes = unit->driver.mounted ?
+            (ULONG)unit->driver.media.sector_count * unit->driver.media.sector_size : 0;
         if (!unit->driver.mounted) {
             request->io_Error = TDERR_DiskChanged;
         } else if (!unit->driver.writable) {
             request->io_Error = TDERR_WriteProt;
-        } else if (io->io_Data == NULL || io->io_Offset >= FUJINET_ADF_BYTE_SIZE ||
-                   io->io_Length > FUJINET_ADF_BYTE_SIZE - io->io_Offset) {
+        } else if (io->io_Data == NULL || io->io_Offset >= media_bytes ||
+                   io->io_Length > media_bytes - io->io_Offset) {
             request->io_Error = IOERR_BADADDRESS;
         } else if (io->io_Length == 0 ||
                    (io->io_Offset % FUJINET_DISK_BLOCK_SIZE) != 0 ||
@@ -507,6 +514,7 @@ process_request:
                                         (const uint8_t *)io->io_Data,
                                         io->io_Length, &io->io_Actual);
             request->io_Error = result_to_io_error(result);
+        }
         }
         break;
     case CMD_RESET:
@@ -572,20 +580,29 @@ process_request:
         io->io_Actual = DRIVE3_5;
         break;
     case TD_GETNUMTRACKS:
-        io->io_Actual = 80;
+        io->io_Actual = unit->driver.mounted ? 80 : 0;
         break;
     case TD_GETGEOMETRY:
         if (io->io_Data == NULL || io->io_Length < sizeof(struct DriveGeometry)) {
             request->io_Error = IOERR_BADLENGTH;
+        } else if (!unit->driver.mounted) {
+            request->io_Error = TDERR_DiskChanged;
         } else {
             struct DriveGeometry *geometry = (struct DriveGeometry *)io->io_Data;
+            ULONG total = (ULONG)unit->driver.media.sector_count;
             memset(geometry, 0, sizeof(*geometry));
             geometry->dg_SectorSize = FUJINET_DISK_BLOCK_SIZE;
-            geometry->dg_TotalSectors = FUJINET_ADF_BLOCK_COUNT;
+            geometry->dg_TotalSectors = total;
             geometry->dg_Cylinders = 80;
-            geometry->dg_CylSectors = 22;
             geometry->dg_Heads = 2;
-            geometry->dg_TrackSectors = 11;
+            /* HD ADF has 22 sectors/track; DD has 11. */
+            if (total == FUJINET_HD_ADF_BLOCK_COUNT) {
+                geometry->dg_CylSectors = 44;
+                geometry->dg_TrackSectors = 22;
+            } else {
+                geometry->dg_CylSectors = 22;
+                geometry->dg_TrackSectors = 11;
+            }
             geometry->dg_BufMemType = MEMF_PUBLIC;
             geometry->dg_DeviceType = DG_DIRECT_ACCESS;
             geometry->dg_Flags = DGF_REMOVABLE;

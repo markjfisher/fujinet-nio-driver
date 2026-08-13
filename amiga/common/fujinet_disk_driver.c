@@ -52,8 +52,8 @@ static uint8_t ensure_client(fujinet_disk_driver_t *driver)
     return result;
 }
 
-static uint8_t validate_standard_adf(const fn_disk_info_t *info,
-                                     uint8_t writable, uint8_t slot)
+static uint8_t validate_adf_geometry(const fn_disk_info_t *info,
+                                      uint8_t writable, uint8_t slot)
 {
     if (info == NULL ||
         (info->flags & FN_DISK_FLAG_MOUNTED) == 0 ||
@@ -61,7 +61,8 @@ static uint8_t validate_standard_adf(const fn_disk_info_t *info,
         info->slot != slot ||
         info->type != FN_DISK_TYPE_RAW ||
         info->sector_size != FUJINET_DISK_BLOCK_SIZE ||
-        info->sector_count != FUJINET_ADF_BLOCK_COUNT) {
+        (info->sector_count != FUJINET_DD_ADF_BLOCK_COUNT &&
+         info->sector_count != FUJINET_HD_ADF_BLOCK_COUNT)) {
         return FN_ERR_INVALID;
     }
     return FN_OK;
@@ -95,7 +96,7 @@ uint8_t fujinet_disk_info(fujinet_disk_driver_t *driver, uint32_t unit,
     if (result != FN_OK) {
         return result;
     }
-    return validate_standard_adf(info, driver->writable, slot);
+    return validate_adf_geometry(info, driver->writable, slot);
 }
 
 uint8_t fujinet_disk_mount(fujinet_disk_driver_t *driver, uint32_t unit,
@@ -129,7 +130,7 @@ uint8_t fujinet_disk_mount_mode(fujinet_disk_driver_t *driver, uint32_t unit,
     if (result != FN_OK) {
         return result;
     }
-    result = validate_standard_adf(&driver->media, writable, slot);
+    result = validate_adf_geometry(&driver->media, writable, slot);
     if (result != FN_OK) {
         (void)driver->client->unmount(driver->client_context, slot);
         clear_local_media(driver);
@@ -219,8 +220,12 @@ uint8_t fujinet_disk_write(fujinet_disk_driver_t *driver, uint32_t unit,
         return FN_ERR_INVALID;
     if (!driver->mounted) return FN_ERR_NOT_READY;
     if (!driver->writable) return FN_ERR_INVALID;
-    if (byte_offset >= FUJINET_ADF_BYTE_SIZE ||
-        byte_length > FUJINET_ADF_BYTE_SIZE - byte_offset) return FN_ERR_INVALID;
+    {
+        uint32_t media_bytes = (uint32_t)driver->media.sector_count *
+                               driver->media.sector_size;
+        if (byte_offset >= media_bytes ||
+            byte_length > media_bytes - byte_offset) return FN_ERR_INVALID;
+    }
     result = ensure_client(driver);
     if (result != FN_OK) return result;
     result = fujinet_disk_unit_to_slot(unit, &slot);
@@ -252,13 +257,18 @@ uint8_t fujinet_disk_read(fujinet_disk_driver_t *driver, uint32_t unit,
     if (actual != NULL) {
         *actual = 0;
     }
-    if (driver == NULL || data == NULL || actual == NULL ||
-        byte_length == 0 ||
-        (byte_offset % FUJINET_DISK_BLOCK_SIZE) != 0 ||
-        (byte_length % FUJINET_DISK_BLOCK_SIZE) != 0 ||
-        byte_offset >= FUJINET_ADF_BYTE_SIZE ||
-        byte_length > FUJINET_ADF_BYTE_SIZE - byte_offset) {
-        return FN_ERR_INVALID;
+    {
+        uint32_t media_bytes = driver != NULL && driver->mounted ?
+            (uint32_t)driver->media.sector_count * driver->media.sector_size : 0;
+        if (driver == NULL || data == NULL || actual == NULL ||
+            byte_length == 0 ||
+            (byte_offset % FUJINET_DISK_BLOCK_SIZE) != 0 ||
+            (byte_length % FUJINET_DISK_BLOCK_SIZE) != 0 ||
+            media_bytes == 0 ||
+            byte_offset >= media_bytes ||
+            byte_length > media_bytes - byte_offset) {
+            return FN_ERR_INVALID;
+        }
     }
     result = fujinet_disk_unit_to_slot(unit, &slot);
     if (result != FN_OK) {
