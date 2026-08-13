@@ -397,6 +397,7 @@ static void device_begin_io(
                     ReplyMsg(&request->io_Message);
                 return;
             }
+            request->io_Message.mn_Node.ln_Type = NT_MESSAGE;
             fujinet_io_queue_append(&base->io_queue, node, request,
                                     unit_index, request->io_Command);
         }
