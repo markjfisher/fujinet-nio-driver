@@ -253,6 +253,29 @@ static void test_geometry_implies_160_tracks_for_mounted_media(void)
           (80U * 2U) == 160U);
 }
 
+static void test_dd_and_hd_profiles_keep_expected_geometry(void)
+{
+    fake_client_t fake = {0};
+    fujinet_disk_driver_t dd;
+    fujinet_disk_driver_t hd;
+
+    fake.media.sector_size = FUJINET_DISK_BLOCK_SIZE;
+    fake.media.flags = FN_DISK_FLAG_MOUNTED | FN_DISK_FLAG_READONLY;
+    fake.media.type = FN_DISK_TYPE_RAW;
+
+    fujinet_disk_driver_init(&dd, &fake_ops, &fake, 0);
+    fake.media.sector_count = FUJINET_DD_ADF_BLOCK_COUNT;
+    CHECK("DD profile mounts with 1760 sectors",
+          fujinet_disk_mount(&dd, 0, "dd.adf") == FN_OK &&
+              dd.media.sector_count == FUJINET_DD_ADF_BLOCK_COUNT);
+
+    fujinet_disk_driver_init(&hd, &fake_ops, &fake, 0);
+    fake.media.sector_count = FUJINET_HD_ADF_BLOCK_COUNT;
+    CHECK("HD profile mounts with 3520 sectors",
+          fujinet_disk_mount(&hd, 0, "hd.adf") == FN_OK &&
+              hd.media.sector_count == FUJINET_HD_ADF_BLOCK_COUNT);
+}
+
 static void test_info_and_media_read_failures_are_reported(void)
 {
     fake_client_t fake = {0};
@@ -439,6 +462,7 @@ int main(void)
     test_adf_info_accepts_dd_and_hd_rejects_others();
     test_hd_adf_mount_and_bounds();
     test_geometry_implies_160_tracks_for_mounted_media();
+    test_dd_and_hd_profiles_keep_expected_geometry();
     test_info_and_media_read_failures_are_reported();
     test_reads_are_512_byte_aligned_sector_requests_on_slot_one();
     test_units_keep_independent_media_and_change_state();
