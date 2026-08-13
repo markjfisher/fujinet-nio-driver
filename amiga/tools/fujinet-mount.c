@@ -85,6 +85,7 @@ int main(int argc, char **argv)
     LONG result;
     int requested_writable = 0;
     int catalog_mount = 0;
+    int geometry_only = 0;
     int update = 0;
     int status = 0;
     ULONG catalog_slot = 0;
@@ -97,7 +98,7 @@ int main(int argc, char **argv)
                 "       fujinet-mount --uri DRIVE URI [RW|RO]\n"
                 "       fujinet-mount URI | --writable URI\n"
                 "       fujinet-mount --eject [DRIVE] | --update DRIVE\n"
-                "       fujinet-mount --status DRIVE | --trace | --read LBA [RESULT]\n"
+                "       fujinet-mount --status DRIVE | --geometry DRIVE | --trace | --read LBA [RESULT]\n"
                 "       fujinet-mount --boundary | --malformed [DRIVE]\n");
         return 10;
     }
@@ -137,6 +138,9 @@ int main(int argc, char **argv)
     } else if (strcmp(argv[1], "--status") == 0 && argc == 3) {
         if (!parse_drive(argv[2], &drive)) return 10;
         status = 1;
+    } else if (strcmp(argv[1], "--geometry") == 0 && argc == 3) {
+        if (!parse_drive(argv[2], &drive)) return 10;
+        geometry_only = 1;
     } else if (strcmp(argv[1], "--boundary") == 0 && (argc == 2 || argc == 3)) {
         if (argc == 3 && !parse_drive(argv[2], &drive)) return 10;
     } else if (strcmp(argv[1], "--malformed") == 0 && (argc == 2 || argc == 3)) {
@@ -573,6 +577,33 @@ int main(int argc, char **argv)
         if (result == 0)
             printf("STATUS drive=%lu change=%lu absent=%lu protected=%lu\n",
                    drive, change_count, change_state, protected_state);
+        CloseDevice((struct IORequest *)request);
+        DeleteExtIO((struct IORequest *)request);
+        DeletePort(port);
+        return result == 0 ? 0 : 20;
+    }
+
+    if (geometry_only) {
+        memset(&geometry, 0, sizeof(geometry));
+        request->iotd_Req.io_Message.mn_Node.ln_Type = NT_MESSAGE;
+        request->iotd_Req.io_Flags = 0;
+        request->iotd_Req.io_Error = 0;
+        request->iotd_Req.io_Actual = 0;
+        request->iotd_Req.io_Command = TD_GETGEOMETRY;
+        request->iotd_Req.io_Data = &geometry;
+        request->iotd_Req.io_Length = sizeof(geometry);
+        result = DoIO((struct IORequest *)request);
+        if (result == 0) {
+            printf("GEOMETRY drive=%lu sectorSize=%lu total=%lu cylinders=%lu cylSectors=%lu heads=%lu trackSectors=%lu reserved=%u\n",
+                   drive,
+                   geometry.dg_SectorSize,
+                   geometry.dg_TotalSectors,
+                   geometry.dg_Cylinders,
+                   geometry.dg_CylSectors,
+                   geometry.dg_Heads,
+                   geometry.dg_TrackSectors,
+                   (unsigned)geometry.dg_Reserved);
+        }
         CloseDevice((struct IORequest *)request);
         DeleteExtIO((struct IORequest *)request);
         DeletePort(port);
