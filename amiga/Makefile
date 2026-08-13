@@ -5,6 +5,7 @@ CPPFLAGS := -Iinclude -I$(LIB_ROOT)/include
 BUILD_DIR := ../build/amiga
 LIBRARY := $(LIB_ROOT)/build/fujinet-nio-amiga-driver.a
 DEVICE := $(BUILD_DIR)/fujinet-disk.device
+DEVICE_MAP := $(DEVICE).map
 MOUNT_TOOL := $(BUILD_DIR)/fujinet-mount
 SOURCES := common/fujinet_disk_driver.c \
 	common/fujinet_io_queue.c \
@@ -25,7 +26,7 @@ library:
 $(LIBRARY): library
 
 $(DEVICE): $(OBJECTS) $(LIBRARY)
-	$(CC) -nostartfiles -mcpu=68000 -msoft-float $^ -lamiga -o $@
+	$(CC) -nostartfiles -mcpu=68000 -msoft-float $^ -lamiga -Wl,-Map,$(DEVICE_MAP) -o $@
 
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
