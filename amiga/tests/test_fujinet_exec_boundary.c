@@ -13,6 +13,8 @@ typedef struct fake_request {
     unsigned id;
     unsigned replied;
     unsigned aborted;
+    unsigned valid_unit;
+    unsigned quick;
 } fake_request_t;
 
 typedef struct registration {
@@ -108,12 +110,56 @@ static void close_request_clears_remove_waiter(boundary_t *boundary,
     (void)unit;
 }
 
+static fake_request_t *promote_request(boundary_t *boundary)
+{
+    return next_request(boundary);
+}
+
+static void complete_promoted_request(boundary_t *boundary,
+                                      fake_request_t *request)
+{
+    if (!request->valid_unit) {
+        request->aborted = 1;
+        if (!request->quick)
+            ++request->replied;
+        return;
+    }
+    ++request->replied;
+    (void)boundary;
+}
+
+static void test_invalid_promoted_request_is_aborted_and_drain_continues(void)
+{
+    boundary_t boundary;
+    fake_request_t invalid = {1, 0, 0, 1, 0};
+    fake_request_t following = {2, 0, 0, 1, 0};
+    fake_request_t *promoted;
+
+    boundary_init(&boundary);
+    queue_request(&boundary, 0, &invalid, 0, WRITE);
+    queue_request(&boundary, 1, &following, 1, READ);
+
+    promoted = promote_request(&boundary);
+    CHECK("dequeue promotes the first request", promoted == &invalid);
+    /* Model device_close() clearing io_Unit in the dequeue-to-active window. */
+    invalid.valid_unit = 0;
+    complete_promoted_request(&boundary, promoted);
+    CHECK("invalid promoted request is aborted", invalid.aborted == 1);
+    CHECK("invalid promoted request is replied once", invalid.replied == 1);
+
+    promoted = promote_request(&boundary);
+    CHECK("FIFO continues after invalid promoted request",
+          promoted == &following);
+    complete_promoted_request(&boundary, promoted);
+    CHECK("following request is replied once", following.replied == 1);
+}
+
 static void test_requests_are_fifo_but_stopped_units_do_not_block_others(void)
 {
     boundary_t boundary;
-    fake_request_t held = {1, 0, 0};
-    fake_request_t other = {2, 0, 0};
-    fake_request_t start = {3, 0, 0};
+    fake_request_t held = {1, 0, 0, 1, 0};
+    fake_request_t other = {2, 0, 0, 1, 0};
+    fake_request_t start = {3, 0, 0, 1, 0};
 
     boundary_init(&boundary);
     boundary.stopped[0] = 1;
@@ -130,9 +176,9 @@ static void test_requests_are_fifo_but_stopped_units_do_not_block_others(void)
 static void test_flush_and_abort_only_remove_queued_requests(void)
 {
     boundary_t boundary;
-    fake_request_t active = {1, 0, 0};
-    fake_request_t queued = {2, 0, 0};
-    fake_request_t other = {3, 0, 0};
+    fake_request_t active = {1, 0, 0, 1, 0};
+    fake_request_t queued = {2, 0, 0, 1, 0};
+    fake_request_t other = {3, 0, 0, 1, 0};
     fujinet_io_queue_node_t *removed;
 
     boundary_init(&boundary);
@@ -153,8 +199,8 @@ static void test_flush_and_abort_only_remove_queued_requests(void)
 static void test_change_registrations_persist_until_remove_or_close(void)
 {
     boundary_t boundary;
-    fake_request_t first = {1, 0, 0};
-    fake_request_t second = {2, 0, 0};
+    fake_request_t first = {1, 0, 0, 1, 0};
+    fake_request_t second = {2, 0, 0, 1, 0};
 
     boundary_init(&boundary);
     add_change_registration(&boundary, 0, &first);
@@ -176,7 +222,7 @@ static void test_change_registrations_persist_until_remove_or_close(void)
 static void test_closing_request_clears_pending_remove_waiter(void)
 {
     boundary_t boundary;
-    fake_request_t remove = {1, 0, 0};
+    fake_request_t remove = {1, 0, 0, 1, 0};
     fake_request_t *remove_waiter = &remove;
 
     boundary_init(&boundary);
@@ -188,7 +234,7 @@ static void test_closing_request_clears_pending_remove_waiter(void)
 static void test_duplicate_change_registration_reuses_one_retained_entry(void)
 {
     boundary_t boundary;
-    fake_request_t request = {1, 0, 0};
+    fake_request_t request = {1, 0, 0, 1, 0};
 
     boundary_init(&boundary);
     add_change_registration(&boundary, 0, &request);
@@ -209,6 +255,7 @@ int main(void)
     test_change_registrations_persist_until_remove_or_close();
     test_closing_request_clears_pending_remove_waiter();
     test_duplicate_change_registration_reuses_one_retained_entry();
+    test_invalid_promoted_request_is_aborted_and_drain_continues();
 
     if (failures != 0) {
         fprintf(stderr, "%u Exec boundary test(s) failed\n", failures);

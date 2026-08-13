@@ -412,6 +412,12 @@ static void device_begin_io(
 
 process_request:
     unit_index = request_unit_index(base, request);
+    if (unit_index >= FUJINET_DISK_UNIT_COUNT) {
+        request->io_Error = IOERR_ABORTED;
+        if ((request->io_Flags & IOF_QUICK) == 0)
+            ReplyMsg(&request->io_Message);
+        goto next_request;
+    }
     unit = &base->units[unit_index];
     request->io_Error = 0;
     io->io_Actual = 0;
