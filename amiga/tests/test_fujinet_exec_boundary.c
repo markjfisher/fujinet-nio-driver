@@ -97,6 +97,17 @@ static void close_request(boundary_t *boundary, fake_request_t *request)
         remove_change_registration(boundary, unit, request);
 }
 
+static void close_request_clears_remove_waiter(boundary_t *boundary,
+                                               uint8_t unit,
+                                               fake_request_t *request,
+                                               fake_request_t **remove_waiter)
+{
+    close_request(boundary, request);
+    if (*remove_waiter == request)
+        *remove_waiter = NULL;
+    (void)unit;
+}
+
 static void test_requests_are_fifo_but_stopped_units_do_not_block_others(void)
 {
     boundary_t boundary;
@@ -162,11 +173,24 @@ static void test_change_registrations_persist_until_remove_or_close(void)
           boundary.registration_counts[0] == 0);
 }
 
+static void test_closing_request_clears_pending_remove_waiter(void)
+{
+    boundary_t boundary;
+    fake_request_t remove = {1, 0, 0};
+    fake_request_t *remove_waiter = &remove;
+
+    boundary_init(&boundary);
+    close_request_clears_remove_waiter(&boundary, 0, &remove, &remove_waiter);
+    CHECK("closing a request clears any retained TD_REMOVE waiter",
+          remove_waiter == NULL);
+}
+
 int main(void)
 {
     test_requests_are_fifo_but_stopped_units_do_not_block_others();
     test_flush_and_abort_only_remove_queued_requests();
     test_change_registrations_persist_until_remove_or_close();
+    test_closing_request_clears_pending_remove_waiter();
 
     if (failures != 0) {
         fprintf(stderr, "%u Exec boundary test(s) failed\n", failures);

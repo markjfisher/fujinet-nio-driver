@@ -45,6 +45,7 @@ struct fujinet_disk_unit_state {
 struct fujinet_change_registration {
     struct Node node;
     struct IORequest *request;
+    struct Interrupt *interrupt;
 };
 
 struct fujinet_disk_device_base {
@@ -156,8 +157,7 @@ static void signal_media_change(struct fujinet_disk_unit_state *unit)
         struct Node *next = node->ln_Succ;
         struct fujinet_change_registration *registration =
             (struct fujinet_change_registration *)node;
-        struct IOStdReq *io = (struct IOStdReq *)registration->request;
-        if (io->io_Data != NULL) Cause((struct Interrupt *)io->io_Data);
+        if (registration->interrupt != NULL) Cause(registration->interrupt);
         node = next;
     }
     if (unit->remove_request != NULL) {
@@ -221,8 +221,17 @@ static BPTR device_close(
     register struct fujinet_disk_device_base *base __asm("a6"))
 {
     uint8_t i;
-    for (i = 0; i < FUJINET_DISK_UNIT_COUNT; ++i)
+    for (i = 0; i < FUJINET_DISK_UNIT_COUNT; ++i) {
         (void)remove_change_request(&base->units[i], request);
+        if (base->units[i].remove_request == request)
+            base->units[i].remove_request = NULL;
+    }
+    {
+        fujinet_io_queue_node_t *queued =
+            fujinet_io_queue_remove_request(&base->io_queue, request);
+        if (queued != NULL)
+            FreeMem(queued, sizeof(*queued));
+    }
     request->io_Device = NULL;
     request->io_Unit = NULL;
     if (base->device.dd_Library.lib_OpenCnt != 0) {
@@ -618,6 +627,7 @@ process_request:
             break;
         }
         registration->request = request;
+        registration->interrupt = (struct Interrupt *)io->io_Data;
         AddTail(&unit->change_requests, &registration->node);
         }
         if (trace_index < FUJINET_DISK_TRACE_CAPACITY) {
