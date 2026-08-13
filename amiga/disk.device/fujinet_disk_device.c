@@ -232,8 +232,11 @@ static BPTR device_close(
     {
         fujinet_io_queue_node_t *queued =
             fujinet_io_queue_remove_request(&base->io_queue, request);
-        if (queued != NULL)
+        if (queued != NULL) {
             FreeMem(queued, sizeof(*queued));
+            request->io_Error = IOERR_ABORTED;
+            ReplyMsg(&request->io_Message);
+        }
     }
     request->io_Device = NULL;
     request->io_Unit = NULL;
