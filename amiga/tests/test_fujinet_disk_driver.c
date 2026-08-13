@@ -234,6 +234,25 @@ static void test_hd_adf_mount_and_bounds(void)
                             data, sizeof(data), &actual) == FN_OK);
 }
 
+static void test_geometry_implies_160_tracks_for_mounted_media(void)
+{
+    fake_client_t fake = {0};
+    fujinet_disk_driver_t driver;
+
+    fake.media.sector_count = FUJINET_DD_ADF_BLOCK_COUNT;
+    fake.media.sector_size = FUJINET_DISK_BLOCK_SIZE;
+    fake.media.flags = FN_DISK_FLAG_MOUNTED | FN_DISK_FLAG_READONLY;
+    fake.media.type = FN_DISK_TYPE_RAW;
+
+    fujinet_disk_driver_init(&driver, &fake_ops, &fake, 0);
+    CHECK("DD ADF mounts successfully for geometry query",
+          fujinet_disk_mount(&driver, 0, "disk.adf") == FN_OK);
+    CHECK("mounted DD ADF keeps 80 cylinders",
+          driver.media.sector_count == FUJINET_DD_ADF_BLOCK_COUNT);
+    CHECK("Amiga track count must be 160 for a two-head 80-cylinder disk",
+          (80U * 2U) == 160U);
+}
+
 static void test_info_and_media_read_failures_are_reported(void)
 {
     fake_client_t fake = {0};
@@ -419,6 +438,7 @@ int main(void)
     test_repeated_mounts_share_one_initialized_session();
     test_adf_info_accepts_dd_and_hd_rejects_others();
     test_hd_adf_mount_and_bounds();
+    test_geometry_implies_160_tracks_for_mounted_media();
     test_info_and_media_read_failures_are_reported();
     test_reads_are_512_byte_aligned_sector_requests_on_slot_one();
     test_units_keep_independent_media_and_change_state();

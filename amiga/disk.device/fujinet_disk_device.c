@@ -589,7 +589,7 @@ process_request:
         io->io_Actual = DRIVE3_5;
         break;
     case TD_GETNUMTRACKS:
-        io->io_Actual = unit->driver.mounted ? 80 : 0;
+        io->io_Actual = unit->driver.mounted ? 160 : 0;
         break;
     case TD_GETGEOMETRY:
         if (io->io_Data == NULL || io->io_Length < sizeof(struct DriveGeometry)) {
