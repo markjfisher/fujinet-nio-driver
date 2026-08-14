@@ -8,6 +8,9 @@
 #define FLUSH 2U
 #define READ 3U
 #define WRITE 4U
+#define NT_UNKNOWN 0U
+#define NT_MESSAGE 5U
+#define NT_REPLYMSG 7U
 
 typedef struct fake_request {
     unsigned id;
@@ -15,6 +18,7 @@ typedef struct fake_request {
     unsigned aborted;
     unsigned valid_unit;
     unsigned quick;
+    unsigned node_type;
 } fake_request_t;
 
 typedef struct registration {
@@ -50,7 +54,17 @@ static void queue_request(boundary_t *boundary, unsigned node_index,
                           uint16_t command)
 {
     fujinet_io_queue_append(&boundary->queue, &boundary->nodes[node_index],
-                            request, unit, command);
+                             request, unit, command);
+}
+
+/* device_begin_io() owns this transition because private FIFO insertion
+ * bypasses Exec PutMsg(), which would normally set NT_MESSAGE for us. */
+static void defer_request(boundary_t *boundary, unsigned node_index,
+                          fake_request_t *request, uint8_t unit,
+                          uint16_t command)
+{
+    request->node_type = NT_MESSAGE;
+    queue_request(boundary, node_index, request, unit, command);
 }
 
 static fake_request_t *next_request(boundary_t *boundary)
@@ -125,14 +139,36 @@ static void complete_promoted_request(boundary_t *boundary,
         return;
     }
     ++request->replied;
+    request->node_type = NT_REPLYMSG;
     (void)boundary;
+}
+
+static void test_deferred_request_obeys_exec_message_lifecycle(void)
+{
+    boundary_t boundary;
+    fake_request_t request = {1, 0, 0, 1, 0, NT_UNKNOWN};
+    fake_request_t *promoted;
+
+    boundary_init(&boundary);
+    defer_request(&boundary, 0, &request, 0, WRITE);
+    CHECK("private FIFO defer sets NT_MESSAGE before BeginIO returns",
+          request.node_type == NT_MESSAGE);
+
+    promoted = promote_request(&boundary);
+    CHECK("deferred request is dequeued", promoted == &request);
+    CHECK("dequeued request remains NT_MESSAGE until reply",
+          request.node_type == NT_MESSAGE);
+    complete_promoted_request(&boundary, promoted);
+    CHECK("successful deferred request is replied once", request.replied == 1);
+    CHECK("ReplyMsg transitions deferred request to NT_REPLYMSG",
+          request.node_type == NT_REPLYMSG);
 }
 
 static void test_invalid_promoted_request_is_aborted_and_drain_continues(void)
 {
     boundary_t boundary;
-    fake_request_t invalid = {1, 0, 0, 1, 0};
-    fake_request_t following = {2, 0, 0, 1, 0};
+    fake_request_t invalid = {1, 0, 0, 1, 0, NT_UNKNOWN};
+    fake_request_t following = {2, 0, 0, 1, 0, NT_UNKNOWN};
     fake_request_t *promoted;
 
     boundary_init(&boundary);
@@ -157,9 +193,9 @@ static void test_invalid_promoted_request_is_aborted_and_drain_continues(void)
 static void test_requests_are_fifo_but_stopped_units_do_not_block_others(void)
 {
     boundary_t boundary;
-    fake_request_t held = {1, 0, 0, 1, 0};
-    fake_request_t other = {2, 0, 0, 1, 0};
-    fake_request_t start = {3, 0, 0, 1, 0};
+    fake_request_t held = {1, 0, 0, 1, 0, NT_UNKNOWN};
+    fake_request_t other = {2, 0, 0, 1, 0, NT_UNKNOWN};
+    fake_request_t start = {3, 0, 0, 1, 0, NT_UNKNOWN};
 
     boundary_init(&boundary);
     boundary.stopped[0] = 1;
@@ -176,9 +212,9 @@ static void test_requests_are_fifo_but_stopped_units_do_not_block_others(void)
 static void test_flush_and_abort_only_remove_queued_requests(void)
 {
     boundary_t boundary;
-    fake_request_t active = {1, 0, 0, 1, 0};
-    fake_request_t queued = {2, 0, 0, 1, 0};
-    fake_request_t other = {3, 0, 0, 1, 0};
+    fake_request_t active = {1, 0, 0, 1, 0, NT_UNKNOWN};
+    fake_request_t queued = {2, 0, 0, 1, 0, NT_UNKNOWN};
+    fake_request_t other = {3, 0, 0, 1, 0, NT_UNKNOWN};
     fujinet_io_queue_node_t *removed;
 
     boundary_init(&boundary);
@@ -199,8 +235,8 @@ static void test_flush_and_abort_only_remove_queued_requests(void)
 static void test_change_registrations_persist_until_remove_or_close(void)
 {
     boundary_t boundary;
-    fake_request_t first = {1, 0, 0, 1, 0};
-    fake_request_t second = {2, 0, 0, 1, 0};
+    fake_request_t first = {1, 0, 0, 1, 0, NT_UNKNOWN};
+    fake_request_t second = {2, 0, 0, 1, 0, NT_UNKNOWN};
 
     boundary_init(&boundary);
     add_change_registration(&boundary, 0, &first);
@@ -222,7 +258,7 @@ static void test_change_registrations_persist_until_remove_or_close(void)
 static void test_closing_request_clears_pending_remove_waiter(void)
 {
     boundary_t boundary;
-    fake_request_t remove = {1, 0, 0, 1, 0};
+    fake_request_t remove = {1, 0, 0, 1, 0, NT_UNKNOWN};
     fake_request_t *remove_waiter = &remove;
 
     boundary_init(&boundary);
@@ -234,7 +270,7 @@ static void test_closing_request_clears_pending_remove_waiter(void)
 static void test_duplicate_change_registration_reuses_one_retained_entry(void)
 {
     boundary_t boundary;
-    fake_request_t request = {1, 0, 0, 1, 0};
+    fake_request_t request = {1, 0, 0, 1, 0, NT_UNKNOWN};
 
     boundary_init(&boundary);
     add_change_registration(&boundary, 0, &request);
@@ -256,6 +292,7 @@ int main(void)
     test_closing_request_clears_pending_remove_waiter();
     test_duplicate_change_registration_reuses_one_retained_entry();
     test_invalid_promoted_request_is_aborted_and_drain_continues();
+    test_deferred_request_obeys_exec_message_lifecycle();
 
     if (failures != 0) {
         fprintf(stderr, "%u Exec boundary test(s) failed\n", failures);
