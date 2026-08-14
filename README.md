@@ -90,7 +90,7 @@ This builds the required resident library variant from the sibling
 
 ```text
 build/amiga/fujinet-disk.device
-build/amiga/fujinet-mount
+build/amiga/fujinet-mount (diagnostic utility)
 ```
 
 The root `make` builds both MS-DOS and Amiga and therefore requires both
@@ -120,7 +120,6 @@ Install the generated files and supplied MountList entry on the Amiga:
 
 ```text
 build/amiga/fujinet-disk.device  -> DEVS:fujinet-disk.device
-build/amiga/fujinet-mount        -> C:fujinet-mount
 amiga/config/DN0 .. DN7          -> DEVS:DN0 .. DEVS:DN7
 ```
 
@@ -128,28 +127,34 @@ The initial startup sequence is:
 
 ```text
 C:LoadModule DEVS:fujinet-disk.device
-C:fujinet-mount host:/standard.adf
+C:FMOUNT 12 DN0: RO
 C:Mount DN0: FROM DEVS:DN0
 ```
 
-`host:/standard.adf` is a FujiNet NIO URI and must exist beneath the NIO
-server's configured `host:` root. A successful mount reports slot 1,
-read-only mode, 512-byte sectors, and 1760 sectors. `DN0:` can then be used
-through normal AmigaDOS commands such as `Dir DN0:` and `Type DN0:file`.
-The normal FujiNet form resolves a persistent catalogue slot into an active
-drive and records the shared mapping:
+The standard Amiga tools resolve a persistent catalogue slot into an active
+drive and record the shared mapping:
 
 ```text
-fujinet-mount 12 0 RO
-fujinet-mount 37 1 RW
+C:FMOUNT 12 DN0: RO
+C:FMOUNT 37 DN1: RW
 Mount DN0: FROM DEVS:DN0
 Mount DN1: FROM DEVS:DN1
+C:FUMOUNT DN0:
 ```
 
-Amiga drive N maps to DiskDevice slot N+1. `fujinet-mount --eject N` ejects
-that drive and clears its mapping. Direct URI mounting remains available as
-`fujinet-mount --uri DRIVE URI [RW|RO]`; the legacy one-URI form targets drive
-0 read-only.
+`FUMOUNT` performs the driver-mediated eject and removes the persisted mapping.
+Amiga drive N maps to the selected catalogue slot through the shared
+`config-nio/mappings` contract.
+
+## Diagnostic mount utility
+
+`build/amiga/fujinet-mount` remains available for driver and transport
+diagnostics. It is not part of the normal Amiga installation or user mount
+workflow. Use it only for private driver behavior such as status and geometry
+inspection, boundary and malformed-request checks, direct URI injection, and
+explicit update/eject diagnostics.
+
+Normal catalogue mounting and ejecting must use `FMOUNT` and `FUMOUNT`.
 
 Current Amiga limitations:
 

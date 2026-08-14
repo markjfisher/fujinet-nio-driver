@@ -31,12 +31,22 @@ has been integration-tested with a standard 880 KiB ADF.
 - Large packet and codec buffers therefore live in the resident device base,
   not caller-owned filesystem stacks or mutable library statics.
 
-The transitional CLI form is `fujinet-mount CATALOG-SLOT DRIVE [RW|RO]`. It resolves
-the persistent Slot Catalog entry, mounts it into active drive `DRIVE`, and
-updates the shared `config-nio/mappings` record. Direct URI mounting is
-retained as `fujinet-mount --uri DRIVE URI [RW|RO]`.
-Phase 2 moves the normal user workflow to `nio-core-apps` `FMOUNT`/`FUMOUNT`;
-this program must not remain a competing application.
+Normal Amiga users select catalogue media with the `nio-core-apps` tools:
+
+```text
+FMOUNT CATALOG-SLOT DN0: [RO|RW]
+FUMOUNT DN0:
+```
+
+`FMOUNT` resolves the persistent Slot Catalog entry, mounts it into the
+selected drive, and updates the shared `config-nio/mappings` record.
+`FUMOUNT` performs the driver-mediated eject and removes the mapping.
+
+The separately built `fujinet-mount` program is diagnostic-only. It remains
+available for private driver tests such as status and geometry inspection,
+boundary and malformed-request checks, direct URI injection, and explicit
+update/eject diagnostics. It is not a normal installation or end-user mount
+application.
 
 The native device exposes `FUJINET_DISK_CMD_MOUNT` as its private read-only
 Mount command and `FUJINET_DISK_CMD_MOUNT_WRITABLE` as the writable variant;
