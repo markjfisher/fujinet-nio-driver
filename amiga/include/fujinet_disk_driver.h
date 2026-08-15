@@ -52,15 +52,17 @@ typedef enum fujinet_disk_media_profile_kind {
 
 typedef struct fujinet_disk_media_profile {
     fujinet_disk_media_profile_kind_t kind;
-    uint32_t block_size;
+    uint32_t block_size; /* bytes */
     uint32_t surfaces;
     uint32_t blocks_per_track;
     uint32_t low_cylinder;
     uint32_t high_cylinder;
     uint32_t reserved_blocks;
     uint32_t interleave;
-    uint32_t dos_type;
 } fujinet_disk_media_profile_t;
+
+/* Future DosEnvec construction converts 512 block bytes to de_SizeBlock=128
+ * longwords. Filesystem DosType remains unresolved by this geometry API. */
 
 typedef struct fujinet_nio_disk_context {
     fn_disk_client_context_t client;

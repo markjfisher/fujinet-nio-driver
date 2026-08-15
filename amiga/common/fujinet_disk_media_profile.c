@@ -15,7 +15,6 @@ static void fill_profile(fujinet_disk_media_profile_t *profile,
     profile->high_cylinder = 79;
     profile->reserved_blocks = 2;
     profile->interleave = 0;
-    profile->dos_type = 0x444F5300UL;
 }
 
 uint8_t fujinet_disk_classify_media_profile(

@@ -293,7 +293,7 @@ static void test_media_profiles_are_explicit_and_reject_ambiguous_geometry(void)
           profile.block_size == 512 && profile.surfaces == 2 &&
               profile.blocks_per_track == 11 && profile.low_cylinder == 0 &&
               profile.high_cylinder == 79 && profile.reserved_blocks == 2 &&
-              profile.interleave == 0 && profile.dos_type == 0x444F5300UL);
+              profile.interleave == 0);
 
     info.sector_count = FUJINET_HD_ADF_BLOCK_COUNT;
     CHECK("HD media selects HD profile",
@@ -303,7 +303,13 @@ static void test_media_profiles_are_explicit_and_reject_ambiguous_geometry(void)
           profile.block_size == 512 && profile.surfaces == 2 &&
               profile.blocks_per_track == 22 && profile.low_cylinder == 0 &&
               profile.high_cylinder == 79 && profile.reserved_blocks == 2 &&
-              profile.interleave == 0 && profile.dos_type == 0x444F5300UL);
+              profile.interleave == 0);
+
+    /* The profile API has no DosType field: geometry classification alone
+     * cannot claim OFS or FFS. */
+    CHECK("geometry profile remains geometry-only",
+          profile.kind == FUJINET_DISK_MEDIA_PROFILE_HD_ADF &&
+              profile.block_size == 512 && profile.blocks_per_track == 22);
 
     info.sector_count = 1680;
     CHECK("ambiguous 1680-sector media is rejected",
