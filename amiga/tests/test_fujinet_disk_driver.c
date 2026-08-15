@@ -1,4 +1,5 @@
 #include "fujinet_disk_driver.h"
+#include "fujinet_disk_dos_envec.h"
 #include "fujinet_disk_filesystem.h"
 
 #include <stdio.h>
@@ -388,6 +389,69 @@ static void test_filesystem_classifier_rejects_invalid_boot_types(void)
                                             &dos_type) == FN_ERR_INVALID);
 }
 
+static void test_dos_envec_builder_maps_dd_hd_and_filesystem_type(void)
+{
+    fujinet_disk_media_profile_t dd = {FUJINET_DISK_MEDIA_PROFILE_DD_ADF,
+                                       512, 2, 11, 0, 79, 2, 0};
+    fujinet_disk_media_profile_t hd = {FUJINET_DISK_MEDIA_PROFILE_HD_ADF,
+                                       512, 2, 22, 0, 79, 2, 0};
+    fujinet_disk_dos_envec_t dd_env;
+    fujinet_disk_dos_envec_t hd_env;
+    fujinet_disk_dos_envec_t dd_ffs_env;
+    fujinet_disk_dos_envec_t hd_ofs_env;
+
+    CHECK("DD OFS DosEnvec builds",
+          fujinet_disk_build_dos_envec(&dd, FUJINET_AMIGA_DOS_OFS,
+                                       &dd_env) == FN_OK);
+    CHECK("HD FFS DosEnvec builds",
+          fujinet_disk_build_dos_envec(&hd, FUJINET_AMIGA_DOS_FFS,
+                                       &hd_env) == FN_OK);
+    CHECK("DD FFS DosEnvec builds",
+          fujinet_disk_build_dos_envec(&dd, FUJINET_AMIGA_DOS_FFS,
+                                       &dd_ffs_env) == FN_OK);
+    CHECK("HD OFS DosEnvec builds",
+          fujinet_disk_build_dos_envec(&hd, FUJINET_AMIGA_DOS_OFS,
+                                       &hd_ofs_env) == FN_OK);
+    CHECK("DD fields map exactly",
+          dd_env.de_SizeBlock == 128 && dd_env.de_Surfaces == 2 &&
+              dd_env.de_BlocksPerTrack == 11 && dd_env.de_LowCyl == 0 &&
+              dd_env.de_HighCyl == 79 && dd_env.de_Reserved == 2 &&
+              dd_env.de_Interleave == 0 &&
+              dd_env.de_DosType == FUJINET_AMIGA_DOS_OFS);
+    CHECK("HD fields map exactly",
+          hd_env.de_SizeBlock == 128 && hd_env.de_Surfaces == 2 &&
+              hd_env.de_BlocksPerTrack == 22 && hd_env.de_LowCyl == 0 &&
+              hd_env.de_HighCyl == 79 && hd_env.de_Reserved == 2 &&
+              hd_env.de_Interleave == 0 &&
+              hd_env.de_DosType == FUJINET_AMIGA_DOS_FFS);
+    CHECK("operational fields preserve MountList values",
+          dd_env.de_NumBuffers == 5 && dd_env.de_BufMemType == 1 &&
+              dd_env.de_PreAlloc == 0 && dd_env.de_MaxTransfer == 0 &&
+              dd_env.de_Mask == 0 &&
+              dd_env.handler_stack_size == 32768 &&
+              dd_env.handler_priority == 5 && dd_env.handler_glob_vec == -1);
+    CHECK("DD and HD differ only by geometry and DosType",
+          dd_env.de_SizeBlock == hd_env.de_SizeBlock &&
+              dd_env.de_Surfaces == hd_env.de_Surfaces &&
+              dd_env.de_LowCyl == hd_env.de_LowCyl &&
+              dd_env.de_HighCyl == hd_env.de_HighCyl &&
+              dd_env.de_Reserved == hd_env.de_Reserved &&
+              dd_env.de_Interleave == hd_env.de_Interleave &&
+              dd_env.de_BlocksPerTrack != hd_env.de_BlocksPerTrack &&
+              dd_env.de_DosType != hd_env.de_DosType);
+}
+
+static void test_dos_envec_builder_rejects_unsupported_dos_type(void)
+{
+    fujinet_disk_media_profile_t profile = {FUJINET_DISK_MEDIA_PROFILE_DD_ADF,
+                                            512, 2, 11, 0, 79, 2, 0};
+    fujinet_disk_dos_envec_t envec;
+
+    CHECK("unsupported DosType cannot enter DosEnvec builder",
+          fujinet_disk_build_dos_envec(&profile, 0x444F5302UL, &envec) ==
+              FN_ERR_INVALID);
+}
+
 static void test_info_and_media_read_failures_are_reported(void)
 {
     fake_client_t fake = {0};
@@ -579,6 +643,8 @@ int main(void)
     test_media_profiles_are_independent_per_unit();
     test_filesystem_classifier_accepts_supported_boot_types();
     test_filesystem_classifier_rejects_invalid_boot_types();
+    test_dos_envec_builder_maps_dd_hd_and_filesystem_type();
+    test_dos_envec_builder_rejects_unsupported_dos_type();
     test_info_and_media_read_failures_are_reported();
     test_reads_are_512_byte_aligned_sector_requests_on_slot_one();
     test_units_keep_independent_media_and_change_state();
