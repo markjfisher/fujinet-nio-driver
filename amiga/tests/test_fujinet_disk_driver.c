@@ -413,21 +413,28 @@ static void test_dos_envec_builder_maps_dd_hd_and_filesystem_type(void)
           fujinet_disk_build_dos_envec(&hd, FUJINET_AMIGA_DOS_OFS,
                                        &hd_ofs_env) == FN_OK);
     CHECK("DD fields map exactly",
-          dd_env.de_SizeBlock == 128 && dd_env.de_Surfaces == 2 &&
+          dd_env.de_TableSize == 19 && dd_env.de_SizeBlock == 128 &&
+              dd_env.de_SecOrg == 0 && dd_env.de_Surfaces == 2 &&
+              dd_env.de_SectorPerBlock == 1 &&
               dd_env.de_BlocksPerTrack == 11 && dd_env.de_LowCyl == 0 &&
               dd_env.de_HighCyl == 79 && dd_env.de_Reserved == 2 &&
               dd_env.de_Interleave == 0 &&
               dd_env.de_DosType == FUJINET_AMIGA_DOS_OFS);
     CHECK("HD fields map exactly",
-          hd_env.de_SizeBlock == 128 && hd_env.de_Surfaces == 2 &&
+          hd_env.de_TableSize == 19 && hd_env.de_SizeBlock == 128 &&
+              hd_env.de_SecOrg == 0 && hd_env.de_Surfaces == 2 &&
+              hd_env.de_SectorPerBlock == 1 &&
               hd_env.de_BlocksPerTrack == 22 && hd_env.de_LowCyl == 0 &&
               hd_env.de_HighCyl == 79 && hd_env.de_Reserved == 2 &&
               hd_env.de_Interleave == 0 &&
               hd_env.de_DosType == FUJINET_AMIGA_DOS_FFS);
     CHECK("operational fields preserve MountList values",
           dd_env.de_NumBuffers == 5 && dd_env.de_BufMemType == 1 &&
-              dd_env.de_PreAlloc == 0 && dd_env.de_MaxTransfer == 0 &&
-              dd_env.de_Mask == 0 &&
+              dd_env.de_PreAlloc == 0 &&
+              dd_env.de_MaxTransfer == 0x7FFFFFFFUL &&
+              dd_env.de_Mask == 0xFFFFFFFEUL && dd_env.de_BootPri == 0 &&
+              dd_env.de_Baud == 1200 && dd_env.de_Control == 0 &&
+              dd_env.de_BootBlocks == 0 &&
               dd_env.handler_stack_size == 32768 &&
               dd_env.handler_priority == 5 && dd_env.handler_glob_vec == -1);
     CHECK("DD and HD differ only by geometry and DosType",

@@ -17,8 +17,13 @@ uint8_t fujinet_disk_build_dos_envec(
     }
 
     memset(envec, 0, sizeof(*envec));
+    /* Classic DosEnvec contains entries 0..19; de_TableSize is the
+     * highest valid index, hence 19 rather than the entry count 20. */
+    envec->de_TableSize = 19;
     envec->de_SizeBlock = profile->block_size / 4;
+    envec->de_SecOrg = 0;
     envec->de_Surfaces = profile->surfaces;
+    envec->de_SectorPerBlock = 1;
     envec->de_BlocksPerTrack = profile->blocks_per_track;
     envec->de_LowCyl = profile->low_cylinder;
     envec->de_HighCyl = profile->high_cylinder;
@@ -27,9 +32,13 @@ uint8_t fujinet_disk_build_dos_envec(
     envec->de_Interleave = profile->interleave;
     envec->de_NumBuffers = 5;
     envec->de_BufMemType = 1;
-    envec->de_MaxTransfer = 0;
-    envec->de_Mask = 0;
+    envec->de_MaxTransfer = 0x7FFFFFFFUL;
+    envec->de_Mask = 0xFFFFFFFEUL;
+    envec->de_BootPri = 0;
     envec->de_DosType = dos_type;
+    envec->de_Baud = 1200;
+    envec->de_Control = 0;
+    envec->de_BootBlocks = 0;
     envec->handler_stack_size = 32768;
     envec->handler_priority = 5;
     envec->handler_glob_vec = -1;
