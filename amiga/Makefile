@@ -8,6 +8,7 @@ DEVICE := $(BUILD_DIR)/fujinet-disk.device
 DEVICE_MAP := $(DEVICE).map
 MOUNT_TOOL := $(BUILD_DIR)/fujinet-mount
 SOURCES := common/fujinet_disk_driver.c \
+	common/fujinet_disk_filesystem.c \
 	common/fujinet_disk_media_profile.c \
 	common/fujinet_io_queue.c \
 	channels/rs232/fujinet_nio_client.c \

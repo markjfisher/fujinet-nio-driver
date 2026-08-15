@@ -1,4 +1,5 @@
 #include "fujinet_disk_driver.h"
+#include "fujinet_disk_filesystem.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -350,6 +351,43 @@ static void test_media_profiles_are_independent_per_unit(void)
               dd_profile.blocks_per_track != hd_profile.blocks_per_track);
 }
 
+static void test_filesystem_classifier_accepts_supported_boot_types(void)
+{
+    static const uint8_t dd_boot[] = {'D', 'O', 'S', 0};
+    static const uint8_t hd_boot[] = {'D', 'O', 'S', 0};
+    static const uint8_t ffs_boot[] = {'D', 'O', 'S', 1};
+    uint32_t dos_type = 0;
+
+    CHECK("standard DD boot block identifies OFS",
+          fujinet_disk_classify_filesystem(dd_boot, sizeof(dd_boot), &dos_type) == FN_OK &&
+              dos_type == FUJINET_AMIGA_DOS_OFS);
+    CHECK("standard HD boot block identifies OFS",
+          fujinet_disk_classify_filesystem(hd_boot, sizeof(hd_boot), &dos_type) == FN_OK &&
+              dos_type == FUJINET_AMIGA_DOS_OFS);
+    CHECK("FFS boot block identifies FFS",
+          fujinet_disk_classify_filesystem(ffs_boot, sizeof(ffs_boot), &dos_type) == FN_OK &&
+              dos_type == FUJINET_AMIGA_DOS_FFS);
+}
+
+static void test_filesystem_classifier_rejects_invalid_boot_types(void)
+{
+    static const uint8_t bad_signature[] = {'N', 'O', 'S', 0};
+    static const uint8_t unsupported_type[] = {'D', 'O', 'S', 2};
+    static const uint8_t truncated[] = {'D', 'O', 'S'};
+    uint32_t dos_type = 0;
+
+    CHECK("invalid boot signature is rejected",
+          fujinet_disk_classify_filesystem(bad_signature, sizeof(bad_signature),
+                                            &dos_type) == FN_ERR_INVALID);
+    CHECK("unsupported DosType is rejected",
+          fujinet_disk_classify_filesystem(unsupported_type,
+                                            sizeof(unsupported_type),
+                                            &dos_type) == FN_ERR_INVALID);
+    CHECK("truncated boot block is rejected",
+          fujinet_disk_classify_filesystem(truncated, sizeof(truncated),
+                                            &dos_type) == FN_ERR_INVALID);
+}
+
 static void test_info_and_media_read_failures_are_reported(void)
 {
     fake_client_t fake = {0};
@@ -539,6 +577,8 @@ int main(void)
     test_dd_and_hd_profiles_keep_expected_geometry();
     test_media_profiles_are_explicit_and_reject_ambiguous_geometry();
     test_media_profiles_are_independent_per_unit();
+    test_filesystem_classifier_accepts_supported_boot_types();
+    test_filesystem_classifier_rejects_invalid_boot_types();
     test_info_and_media_read_failures_are_reported();
     test_reads_are_512_byte_aligned_sector_requests_on_slot_one();
     test_units_keep_independent_media_and_change_state();
