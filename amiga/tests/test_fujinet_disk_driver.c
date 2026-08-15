@@ -276,6 +276,74 @@ static void test_dd_and_hd_profiles_keep_expected_geometry(void)
               hd.media.sector_count == FUJINET_HD_ADF_BLOCK_COUNT);
 }
 
+static void test_media_profiles_are_explicit_and_reject_ambiguous_geometry(void)
+{
+    fn_disk_info_t info = {0};
+    fujinet_disk_media_profile_t profile;
+
+    info.flags = FN_DISK_FLAG_MOUNTED;
+    info.type = FN_DISK_TYPE_RAW;
+    info.sector_size = FUJINET_DISK_BLOCK_SIZE;
+
+    info.sector_count = FUJINET_DD_ADF_BLOCK_COUNT;
+    CHECK("DD media selects DD profile",
+          fujinet_disk_classify_media_profile(&info, &profile) == FN_OK &&
+              profile.kind == FUJINET_DISK_MEDIA_PROFILE_DD_ADF);
+    CHECK("DD profile has exact geometry",
+          profile.block_size == 512 && profile.surfaces == 2 &&
+              profile.blocks_per_track == 11 && profile.low_cylinder == 0 &&
+              profile.high_cylinder == 79 && profile.reserved_blocks == 2 &&
+              profile.interleave == 0 && profile.dos_type == 0x444F5300UL);
+
+    info.sector_count = FUJINET_HD_ADF_BLOCK_COUNT;
+    CHECK("HD media selects HD profile",
+          fujinet_disk_classify_media_profile(&info, &profile) == FN_OK &&
+              profile.kind == FUJINET_DISK_MEDIA_PROFILE_HD_ADF);
+    CHECK("HD profile has distinct blocks per track",
+          profile.block_size == 512 && profile.surfaces == 2 &&
+              profile.blocks_per_track == 22 && profile.low_cylinder == 0 &&
+              profile.high_cylinder == 79 && profile.reserved_blocks == 2 &&
+              profile.interleave == 0 && profile.dos_type == 0x444F5300UL);
+
+    info.sector_count = 1680;
+    CHECK("ambiguous 1680-sector media is rejected",
+          fujinet_disk_classify_media_profile(&info, &profile) == FN_ERR_INVALID);
+    info.sector_count = 1000000;
+    CHECK("large raw media is rejected",
+          fujinet_disk_classify_media_profile(&info, &profile) == FN_ERR_INVALID);
+    info.sector_size = 256;
+    info.sector_count = FUJINET_DD_ADF_BLOCK_COUNT;
+    CHECK("non-512 media is rejected",
+          fujinet_disk_classify_media_profile(&info, &profile) == FN_ERR_INVALID);
+}
+
+static void test_media_profiles_are_independent_per_unit(void)
+{
+    fujinet_disk_driver_t dd = {0};
+    fujinet_disk_driver_t hd = {0};
+    fujinet_disk_media_profile_t dd_profile;
+    fujinet_disk_media_profile_t hd_profile;
+
+    dd.media.flags = FN_DISK_FLAG_MOUNTED;
+    dd.media.type = FN_DISK_TYPE_RAW;
+    dd.media.sector_size = FUJINET_DISK_BLOCK_SIZE;
+    dd.media.sector_count = FUJINET_DD_ADF_BLOCK_COUNT;
+    hd.media.flags = FN_DISK_FLAG_MOUNTED;
+    hd.media.type = FN_DISK_TYPE_RAW;
+    hd.media.sector_size = FUJINET_DISK_BLOCK_SIZE;
+    hd.media.sector_count = FUJINET_HD_ADF_BLOCK_COUNT;
+
+    CHECK("unit zero selects DD independently",
+          fujinet_disk_classify_media_profile(&dd.media, &dd_profile) == FN_OK &&
+              dd_profile.blocks_per_track == 11);
+    CHECK("unit one selects HD independently",
+          fujinet_disk_classify_media_profile(&hd.media, &hd_profile) == FN_OK &&
+              hd_profile.blocks_per_track == 22);
+    CHECK("unit profiles remain distinct",
+          dd_profile.kind != hd_profile.kind &&
+              dd_profile.blocks_per_track != hd_profile.blocks_per_track);
+}
+
 static void test_info_and_media_read_failures_are_reported(void)
 {
     fake_client_t fake = {0};
@@ -463,6 +531,8 @@ int main(void)
     test_hd_adf_mount_and_bounds();
     test_geometry_implies_160_tracks_for_mounted_media();
     test_dd_and_hd_profiles_keep_expected_geometry();
+    test_media_profiles_are_explicit_and_reject_ambiguous_geometry();
+    test_media_profiles_are_independent_per_unit();
     test_info_and_media_read_failures_are_reported();
     test_reads_are_512_byte_aligned_sector_requests_on_slot_one();
     test_units_keep_independent_media_and_change_state();

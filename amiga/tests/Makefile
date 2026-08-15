@@ -13,7 +13,9 @@ LIBRARY := $(LIB_ROOT)/build/fujinet-nio-linux.a
 
 all: $(TEST) $(LINK_TEST) $(QUEUE_TEST) $(EXEC_BOUNDARY_TEST)
 
-$(TEST): test_fujinet_disk_driver.c $(DRIVER_ROOT)/common/fujinet_disk_driver.c
+$(TEST): test_fujinet_disk_driver.c \
+		$(DRIVER_ROOT)/common/fujinet_disk_driver.c \
+		$(DRIVER_ROOT)/common/fujinet_disk_media_profile.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/include -I$(LIB_ROOT)/include $^ -o $@
 

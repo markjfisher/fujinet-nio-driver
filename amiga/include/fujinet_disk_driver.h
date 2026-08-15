@@ -45,6 +45,23 @@ typedef struct fujinet_disk_driver {
     uint8_t unit;
 } fujinet_disk_driver_t;
 
+typedef enum fujinet_disk_media_profile_kind {
+    FUJINET_DISK_MEDIA_PROFILE_DD_ADF = 1,
+    FUJINET_DISK_MEDIA_PROFILE_HD_ADF = 2
+} fujinet_disk_media_profile_kind_t;
+
+typedef struct fujinet_disk_media_profile {
+    fujinet_disk_media_profile_kind_t kind;
+    uint32_t block_size;
+    uint32_t surfaces;
+    uint32_t blocks_per_track;
+    uint32_t low_cylinder;
+    uint32_t high_cylinder;
+    uint32_t reserved_blocks;
+    uint32_t interleave;
+    uint32_t dos_type;
+} fujinet_disk_media_profile_t;
+
 typedef struct fujinet_nio_disk_context {
     fn_disk_client_context_t client;
 } fujinet_nio_disk_context_t;
@@ -67,8 +84,11 @@ uint8_t fujinet_disk_write(fujinet_disk_driver_t *driver, uint32_t unit,
 uint8_t fujinet_disk_info(fujinet_disk_driver_t *driver, uint32_t unit,
                           fn_disk_info_t *info);
 uint8_t fujinet_disk_read(fujinet_disk_driver_t *driver, uint32_t unit,
-                          uint32_t byte_offset, uint8_t *data,
-                          uint32_t byte_length, uint32_t *actual);
+                           uint32_t byte_offset, uint8_t *data,
+                           uint32_t byte_length, uint32_t *actual);
+
+uint8_t fujinet_disk_classify_media_profile(
+    const fn_disk_info_t *info, fujinet_disk_media_profile_t *profile);
 
 extern const fujinet_disk_client_t fujinet_nio_disk_client;
 uint8_t fujinet_nio_disk_context_init(fujinet_nio_disk_context_t *context);
