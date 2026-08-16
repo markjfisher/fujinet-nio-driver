@@ -19,7 +19,7 @@ $(TEST): test_fujinet_disk_driver.c \
 		$(DRIVER_ROOT)/common/fujinet_disk_filesystem.c \
 		$(DRIVER_ROOT)/common/fujinet_disk_media_profile.c
 	@mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/include -I$(LIB_ROOT)/include $^ -o $@
+	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/include -I$(DRIVER_ROOT)/public/include -I$(LIB_ROOT)/include $^ -o $@
 
 library:
 	$(MAKE) -C $(LIB_ROOT) linux
@@ -30,19 +30,19 @@ $(LIBRARY): library
 $(LINK_TEST): library test_fujinet_nio_client_link.c \
 		$(DRIVER_ROOT)/channels/rs232/fujinet_nio_client.c $(LIBRARY)
 	@mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/include -I$(LIB_ROOT)/include \
+	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/include -I$(DRIVER_ROOT)/public/include -I$(LIB_ROOT)/include \
 		test_fujinet_nio_client_link.c \
 		$(DRIVER_ROOT)/channels/rs232/fujinet_nio_client.c \
 		$(LIBRARY) -o $@
 
 $(QUEUE_TEST): test_fujinet_io_queue.c $(DRIVER_ROOT)/common/fujinet_io_queue.c
 	@mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/include $^ -o $@
+	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/include -I$(DRIVER_ROOT)/public/include $^ -o $@
 
 $(EXEC_BOUNDARY_TEST): test_fujinet_exec_boundary.c \
 		$(DRIVER_ROOT)/common/fujinet_io_queue.c
 	@mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/include $^ -o $@
+	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/include -I$(DRIVER_ROOT)/public/include $^ -o $@
 
 test: $(TEST) $(LINK_TEST) $(QUEUE_TEST) $(EXEC_BOUNDARY_TEST)
 	./$(TEST)

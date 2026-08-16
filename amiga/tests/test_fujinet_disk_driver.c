@@ -1,5 +1,5 @@
 #include "fujinet_disk_driver.h"
-#include "fujinet_disk_dos_envec.h"
+#include <fujinet-amiga-disk/support.h>
 #include "fujinet_disk_filesystem.h"
 
 #include <stdio.h>

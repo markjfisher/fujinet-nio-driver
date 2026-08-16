@@ -1,7 +1,7 @@
 LIB_ROOT ?= ../../fujinet-nio-lib
 CC := m68k-amigaos-gcc
 CFLAGS := -std=c99 -Wall -Wextra -Werror -O2 -mcpu=68000 -msoft-float
-CPPFLAGS := -Iinclude -I$(LIB_ROOT)/include
+CPPFLAGS := -Iinclude -Ipublic/include -I$(LIB_ROOT)/include
 BUILD_DIR := ../build/amiga
 LIBRARY := $(LIB_ROOT)/build/fujinet-nio-amiga-driver.a
 DEVICE := $(BUILD_DIR)/fujinet-disk.device

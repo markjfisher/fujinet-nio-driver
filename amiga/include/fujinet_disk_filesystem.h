@@ -5,9 +5,7 @@
 #include <stdint.h>
 
 #include "fujinet-nio.h"
-
-#define FUJINET_AMIGA_DOS_OFS 0x444F5300UL
-#define FUJINET_AMIGA_DOS_FFS 0x444F5301UL
+#include <fujinet-amiga-disk/support.h>
 
 /* The first longword of an Amiga boot block is the big-endian DosType. */
 #define FUJINET_AMIGA_BOOT_DOSTYPE_BYTES 4U

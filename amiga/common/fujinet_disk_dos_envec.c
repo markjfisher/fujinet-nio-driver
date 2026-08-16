@@ -1,4 +1,4 @@
-#include "fujinet_disk_dos_envec.h"
+#include <fujinet-amiga-disk/support.h>
 
 #include <string.h>
 
