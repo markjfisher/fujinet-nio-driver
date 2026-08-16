@@ -31,7 +31,8 @@ static const UWORD supported_commands[] = {
     TD_EJECT, TD_REMOVE, TD_ADDCHANGEINT, TD_REMCHANGEINT,
     TD_GETDRIVETYPE, TD_GETNUMTRACKS, TD_GETGEOMETRY,
     NSCMD_DEVICEQUERY, FUJINET_DISK_CMD_MOUNT,
-    FUJINET_DISK_CMD_MOUNT_WRITABLE, FUJINET_DISK_CMD_MOUNT_CATALOG, 0
+    FUJINET_DISK_CMD_MOUNT_WRITABLE, FUJINET_DISK_CMD_MOUNT_CATALOG,
+    FUJINET_DISK_CMD_INSPECT_CATALOG, 0
 };
 
 struct fujinet_disk_unit_state {
@@ -491,6 +492,27 @@ process_request:
             (void)store_mappings(base, old_mappings);
         request->io_Error = result_to_io_error(result);
         if (unit->driver.change_count != old_count) signal_media_change(unit);
+        }
+        break;
+    case FUJINET_DISK_CMD_INSPECT_CATALOG:
+        {
+        struct fujinet_disk_catalog_inspection *catalog =
+            (struct fujinet_disk_catalog_inspection *)io->io_Data;
+        if (catalog == NULL || io->io_Length < sizeof(*catalog) ||
+            unit->driver.client == NULL || unit->driver.client->inspect == NULL) {
+            request->io_Error = IOERR_BADLENGTH;
+            break;
+        }
+        result = resolve_catalog_slot(base, catalog->catalog_slot,
+                                      base->catalog_uri,
+                                      sizeof(base->catalog_uri));
+        if (result == FN_OK)
+            result = unit->driver.client->inspect(unit->driver.client_context,
+                                                  base->catalog_uri,
+                                                  &catalog->inspection);
+        request->io_Error = result_to_io_error(result);
+        if (result == FN_OK)
+            io->io_Actual = sizeof(*catalog);
         }
         break;
     case FUJINET_DISK_CMD_TRACE:

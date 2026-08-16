@@ -14,6 +14,7 @@ typedef struct fake_client {
     unsigned flush_calls;
     unsigned unmount_calls;
     unsigned clear_calls;
+    unsigned inspect_calls;
     uint8_t slot;
     uint8_t readonly;
     uint8_t type;
@@ -123,6 +124,20 @@ static uint8_t fake_unmount(void *context, uint8_t slot)
 { fake_client_t *fake = context; fake->slot = slot; ++fake->unmount_calls; return fake->unmount_result; }
 static uint8_t fake_clear(void *context, uint8_t slot)
 { fake_client_t *fake = context; fake->slot = slot; ++fake->clear_calls; return fake->clear_result; }
+static uint8_t fake_inspect(void *context, const char *uri, fn_disk_inspection_t *inspection)
+{
+    fake_client_t *fake = context;
+    ++fake->inspect_calls;
+    fake->uri = uri;
+    memset(inspection, 0, sizeof(*inspection));
+    inspection->media.flags = FN_DISK_FLAG_MOUNTED | FN_DISK_FLAG_READONLY;
+    inspection->media.type = FN_DISK_TYPE_RAW;
+    inspection->media.sector_size = FUJINET_DISK_BLOCK_SIZE;
+    inspection->media.sector_count = FUJINET_HD_ADF_BLOCK_COUNT;
+    inspection->boot_length = 4;
+    memcpy(inspection->boot_bytes, "DOS\0", 4);
+    return FN_OK;
+}
 
 static const fujinet_disk_client_t fake_ops = {
     fake_init,
@@ -132,7 +147,8 @@ static const fujinet_disk_client_t fake_ops = {
     fake_write,
     fake_flush,
     fake_unmount,
-    fake_clear
+    fake_clear,
+    fake_inspect
 };
 
 static void test_amiga_units_map_to_one_based_diskdevice_slots(void)

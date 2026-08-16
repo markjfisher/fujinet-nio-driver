@@ -31,6 +31,7 @@ typedef struct fujinet_disk_client {
     uint8_t (*flush)(void *context, uint8_t slot);
     uint8_t (*unmount)(void *context, uint8_t slot);
     uint8_t (*clear_changed)(void *context, uint8_t slot);
+    uint8_t (*inspect)(void *context, const char *uri, fn_disk_inspection_t *inspection);
 } fujinet_disk_client_t;
 
 typedef struct fujinet_disk_driver {

@@ -59,6 +59,8 @@ static uint8_t nio_unmount(void *context, uint8_t slot)
 { fujinet_nio_disk_context_t *nio = context; return nio ? fn_disk_unmount_context(&nio->client, slot) : FN_ERR_INVALID; }
 static uint8_t nio_clear_changed(void *context, uint8_t slot)
 { fujinet_nio_disk_context_t *nio = context; return nio ? fn_disk_clear_changed_context(&nio->client, slot) : FN_ERR_INVALID; }
+static uint8_t nio_inspect(void *context, const char *uri, fn_disk_inspection_t *inspection)
+{ fujinet_nio_disk_context_t *nio = context; return nio ? fn_disk_inspect_context(&nio->client, uri, FN_DISK_TYPE_AUTO, 0, inspection) : FN_ERR_INVALID; }
 
 const fujinet_disk_client_t fujinet_nio_disk_client = {
     nio_init,
@@ -68,5 +70,6 @@ const fujinet_disk_client_t fujinet_nio_disk_client = {
     nio_write,
     nio_flush,
     nio_unmount,
-    nio_clear_changed
+    nio_clear_changed,
+    nio_inspect
 };
