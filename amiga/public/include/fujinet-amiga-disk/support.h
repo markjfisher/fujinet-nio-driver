@@ -2,6 +2,7 @@
 #define FUJINET_AMIGA_DISK_SUPPORT_H
 
 #include <stdint.h>
+#include <stddef.h>
 #include "fujinet-nio.h"
 
 typedef enum fujinet_disk_media_profile_kind {
@@ -30,7 +31,7 @@ typedef struct fujinet_disk_dos_envec {
 uint8_t fujinet_disk_classify_media_profile(const fn_disk_info_t *info,
                                              fujinet_disk_media_profile_t *profile);
 uint8_t fujinet_disk_classify_filesystem(const uint8_t *boot_block,
-                                         uint16_t boot_block_length,
+                                         size_t boot_block_length,
                                          uint32_t *dos_type);
 uint8_t fujinet_disk_build_dos_envec(const fujinet_disk_media_profile_t *profile,
                                      uint32_t dos_type,
