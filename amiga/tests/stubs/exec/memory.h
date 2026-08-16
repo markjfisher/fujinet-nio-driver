@@ -1,0 +1,7 @@
+#ifndef NATIVE_TEST_EXEC_MEMORY_H
+#define NATIVE_TEST_EXEC_MEMORY_H
+
+#define MEMF_PUBLIC 1U
+#define MEMF_CLEAR 2U
+
+#endif

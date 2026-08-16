@@ -17,6 +17,13 @@
 #include "fujinet_io_queue.h"
 #include "fn_platform.h"
 
+#ifdef FUJINET_DISK_NATIVE_TEST
+#include <stdlib.h>
+#define FN_REGISTER(name)
+#else
+#define FN_REGISTER(name) __asm(name)
+#endif
+
 #define DEVICE_NAME FUJINET_DISK_DEVICE_NAME
 #define DEVICE_VERSION 0
 #define DEVICE_REVISION 1
@@ -70,9 +77,11 @@ static void discard_change_requests(struct fujinet_disk_device_base *base);
 
 struct ExecBase *SysBase;
 
+#ifndef FUJINET_DISK_NATIVE_TEST
 static const char device_name[] = DEVICE_NAME;
 static const char device_id[] =
     DEVICE_NAME " 0.1 (10.8.2026)\r\n";
+#endif
 
 static BYTE result_to_io_error(uint8_t result)
 {
@@ -180,9 +189,9 @@ static uint8_t remove_all_change_requests(struct fujinet_disk_unit_state *unit,
                                           struct IORequest *request);
 
 static struct fujinet_disk_device_base *device_init(
-    register struct fujinet_disk_device_base *base __asm("d0"),
-    register BPTR segment_list __asm("a0"),
-    register struct ExecBase *sys_base __asm("a6"))
+    register struct fujinet_disk_device_base *base FN_REGISTER("d0"),
+    register BPTR segment_list FN_REGISTER("a0"),
+    register struct ExecBase *sys_base FN_REGISTER("a6"))
 {
     uint8_t i;
     SysBase = sys_base;
@@ -199,10 +208,10 @@ static struct fujinet_disk_device_base *device_init(
 }
 
 static struct Device *device_open(
-    register struct IORequest *request __asm("a1"),
-    register ULONG unit_number __asm("d0"),
-    register ULONG flags __asm("d1"),
-    register struct fujinet_disk_device_base *base __asm("a6"))
+    register struct IORequest *request FN_REGISTER("a1"),
+    register ULONG unit_number FN_REGISTER("d0"),
+    register ULONG flags FN_REGISTER("d1"),
+    register struct fujinet_disk_device_base *base FN_REGISTER("a6"))
 {
     uint8_t slot;
 
@@ -221,8 +230,8 @@ static struct Device *device_open(
 }
 
 static BPTR device_close(
-    register struct IORequest *request __asm("a1"),
-    register struct fujinet_disk_device_base *base __asm("a6"))
+    register struct IORequest *request FN_REGISTER("a1"),
+    register struct fujinet_disk_device_base *base FN_REGISTER("a6"))
 {
     uint8_t i;
     for (i = 0; i < FUJINET_DISK_UNIT_COUNT; ++i) {
@@ -248,7 +257,7 @@ static BPTR device_close(
 }
 
 static BPTR device_expunge(
-    register struct fujinet_disk_device_base *base __asm("a6"))
+    register struct fujinet_disk_device_base *base FN_REGISTER("a6"))
 {
     /* The serial-backed session is process-global today, so unloading is
      * deliberately deferred until Stage 7 defines explicit lifecycle. */
@@ -348,8 +357,8 @@ static struct IORequest *next_runnable_request(
 }
 
 static void device_begin_io(
-    register struct IORequest *request __asm("a1"),
-    register struct fujinet_disk_device_base *base __asm("a6"))
+    register struct IORequest *request FN_REGISTER("a1"),
+    register struct fujinet_disk_device_base *base FN_REGISTER("a6"))
 {
     struct IOStdReq *io = (struct IOStdReq *)request;
     struct fujinet_disk_unit_state *unit;
@@ -768,8 +777,8 @@ next_request:
 }
 
 static LONG device_abort_io(
-    register struct IORequest *request __asm("a1"),
-    register struct fujinet_disk_device_base *base __asm("a6"))
+    register struct IORequest *request FN_REGISTER("a1"),
+    register struct fujinet_disk_device_base *base FN_REGISTER("a6"))
 {
     struct Node *node;
     uint8_t unit_index = request_unit_index(base, request);
@@ -811,6 +820,7 @@ static LONG device_abort_io(
     return IOERR_NOCMD;
 }
 
+#ifndef FUJINET_DISK_NATIVE_TEST
 static const APTR device_vectors[] = {
     (APTR)device_open,
     (APTR)device_close,
@@ -828,7 +838,9 @@ static const ULONG device_init_table[] = {
     (ULONG)device_init
 };
 
+#ifndef FUJINET_DISK_NATIVE_TEST
 static const char device_end;
+#endif
 
 const struct Resident device_resident __attribute__((used)) = {
     RTC_MATCHWORD,
@@ -842,5 +854,38 @@ const struct Resident device_resident __attribute__((used)) = {
     (char *)device_id,
     (APTR)device_init_table
 };
+#endif
+
+#ifdef FUJINET_DISK_NATIVE_TEST
+static struct fujinet_disk_device_base native_test_base;
+static struct ExecBase native_test_sys_base;
+
+void fujinet_disk_native_test_reset(void)
+{
+    memset(&native_test_base, 0, sizeof(native_test_base));
+    (void)device_init(&native_test_base, 0, &native_test_sys_base);
+}
+
+void fujinet_disk_native_test_commit(uint8_t unit, uint32_t sector_count)
+{
+    fujinet_disk_driver_t *driver;
+    if (unit >= FUJINET_DISK_UNIT_COUNT) return;
+    driver = &native_test_base.units[unit].driver;
+    driver->mounted = 1;
+    driver->writable = 0;
+    driver->media.flags = FN_DISK_FLAG_MOUNTED | FN_DISK_FLAG_READONLY;
+    driver->media.slot = (uint8_t)(FUJINET_DISK_FIRST_SLOT + unit);
+    driver->media.type = FN_DISK_TYPE_RAW;
+    driver->media.sector_size = FUJINET_DISK_BLOCK_SIZE;
+    driver->media.sector_count = sector_count;
+}
+
+void fujinet_disk_native_test_begin_io(uint8_t unit, struct IORequest *request)
+{
+    if (unit >= FUJINET_DISK_UNIT_COUNT) return;
+    request->io_Unit = &native_test_base.exec_units[unit];
+    device_begin_io(request, &native_test_base);
+}
+#endif
 
 static const char device_end = 0;

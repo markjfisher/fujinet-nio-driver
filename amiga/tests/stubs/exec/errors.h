@@ -1,0 +1,11 @@
+#ifndef NATIVE_TEST_EXEC_ERRORS_H
+#define NATIVE_TEST_EXEC_ERRORS_H
+
+#define IOERR_OPENFAIL -1
+#define IOERR_ABORTED -2
+#define IOERR_BADLENGTH -3
+#define IOERR_NOCMD -4
+#define IOERR_BADADDRESS -5
+#define IOERR_UNITBUSY -6
+
+#endif
