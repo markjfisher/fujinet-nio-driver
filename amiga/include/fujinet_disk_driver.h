@@ -34,6 +34,11 @@ typedef struct fujinet_disk_client {
     uint8_t (*inspect)(void *context, const char *uri, fn_disk_inspection_t *inspection);
 } fujinet_disk_client_t;
 
+typedef uint8_t (*fujinet_disk_catalog_resolve_fn)(void *context,
+                                                    uint8_t catalog_slot,
+                                                    char *uri,
+                                                    uint16_t capacity);
+
 typedef struct fujinet_disk_driver {
     const fujinet_disk_client_t *client;
     void *client_context;
@@ -88,7 +93,14 @@ uint8_t fujinet_disk_info(fujinet_disk_driver_t *driver, uint32_t unit,
                           fn_disk_info_t *info);
 uint8_t fujinet_disk_read(fujinet_disk_driver_t *driver, uint32_t unit,
                            uint32_t byte_offset, uint8_t *data,
-                           uint32_t byte_length, uint32_t *actual);
+                            uint32_t byte_length, uint32_t *actual);
+uint8_t fujinet_disk_inspect_catalog(const fujinet_disk_client_t *client,
+                                     void *client_context,
+                                     fujinet_disk_catalog_resolve_fn resolve,
+                                     void *resolve_context,
+                                     uint8_t catalog_slot,
+                                     char *uri, uint16_t uri_capacity,
+                                     fn_disk_inspection_t *inspection);
 
 uint8_t fujinet_disk_classify_media_profile(
     const fn_disk_info_t *info, fujinet_disk_media_profile_t *profile);

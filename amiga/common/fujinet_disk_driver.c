@@ -99,6 +99,22 @@ uint8_t fujinet_disk_info(fujinet_disk_driver_t *driver, uint32_t unit,
     return validate_adf_geometry(info, driver->writable, slot);
 }
 
+uint8_t fujinet_disk_inspect_catalog(const fujinet_disk_client_t *client,
+                                     void *client_context,
+                                     fujinet_disk_catalog_resolve_fn resolve,
+                                     void *resolve_context,
+                                     uint8_t catalog_slot,
+                                     char *uri, uint16_t uri_capacity,
+                                     fn_disk_inspection_t *inspection)
+{
+    uint8_t result;
+    if (client == NULL || client->inspect == NULL || resolve == NULL ||
+        uri == NULL || uri_capacity == 0 || inspection == NULL) return FN_ERR_INVALID;
+    result = resolve(resolve_context, catalog_slot, uri, uri_capacity);
+    if (result != FN_OK) return result;
+    return client->inspect(client_context, uri, inspection);
+}
+
 uint8_t fujinet_disk_mount(fujinet_disk_driver_t *driver, uint32_t unit,
                            const char *uri)
 { return fujinet_disk_mount_mode(driver, unit, uri, 0); }

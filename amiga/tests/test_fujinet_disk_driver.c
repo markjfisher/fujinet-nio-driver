@@ -151,6 +151,65 @@ static const fujinet_disk_client_t fake_ops = {
     fake_inspect
 };
 
+static uint8_t fake_catalog_resolve(void *context, uint8_t catalog_slot,
+                                    char *uri, uint16_t capacity)
+{
+    fake_client_t *fake = context;
+    if (catalog_slot != 14 || capacity < 24) return FN_ERR_NOT_FOUND;
+    strcpy(uri, "host:/images/candidate.adf");
+    fake->uri = uri;
+    return FN_OK;
+}
+
+static void test_inspect_catalog_preserves_mounted_unit(void)
+{
+    fake_client_t fake;
+    fujinet_disk_driver_t driver;
+    fn_disk_inspection_t inspection;
+    fn_disk_info_t before;
+    uint32_t before_change_count;
+    uint8_t before_mounted;
+    uint8_t before_writable;
+    uint8_t result;
+
+    memset(&fake, 0, sizeof(fake));
+    fake.media.flags = FN_DISK_FLAG_MOUNTED | FN_DISK_FLAG_READONLY | FN_DISK_FLAG_CHANGED;
+    fake.media.type = FN_DISK_TYPE_RAW;
+    fake.media.sector_size = FUJINET_DISK_BLOCK_SIZE;
+    fake.media.sector_count = FUJINET_DD_ADF_BLOCK_COUNT;
+    fujinet_disk_driver_init(&driver, &fake_ops, &fake, 0);
+    driver.mounted = 1;
+    driver.writable = 0;
+    driver.change_count = 37;
+    driver.media = fake.media;
+    before = driver.media;
+    before_change_count = driver.change_count;
+    before_mounted = driver.mounted;
+    before_writable = driver.writable;
+
+    memset(&inspection, 0, sizeof(inspection));
+    result = fujinet_disk_inspect_catalog(&fake_ops, &fake,
+                                           fake_catalog_resolve, &fake, 14,
+                                           (char[64]){0}, 64, &inspection);
+    CHECK("catalog inspection succeeds", result == FN_OK);
+    CHECK("catalog inspection invokes inspect once", fake.inspect_calls == 1);
+    CHECK("catalog inspection resolves candidate URI",
+          strcmp(fake.uri, "host:/images/candidate.adf") == 0);
+    CHECK("catalog inspection never invokes mount", fake.mount_calls == 0);
+    CHECK("catalog inspection returns raw image type", inspection.media.type == FN_DISK_TYPE_RAW);
+    CHECK("catalog inspection returns HD sector size", inspection.media.sector_size == 512);
+    CHECK("catalog inspection returns HD sector count", inspection.media.sector_count == 3520);
+    CHECK("catalog inspection returns boot bytes", inspection.boot_length == 4 &&
+          memcmp(inspection.boot_bytes, "DOS\0", 4) == 0);
+    CHECK("catalog inspection preserves mounted state", driver.mounted == before_mounted);
+    CHECK("catalog inspection preserves protection state", driver.writable == before_writable);
+    CHECK("catalog inspection preserves media flags", driver.media.flags == before.flags);
+    CHECK("catalog inspection preserves media type", driver.media.type == before.type);
+    CHECK("catalog inspection preserves sector size", driver.media.sector_size == before.sector_size);
+    CHECK("catalog inspection preserves sector count", driver.media.sector_count == before.sector_count);
+    CHECK("catalog inspection preserves change count", driver.change_count == before_change_count);
+}
+
 static void test_amiga_units_map_to_one_based_diskdevice_slots(void)
 {
     uint8_t slot = 0;
@@ -656,6 +715,7 @@ static void test_change_acknowledgement_is_retried(void)
 int main(void)
 {
     test_amiga_units_map_to_one_based_diskdevice_slots();
+    test_inspect_catalog_preserves_mounted_unit();
     test_mount_is_explicitly_read_only_auto_detected_and_512_bytes();
     test_repeated_mounts_share_one_initialized_session();
     test_adf_info_accepts_dd_and_hd_rejects_others();

@@ -503,13 +503,13 @@ process_request:
             request->io_Error = IOERR_BADLENGTH;
             break;
         }
-        result = resolve_catalog_slot(base, catalog->catalog_slot,
-                                      base->catalog_uri,
-                                      sizeof(base->catalog_uri));
-        if (result == FN_OK)
-            result = unit->driver.client->inspect(unit->driver.client_context,
-                                                  base->catalog_uri,
-                                                  &catalog->inspection);
+        result = fujinet_disk_inspect_catalog(unit->driver.client,
+                                               unit->driver.client_context,
+                                               (fujinet_disk_catalog_resolve_fn)resolve_catalog_slot,
+                                               base, catalog->catalog_slot,
+                                               base->catalog_uri,
+                                               sizeof(base->catalog_uri),
+                                               &catalog->inspection);
         request->io_Error = result_to_io_error(result);
         if (result == FN_OK)
             io->io_Actual = sizeof(*catalog);
