@@ -36,5 +36,7 @@ uint8_t fujinet_disk_classify_filesystem(const uint8_t *boot_block,
 uint8_t fujinet_disk_build_dos_envec(const fujinet_disk_media_profile_t *profile,
                                      uint32_t dos_type,
                                      fujinet_disk_dos_envec_t *envec);
+void fujinet_disk_serialize_dos_envec(const fujinet_disk_dos_envec_t *envec,
+                                      uint32_t classic_envec[20]);
 
 #endif
