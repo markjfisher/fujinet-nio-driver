@@ -622,6 +622,46 @@ static void test_units_keep_independent_media_and_change_state(void)
               !unit1.mounted && unit1.change_count == 2);
 }
 
+static void test_all_eight_units_retain_independent_geometry(void)
+{
+    fake_client_t fakes[FUJINET_DISK_UNIT_COUNT] = {{0}};
+    fujinet_disk_driver_t drivers[FUJINET_DISK_UNIT_COUNT] = {{0}};
+    fn_disk_info_t info;
+    unsigned unit;
+
+    for (unit = 0; unit < FUJINET_DISK_UNIT_COUNT; ++unit) {
+        fakes[unit].media.flags = FN_DISK_FLAG_MOUNTED | FN_DISK_FLAG_READONLY;
+        fakes[unit].media.type = FN_DISK_TYPE_RAW;
+        fakes[unit].media.sector_size = FUJINET_DISK_BLOCK_SIZE;
+        fakes[unit].media.sector_count =
+            (unit & 1U) ? FUJINET_HD_ADF_BLOCK_COUNT : FUJINET_DD_ADF_BLOCK_COUNT;
+        fujinet_disk_driver_init(&drivers[unit], &fake_ops, &fakes[unit],
+                                 (uint8_t)unit);
+        CHECK("all eight units mount their committed geometry",
+              fujinet_disk_mount(&drivers[unit], unit, "unit.adf") == FN_OK);
+    }
+
+    CHECK("unit zero initially retains DD geometry",
+          drivers[0].media.sector_count == FUJINET_DD_ADF_BLOCK_COUNT);
+    CHECK("unit one initially retains HD geometry",
+          drivers[1].media.sector_count == FUJINET_HD_ADF_BLOCK_COUNT);
+
+    fakes[0].media.sector_count = FUJINET_HD_ADF_BLOCK_COUNT;
+    CHECK("changing unit zero commits only unit zero",
+          fujinet_disk_mount(&drivers[0], 0, "unit-zero-hd.adf") == FN_OK &&
+              drivers[0].media.sector_count == FUJINET_HD_ADF_BLOCK_COUNT);
+
+    for (unit = 1; unit < FUJINET_DISK_UNIT_COUNT; ++unit) {
+        CHECK("querying another unit preserves its independent geometry",
+              fujinet_disk_info(&drivers[unit], unit, &info) == FN_OK &&
+                  info.sector_count ==
+                      ((unit & 1U) ? FUJINET_HD_ADF_BLOCK_COUNT :
+                                     FUJINET_DD_ADF_BLOCK_COUNT) &&
+                  drivers[unit].media.sector_count == info.sector_count &&
+                  drivers[unit].change_count == 1);
+    }
+}
+
 static void test_writes_preserve_partial_progress_and_flush_errors(void)
 {
     fake_client_t fake = {0};
@@ -731,6 +771,7 @@ int main(void)
     test_info_and_media_read_failures_are_reported();
     test_reads_are_512_byte_aligned_sector_requests_on_slot_one();
     test_units_keep_independent_media_and_change_state();
+    test_all_eight_units_retain_independent_geometry();
     test_writes_preserve_partial_progress_and_flush_errors();
     test_failed_replacement_and_eject_keep_old_media();
     test_invalid_replacement_clears_committed_remote_media();
