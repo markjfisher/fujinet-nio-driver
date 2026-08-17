@@ -206,7 +206,8 @@ int main(int argc, char **argv)
         struct IOExtTD *event_request2;
         struct Interrupt event_interrupt;
         struct Interrupt event_interrupt2;
-        static const char worker_uri[] = "host:/standard.adf";
+        static const char default_worker_uri[] = "host:/standard.adf";
+        const char *worker_uri = argc > 3 ? argv[3] : default_worker_uri;
         static UBYTE parent_data[512];
         static UBYTE other_data[512];
 
@@ -216,7 +217,7 @@ int main(int argc, char **argv)
         request->iotd_Req.io_Actual = 0;
         request->iotd_Req.io_Command = FUJINET_DISK_CMD_MOUNT;
         request->iotd_Req.io_Data = (APTR)worker_uri;
-        request->iotd_Req.io_Length = sizeof(worker_uri);
+        request->iotd_Req.io_Length = strlen(worker_uri) + 1;
         result = DoIO((struct IORequest *)request);
         if (result != 0) {
             fprintf(stderr, "fujinet-mount: queue setup mount failed (%ld)\n", result);
@@ -367,7 +368,7 @@ int main(int argc, char **argv)
         event_request->iotd_Req.io_Actual = 0;
         event_request->iotd_Req.io_Command = FUJINET_DISK_CMD_MOUNT;
         event_request->iotd_Req.io_Data = (APTR)worker_uri;
-        event_request->iotd_Req.io_Length = sizeof(worker_uri);
+        event_request->iotd_Req.io_Length = strlen(worker_uri) + 1;
         result = DoIO((struct IORequest *)event_request);
         for (spins = 0; spins < 20 && boundary_causes == 0; ++spins)
             Delay(1);
@@ -407,7 +408,7 @@ int main(int argc, char **argv)
         event_request->iotd_Req.io_Actual = 0;
         event_request->iotd_Req.io_Command = FUJINET_DISK_CMD_MOUNT;
         event_request->iotd_Req.io_Data = (APTR)worker_uri;
-        event_request->iotd_Req.io_Length = sizeof(worker_uri);
+        event_request->iotd_Req.io_Length = strlen(worker_uri) + 1;
         result = DoIO((struct IORequest *)event_request);
         if (result != 0 || boundary_causes != 3) {
             fprintf(stderr, "fujinet-mount: repeated notification failed (%ld/%lu)\n",
