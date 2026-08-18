@@ -58,17 +58,27 @@ startup with:
 C:fujinet-load-resident DEVS:fujinet-disk.device fujinet-disk.device
 ```
 
-The loader uses the OS 1.3-compatible `LoadSeg()` and `InitResident()` APIs,
-so it also works on Workbench 3.1 installations that do not provide
-`LoadModule`. It validates the module's resident structure and name, refuses
-to register a duplicate device, and retains the loaded segment after a
-successful registration because Exec continues to reference it. Registration
-does not warm-start the Amiga.
+The loader uses the OS 1.3-compatible `LoadSeg()` and `InitResident()` APIs.
+The loader itself has been validated on Workbench 3.1: it registers the
+device, permits `OpenDevice()`, and serves basic trackdisk status commands
+without `LoadModule` or a warm start. Complete `DNx:` filesystem access on
+Workbench 3.1 is not yet validated; its filesystem handler currently stalls
+during first access after completing its initial device reads and submitting
+the legacy one-shot `TD_REMOVE` notification request. Workbench 3.2 instead
+registers `TD_ADDCHANGEINT` before its filesystem reads and completes access.
+
+The utility validates the module's bounded first-hunk resident structure and
+name, accepts only `NT_DEVICE`, refuses to initialize a duplicate device, and
+retains the loaded segment after successful registration because Exec
+continues to reference it. Name mismatch, non-resident input, unsupported
+resident type, and initialization failure release the segment.
 
 The workspace disk builder's `--with-driver` path installs both files and adds
 this command to `S:Startup-Sequence` automatically. The focused Amiberry
-`diskdevice-loader` case verifies registration, `OpenDevice()`, and standard
-trackdisk status commands on both the normal test OS and Workbench 3.1.
+`diskdevice-loader` case verifies first load, harmless duplicate invocation,
+name mismatch, non-resident rejection, registration, `OpenDevice()`, and
+standard trackdisk status commands on both the normal test OS and Workbench
+3.1.
 
 The native device exposes `FUJINET_DISK_CMD_MOUNT` as its private read-only
 Mount command and `FUJINET_DISK_CMD_MOUNT_WRITABLE` as the writable variant;
