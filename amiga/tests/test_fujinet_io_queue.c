@@ -59,7 +59,7 @@ static void test_flush_and_abort_remove_only_queued_requests(void)
     fujinet_io_queue_t queue;
     fujinet_io_queue_node_t nodes[3];
     uint8_t stopped[2] = {0, 0};
-    int active, same_unit, other_unit;
+    int active = 0, same_unit = 0, other_unit = 0;
     fujinet_io_queue_node_t *removed;
     fujinet_io_queue_init(&queue);
     fujinet_io_queue_append(&queue, &nodes[0], &same_unit, 0, WRITE);

@@ -178,9 +178,11 @@ int main(int argc, char **argv)
             printf("TRACE");
             for (i = 0; i < trace.count; ++i) {
                 printf(" %04lx/%lu/%lu/%lu/%ld",
-                       (ULONG)trace.commands[i], trace.offsets[i],
-                       trace.lengths[i], trace.actuals[i],
-                       (LONG)trace.errors[i]);
+                       (unsigned long)trace.commands[i],
+                       (unsigned long)trace.offsets[i],
+                       (unsigned long)trace.lengths[i],
+                       (unsigned long)trace.actuals[i],
+                       (long)trace.errors[i]);
             }
             printf("\n");
         }
@@ -220,7 +222,8 @@ int main(int argc, char **argv)
         request->iotd_Req.io_Length = strlen(worker_uri) + 1;
         result = DoIO((struct IORequest *)request);
         if (result != 0) {
-            fprintf(stderr, "fujinet-mount: queue setup mount failed (%ld)\n", result);
+            fprintf(stderr, "fujinet-mount: queue setup mount failed (%ld)\n",
+                    (long)result);
             CloseDevice((struct IORequest *)request);
             DeleteExtIO((struct IORequest *)request);
             DeletePort(port);
@@ -299,7 +302,7 @@ int main(int argc, char **argv)
         while (!boundary_worker.done) Delay(1);
         if (wait_result != IOERR_ABORTED || boundary_worker.result != 0) {
             fprintf(stderr, "fujinet-mount: queued abort failed (%ld/%ld)\n",
-                    wait_result, boundary_worker.result);
+                    (long)wait_result, (long)boundary_worker.result);
             CloseDevice((struct IORequest *)request);
             DeleteExtIO((struct IORequest *)request);
             DeletePort(port);
@@ -374,7 +377,7 @@ int main(int argc, char **argv)
             Delay(1);
         if (result != 0 || boundary_causes != 2) {
             fprintf(stderr, "fujinet-mount: notification cause failed (%ld/%lu)\n",
-                    result, boundary_causes);
+                    (long)result, (unsigned long)boundary_causes);
             AbortIO((struct IORequest *)request);
             WaitIO((struct IORequest *)request);
             AbortIO((struct IORequest *)event_request2);
@@ -393,7 +396,8 @@ int main(int argc, char **argv)
         request->iotd_Req.io_Command = TD_REMCHANGEINT;
         result = DoIO((struct IORequest *)request);
         if (result != 0) {
-            fprintf(stderr, "fujinet-mount: change removal failed (%ld)\n", result);
+            fprintf(stderr, "fujinet-mount: change removal failed (%ld)\n",
+                    (long)result);
             CloseDevice((struct IORequest *)event_request);
             DeleteExtIO((struct IORequest *)event_request);
             DeletePort(event_port);
@@ -412,7 +416,7 @@ int main(int argc, char **argv)
         result = DoIO((struct IORequest *)event_request);
         if (result != 0 || boundary_causes != 3) {
             fprintf(stderr, "fujinet-mount: repeated notification failed (%ld/%lu)\n",
-                    result, boundary_causes);
+                    (long)result, (unsigned long)boundary_causes);
             CloseDevice((struct IORequest *)event_request2);
             DeleteExtIO((struct IORequest *)event_request2);
             DeletePort(event_port2);
@@ -435,7 +439,8 @@ int main(int argc, char **argv)
         event_request2->iotd_Req.io_Command = TD_REMCHANGEINT;
         result = DoIO((struct IORequest *)event_request2);
         if (result != 0) {
-            fprintf(stderr, "fujinet-mount: second change removal failed (%ld)\n", result);
+            fprintf(stderr, "fujinet-mount: second change removal failed (%ld)\n",
+                    (long)result);
             CloseDevice((struct IORequest *)event_request2);
             DeleteExtIO((struct IORequest *)event_request2);
             DeletePort(event_port2);
@@ -461,7 +466,7 @@ int main(int argc, char **argv)
         wait_result = WaitIO((struct IORequest *)request);
         if (result != 0 || wait_result != IOERR_ABORTED) {
             fprintf(stderr, "fujinet-mount: change abort failed (%ld/%ld)\n",
-                    result, wait_result);
+                    (long)result, (long)wait_result);
             CloseDevice((struct IORequest *)request);
             DeleteExtIO((struct IORequest *)request);
             DeletePort(port);
@@ -480,7 +485,7 @@ int main(int argc, char **argv)
         wait_result = WaitIO((struct IORequest *)request);
         if (wait_result != IOERR_ABORTED) {
             fprintf(stderr, "fujinet-mount: remove abort failed (%ld)\n",
-                    wait_result);
+                    (long)wait_result);
             CloseDevice((struct IORequest *)request);
             DeleteExtIO((struct IORequest *)request);
             DeletePort(port);
@@ -499,9 +504,9 @@ int main(int argc, char **argv)
             if (result != 0) break;
         }
         if (result == 0) printf("EXEC BOUNDARY PASS commands=%lu notifications=4 remove=1 queue=1 multi=2 cause=3\n",
-                                (ULONG)(sizeof(commands) / sizeof(commands[0])));
+                                (unsigned long)(sizeof(commands) / sizeof(commands[0])));
         else fprintf(stderr, "fujinet-mount: boundary command %lu failed (%ld)\n",
-                     (ULONG)i, result);
+                     (unsigned long)i, (long)result);
         CloseDevice((struct IORequest *)request);
         DeleteExtIO((struct IORequest *)request);
         DeletePort(port);
@@ -519,9 +524,10 @@ int main(int argc, char **argv)
         request->iotd_Req.io_Length = sizeof(malformed_uri) - 1;
         result = DoIO((struct IORequest *)request);
         if (result == IOERR_BADLENGTH)
-            printf("MALFORMED URI REJECTED error=%ld\n", result);
+            printf("MALFORMED URI REJECTED error=%ld\n", (long)result);
         else
-            fprintf(stderr, "fujinet-mount: malformed URI accepted (%ld)\n", result);
+            fprintf(stderr, "fujinet-mount: malformed URI accepted (%ld)\n",
+                    (long)result);
         CloseDevice((struct IORequest *)request);
         DeleteExtIO((struct IORequest *)request);
         DeletePort(port);
@@ -542,8 +548,9 @@ int main(int argc, char **argv)
         request->iotd_Req.io_Offset = lba * sizeof(data);
         if (output != NULL) result = DoIO((struct IORequest *)request);
         if (result == 0) {
-            fprintf(output, "READ OK lba=%lu actual=%lu\n", lba,
-                    request->iotd_Req.io_Actual);
+            fprintf(output, "READ OK lba=%lu actual=%lu\n",
+                    (unsigned long)lba,
+                    (unsigned long)request->iotd_Req.io_Actual);
         }
         if (output != NULL && output != stdout) fclose(output);
         CloseDevice((struct IORequest *)request);
@@ -577,7 +584,8 @@ int main(int argc, char **argv)
         protected_state = request->iotd_Req.io_Actual;
         if (result == 0)
             printf("STATUS drive=%lu change=%lu absent=%lu protected=%lu\n",
-                   drive, change_count, change_state, protected_state);
+                   (unsigned long)drive, (unsigned long)change_count,
+                   (unsigned long)change_state, (unsigned long)protected_state);
         CloseDevice((struct IORequest *)request);
         DeleteExtIO((struct IORequest *)request);
         DeletePort(port);
@@ -596,13 +604,13 @@ int main(int argc, char **argv)
         result = DoIO((struct IORequest *)request);
         if (result == 0) {
             printf("GEOMETRY drive=%lu sectorSize=%lu total=%lu cylinders=%lu cylSectors=%lu heads=%lu trackSectors=%lu reserved=%u\n",
-                   drive,
-                   geometry.dg_SectorSize,
-                   geometry.dg_TotalSectors,
-                   geometry.dg_Cylinders,
-                   geometry.dg_CylSectors,
-                   geometry.dg_Heads,
-                   geometry.dg_TrackSectors,
+                   (unsigned long)drive,
+                   (unsigned long)geometry.dg_SectorSize,
+                   (unsigned long)geometry.dg_TotalSectors,
+                   (unsigned long)geometry.dg_Cylinders,
+                   (unsigned long)geometry.dg_CylSectors,
+                   (unsigned long)geometry.dg_Heads,
+                   (unsigned long)geometry.dg_TrackSectors,
                    (unsigned)geometry.dg_Reserved);
         }
         CloseDevice((struct IORequest *)request);
@@ -646,15 +654,19 @@ int main(int argc, char **argv)
 
     if (result == 0) {
         if (update)
-            printf("UPDATED drive=%lu slot=%lu\n", drive, drive + 1);
+            printf("UPDATED drive=%lu slot=%lu\n",
+                   (unsigned long)drive, (unsigned long)(drive + 1));
         else if (request->iotd_Req.io_Command == TD_GETGEOMETRY)
             printf("MOUNTED drive=%lu slot=%lu readonly=%d sectorSize=%lu sectorCount=%lu\n",
-                   drive, drive + 1, requested_writable ? 0 : 1, geometry.dg_SectorSize,
-                   geometry.dg_TotalSectors);
+                   (unsigned long)drive, (unsigned long)(drive + 1),
+                   requested_writable ? 0 : 1,
+                   (unsigned long)geometry.dg_SectorSize,
+                   (unsigned long)geometry.dg_TotalSectors);
         else
-            printf("EJECTED drive=%lu slot=%lu\n", drive, drive + 1);
+            printf("EJECTED drive=%lu slot=%lu\n",
+                   (unsigned long)drive, (unsigned long)(drive + 1));
     } else {
-        fprintf(stderr, "fujinet-mount: request failed (%ld)\n", result);
+        fprintf(stderr, "fujinet-mount: request failed (%ld)\n", (long)result);
     }
 
     CloseDevice((struct IORequest *)request);

@@ -8,6 +8,7 @@
 #include <exec/memory.h>
 #include <devices/newstyle.h>
 #include <devices/trackdisk.h>
+#include <dos/dos.h>
 #include <proto/exec.h>
 
 #include <string.h>
