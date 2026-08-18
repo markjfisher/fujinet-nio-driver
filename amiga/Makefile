@@ -7,6 +7,7 @@ LIBRARY := $(LIB_ROOT)/build/fujinet-nio-amiga-driver.a
 DEVICE := $(BUILD_DIR)/fujinet-disk.device
 DEVICE_MAP := $(DEVICE).map
 MOUNT_TOOL := $(BUILD_DIR)/fujinet-mount
+RESIDENT_LOADER := $(BUILD_DIR)/fujinet-load-resident
 SDK_INCLUDE := $(BUILD_DIR)/include
 SDK_LIBRARY := $(BUILD_DIR)/lib/libfujinet-amiga-disk.a
 SDK_SOURCES := common/fujinet_disk_dos_envec.c common/fujinet_disk_filesystem.c common/fujinet_disk_media_profile.c
@@ -24,7 +25,7 @@ OBJECTS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SOURCES))
 
 all: tests native sdk
 
-native: library $(DEVICE) $(MOUNT_TOOL)
+native: library $(DEVICE) $(MOUNT_TOOL) $(RESIDENT_LOADER)
 
 sdk: $(SDK_LIBRARY) $(SDK_INCLUDE)/fujinet-amiga-disk/support.h $(SDK_INCLUDE)/fujinet-amiga-disk/device.h
 
@@ -56,6 +57,10 @@ $(BUILD_DIR)/%.o: %.c
 $(MOUNT_TOOL): tools/fujinet-mount.c include/fujinet_disk_device.h $(LIBRARY)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 $< $(LIBRARY) -lamiga -o $@
+
+$(RESIDENT_LOADER): tools/fujinet-load-resident.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 $< -lamiga -o $@
 
 tests:
 	$(MAKE) -C tests test LIB_ROOT=$(abspath $(LIB_ROOT))

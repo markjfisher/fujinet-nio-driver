@@ -48,6 +48,28 @@ boundary and malformed-request checks, direct URI injection, and explicit
 update/eject diagnostics. It is not a normal installation or end-user mount
 application.
 
+## Loading the resident device
+
+`make native` also builds `build/amiga/fujinet-load-resident`. Install that
+program in `C:` and the device in `DEVS:`, then register the device during
+startup with:
+
+```text
+C:fujinet-load-resident DEVS:fujinet-disk.device fujinet-disk.device
+```
+
+The loader uses the OS 1.3-compatible `LoadSeg()` and `InitResident()` APIs,
+so it also works on Workbench 3.1 installations that do not provide
+`LoadModule`. It validates the module's resident structure and name, refuses
+to register a duplicate device, and retains the loaded segment after a
+successful registration because Exec continues to reference it. Registration
+does not warm-start the Amiga.
+
+The workspace disk builder's `--with-driver` path installs both files and adds
+this command to `S:Startup-Sequence` automatically. The focused Amiberry
+`diskdevice-loader` case verifies registration, `OpenDevice()`, and standard
+trackdisk status commands on both the normal test OS and Workbench 3.1.
+
 The native device exposes `FUJINET_DISK_CMD_MOUNT` as its private read-only
 Mount command and `FUJINET_DISK_CMD_MOUNT_WRITABLE` as the writable variant;
 `io_Data` points to a NUL-terminated URI. Both are outside the trackdisk
@@ -79,7 +101,8 @@ RDB/HDF media, dynamic DOS nodes, seamless handler coordination, and
 consolidation onto standard tools.
 
 Run the portable contract tests with `make tests` from this directory. Run
-`make native` to build `build/amiga/fujinet-disk.device`; this additionally
+`make native` to build `build/amiga/fujinet-disk.device` and
+`build/amiga/fujinet-load-resident`; this additionally
 requires the Amiga GCC toolchain, readable NDK headers, and
 `fujinet-nio-amiga-driver.a`.
 
