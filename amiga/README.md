@@ -62,10 +62,9 @@ The loader uses the OS 1.3-compatible `LoadSeg()` and `InitResident()` APIs.
 The loader itself has been validated on Workbench 3.1: it registers the
 device, permits `OpenDevice()`, and serves basic trackdisk status commands
 without `LoadModule` or a warm start. Complete `DNx:` filesystem access on
-Workbench 3.1 is not yet validated; its filesystem handler currently stalls
-during first access after completing its initial device reads and submitting
-the legacy one-shot `TD_REMOVE` notification request. Workbench 3.2 instead
-registers `TD_ADDCHANGEINT` before its filesystem reads and completes access.
+Workbench 3.1 is not yet validated. Its filesystem handler uses the classic
+synchronous `TD_REMOVE` interface for its single change interrupt; newer
+handlers use retained `TD_ADDCHANGEINT` requests instead.
 
 The utility validates the module's bounded first-hunk resident structure and
 name, accepts only `NT_DEVICE`, refuses to initialize a duplicate device, and

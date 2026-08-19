@@ -9,9 +9,12 @@
 
 void fujinet_disk_native_test_reset(void);
 void fujinet_disk_native_test_commit(uint8_t unit, uint32_t sector_count);
+void fujinet_disk_native_test_signal_change(uint8_t unit);
 void fujinet_disk_native_test_begin_io(uint8_t unit, struct IORequest *request);
 
 static unsigned failures;
+static unsigned replies;
+static unsigned causes;
 
 #define CHECK(name, expression) do {                                      \
     if (!(expression)) {                                                  \
@@ -22,8 +25,8 @@ static unsigned failures;
 
 void Disable(void) {}
 void Enable(void) {}
-void ReplyMsg(struct Message *message) { (void)message; }
-void Cause(struct Interrupt *interrupt) { (void)interrupt; }
+void ReplyMsg(struct Message *message) { (void)message; ++replies; }
+void Cause(struct Interrupt *interrupt) { (void)interrupt; ++causes; }
 void Remove(struct Node *node)
 {
     if (node->ln_Pred != NULL) node->ln_Pred->ln_Succ = node->ln_Succ;
@@ -171,10 +174,47 @@ static void test_public_mount_abi_reaches_resident_dispatcher(void)
           request.iotd_Req.io.io_Error == TDERR_DiskChanged);
 }
 
+static void test_legacy_td_remove_is_synchronous(void)
+{
+    struct IOExtTD request;
+    struct Interrupt interrupt;
+
+    fujinet_disk_native_test_reset();
+    memset(&request, 0, sizeof(request));
+    memset(&interrupt, 0, sizeof(interrupt));
+    replies = 0;
+    causes = 0;
+
+    request.iotd_Req.io.io_Command = TD_REMOVE;
+    request.iotd_Req.io.io_Flags = IOF_QUICK;
+    request.iotd_Req.io_Data = &interrupt;
+    request.iotd_Req.io_Actual = 99;
+    fujinet_disk_native_test_begin_io(0, &request.iotd_Req.io);
+    CHECK("TD_REMOVE install succeeds", request.iotd_Req.io.io_Error == 0);
+    CHECK("TD_REMOVE install clears quick for reply",
+          (request.iotd_Req.io.io_Flags & IOF_QUICK) == 0);
+    CHECK("TD_REMOVE install returns zero actual", request.iotd_Req.io_Actual == 0);
+    CHECK("TD_REMOVE install is replied", replies == 1);
+
+    fujinet_disk_native_test_signal_change(0);
+    CHECK("legacy TD_REMOVE interrupt is caused on media change", causes == 1);
+
+    request.iotd_Req.io.io_Command = TD_REMOVE;
+    request.iotd_Req.io.io_Flags = IOF_QUICK;
+    request.iotd_Req.io_Data = NULL;
+    fujinet_disk_native_test_begin_io(0, &request.iotd_Req.io);
+    CHECK("TD_REMOVE removal succeeds", request.iotd_Req.io.io_Error == 0);
+    CHECK("TD_REMOVE removal clears quick for reply",
+          (request.iotd_Req.io.io_Flags & IOF_QUICK) == 0);
+    fujinet_disk_native_test_signal_change(0);
+    CHECK("removed legacy interrupt is not caused again", causes == 1);
+}
+
 int main(void)
 {
     test_dd_hd_geometry_and_unit_isolation();
     test_public_mount_abi_reaches_resident_dispatcher();
+    test_legacy_td_remove_is_synchronous();
     if (failures != 0) return 1;
     puts("All Amiga resident device contract tests passed");
     return 0;

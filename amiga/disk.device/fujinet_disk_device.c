@@ -48,7 +48,7 @@ struct fujinet_disk_unit_state {
     fujinet_nio_disk_context_t nio_context;
     UBYTE stopped;
     struct List change_requests;
-    struct IORequest *remove_request;
+    struct Interrupt *legacy_change_interrupt;
 };
 
 struct fujinet_change_registration {
@@ -171,12 +171,8 @@ static void signal_media_change(struct fujinet_disk_unit_state *unit)
         if (registration->interrupt != NULL) Cause(registration->interrupt);
         node = next;
     }
-    if (unit->remove_request != NULL) {
-        struct IORequest *remove = unit->remove_request;
-        unit->remove_request = NULL;
-        remove->io_Error = 0;
-        ReplyMsg(&remove->io_Message);
-    }
+    if (unit->legacy_change_interrupt != NULL)
+        Cause(unit->legacy_change_interrupt);
 }
 
 static void init_list(struct List *list)
@@ -237,8 +233,6 @@ static BPTR device_close(
     uint8_t i;
     for (i = 0; i < FUJINET_DISK_UNIT_COUNT; ++i) {
         (void)remove_all_change_requests(&base->units[i], request);
-        if (base->units[i].remove_request == request)
-            base->units[i].remove_request = NULL;
     }
     {
         fujinet_io_queue_node_t *queued =
@@ -708,17 +702,20 @@ process_request:
         request->io_Flags &= (UBYTE)~IOF_QUICK;
         goto next_request;
     case TD_REMOVE:
-        if (unit->remove_request != NULL) {
+        /* TD_REMOVE predates TD_ADDCHANGEINT.  It synchronously installs the
+         * unit's single legacy change interrupt, or removes it when io_Data
+         * is NULL.  Unlike TD_ADDCHANGEINT, its IORequest is never retained. */
+        if (io->io_Data != NULL && unit->legacy_change_interrupt != NULL &&
+            unit->legacy_change_interrupt != (struct Interrupt *)io->io_Data) {
             request->io_Error = IOERR_UNITBUSY;
-            break;
+        } else {
+            unit->legacy_change_interrupt = (struct Interrupt *)io->io_Data;
         }
-        unit->remove_request = request;
-        if (trace_index < FUJINET_DISK_TRACE_CAPACITY) {
-            base->trace.actuals[trace_index] = io->io_Actual;
-            base->trace.errors[trace_index] = request->io_Error;
-        }
+        /* Classic trackdisk completes TD_REMOVE as a normal reply even when
+         * the caller entered with IOF_QUICK. TD_ADDCHANGEINT is the retained
+         * request; TD_REMOVE is not. */
         request->io_Flags &= (UBYTE)~IOF_QUICK;
-        goto next_request;
+        break;
     case TD_REMCHANGEINT:
         (void)remove_all_change_requests(unit, request);
         break;
@@ -784,14 +781,6 @@ static LONG device_abort_io(
     struct Node *node;
     uint8_t unit_index = request_unit_index(base, request);
     Disable();
-    if (unit_index < FUJINET_DISK_UNIT_COUNT &&
-        request == base->units[unit_index].remove_request) {
-        base->units[unit_index].remove_request = NULL;
-        request->io_Error = IOERR_ABORTED;
-        ReplyMsg(&request->io_Message);
-        Enable();
-        return 0;
-    }
     if (unit_index < FUJINET_DISK_UNIT_COUNT) {
         for (node = base->units[unit_index].change_requests.lh_Head;
              node->ln_Succ != NULL; node = node->ln_Succ) {
@@ -879,6 +868,12 @@ void fujinet_disk_native_test_commit(uint8_t unit, uint32_t sector_count)
     driver->media.type = FN_DISK_TYPE_RAW;
     driver->media.sector_size = FUJINET_DISK_BLOCK_SIZE;
     driver->media.sector_count = sector_count;
+}
+
+void fujinet_disk_native_test_signal_change(uint8_t unit)
+{
+    if (unit >= FUJINET_DISK_UNIT_COUNT) return;
+    signal_media_change(&native_test_base.units[unit]);
 }
 
 void fujinet_disk_native_test_begin_io(uint8_t unit, struct IORequest *request)

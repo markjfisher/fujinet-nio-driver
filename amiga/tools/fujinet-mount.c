@@ -480,12 +480,10 @@ int main(int argc, char **argv)
         request->iotd_Req.io_Command = TD_REMOVE;
         request->iotd_Req.io_Data = NULL;
         request->iotd_Req.io_Length = 0;
-        SendIO((struct IORequest *)request);
-        AbortIO((struct IORequest *)request);
-        wait_result = WaitIO((struct IORequest *)request);
-        if (wait_result != IOERR_ABORTED) {
-            fprintf(stderr, "fujinet-mount: remove abort failed (%ld)\n",
-                    (long)wait_result);
+        result = DoIO((struct IORequest *)request);
+        if (result != 0 || request->iotd_Req.io_Actual != 0) {
+            fprintf(stderr, "fujinet-mount: legacy remove failed (%ld/%lu)\n",
+                    (long)result, (unsigned long)request->iotd_Req.io_Actual);
             CloseDevice((struct IORequest *)request);
             DeleteExtIO((struct IORequest *)request);
             DeletePort(port);

@@ -36,10 +36,11 @@ is removal plus insertion (twice). A failed pre-removal flush changes neither
 media nor count. `TD_CHANGENUM`, `TD_CHANGESTATE`, and `TD_PROTSTATUS` report
 this committed local state.
 
-`TD_REMOVE` is a legacy one-shot notification. Every `TD_ADDCHANGEINT`
-registration is retained and its interrupt is `Cause()`d for every committed
-transition. `TD_REMCHANGEINT` removes and completes that same request exactly
-once. After adopting NIO state the device calls `ClearChanged`; an
+`TD_REMOVE` synchronously installs the unit's single legacy change interrupt
+from `io_Data`, or removes it when `io_Data` is null; its request is never
+retained. Every `TD_ADDCHANGEINT` registration is retained and its interrupt is
+`Cause()`d for every committed transition. `TD_REMCHANGEINT` removes and
+completes that same request exactly once. After adopting NIO state the device calls `ClearChanged`; an
 acknowledgement failure remains pending for retry and never rolls back the
 local transition.
 
