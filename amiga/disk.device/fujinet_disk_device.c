@@ -4,6 +4,7 @@
 #include <exec/libraries.h>
 #include <exec/resident.h>
 #include <exec/semaphores.h>
+#include <exec/tasks.h>
 #include <exec/types.h>
 #include <exec/memory.h>
 #include <devices/newstyle.h>
@@ -30,6 +31,10 @@
 #define DEVICE_REVISION 1
 #define SERVICE_BUFFER_SIZE 1024
 #define MAPPINGS_SIZE 17
+/* A FujiBus disk exchange can allocate codec buffers and wait on serial I/O.
+ * 16 KiB leaves substantial headroom without borrowing an AmigaDOS handler's
+ * typically much smaller stack. */
+#define WORKER_STACK_SIZE 16384
 
 static const UWORD supported_commands[] = {
     CMD_RESET, CMD_READ, CMD_WRITE, CMD_UPDATE, CMD_CLEAR, CMD_START, CMD_STOP,
@@ -69,12 +74,16 @@ struct fujinet_disk_device_base {
     char request_uri[768];
     fujinet_io_queue_t io_queue;
     UBYTE io_processing;
+    struct Task worker_task;
+    APTR worker_stack;
+    BYTE worker_signal;
     struct fujinet_disk_trace trace;
 };
 
 static uint8_t remove_change_request(struct fujinet_disk_unit_state *unit,
-                                     struct IORequest *request);
+                                      struct IORequest *request);
 static void discard_change_requests(struct fujinet_disk_device_base *base);
+static void device_worker_entry(void);
 
 struct ExecBase *SysBase;
 
@@ -199,8 +208,26 @@ static struct fujinet_disk_device_base *device_init(
         fujinet_nio_disk_context_init(&base->units[i].nio_context);
         fujinet_disk_driver_init(&base->units[i].driver,
                                  &fujinet_nio_disk_client,
-                                 &base->units[i].nio_context, i);
+                                  &base->units[i].nio_context, i);
     }
+#ifndef FUJINET_DISK_NATIVE_TEST
+    base->worker_signal = AllocSignal(-1);
+    if (base->worker_signal == -1) return NULL;
+    base->worker_stack = AllocMem(WORKER_STACK_SIZE, MEMF_PUBLIC | MEMF_CLEAR);
+    if (base->worker_stack == NULL) {
+        FreeSignal(base->worker_signal);
+        return NULL;
+    }
+    base->worker_task.tc_SPLower = base->worker_stack;
+    base->worker_task.tc_SPUpper = (UBYTE *)base->worker_stack + WORKER_STACK_SIZE;
+    base->worker_task.tc_SPReg = (UBYTE *)base->worker_task.tc_SPUpper - 4;
+    base->worker_task.tc_UserData = base;
+    if (AddTask(&base->worker_task, (APTR)device_worker_entry, NULL) == NULL) {
+        FreeMem(base->worker_stack, WORKER_STACK_SIZE);
+        FreeSignal(base->worker_signal);
+        return NULL;
+    }
+#endif
     return base;
 }
 
@@ -351,9 +378,8 @@ static struct IORequest *next_runnable_request(
     }
 }
 
-static void device_begin_io(
-    register struct IORequest *request FN_REGISTER("a1"),
-    register struct fujinet_disk_device_base *base FN_REGISTER("a6"))
+static void device_process_request(struct IORequest *request,
+                                   struct fujinet_disk_device_base *base)
 {
     struct IOStdReq *io = (struct IOStdReq *)request;
     struct fujinet_disk_unit_state *unit;
@@ -361,67 +387,12 @@ static void device_begin_io(
     uint8_t result;
     UWORD trace_index = FUJINET_DISK_TRACE_CAPACITY;
 
-    Disable();
-    unit_index = request_unit_index(base, request);
-    if (unit_index >= FUJINET_DISK_UNIT_COUNT) {
-        Enable();
-        request->io_Error = IOERR_OPENFAIL;
-        if ((request->io_Flags & IOF_QUICK) == 0)
-            ReplyMsg(&request->io_Message);
-        return;
-    }
-    /* TD_REMCHANGEINT reuses the same IORequest retained by
-     * TD_ADDCHANGEINT. It is therefore already linked into change_requests
-     * and must never be linked into the ordinary FIFO as well. Removal is a
-     * local bookkeeping operation and is safe to complete immediately even
-     * while a media request is active. */
-    if (request->io_Command == TD_REMCHANGEINT) {
-        remove_change_request(&base->units[unit_index], request);
-        request->io_Error = 0;
-        ((struct IOStdReq *)request)->io_Actual = 0;
-        Enable();
-        if ((request->io_Flags & IOF_QUICK) == 0)
-            ReplyMsg(&request->io_Message);
-        return;
-    }
-    if (base->io_processing) {
-        if (request->io_Command == CMD_FLUSH) {
-            abort_queued_unit(base, unit_index);
-            request->io_Error = 0;
-            ((struct IOStdReq *)request)->io_Actual = 0;
-            Enable();
-            if ((request->io_Flags & IOF_QUICK) == 0)
-                ReplyMsg(&request->io_Message);
-            return;
-        }
-        request->io_Flags &= (UBYTE)~IOF_QUICK;
-        {
-            fujinet_io_queue_node_t *node =
-                AllocMem(sizeof(*node), MEMF_PUBLIC | MEMF_CLEAR);
-            if (node == NULL) {
-                request->io_Error = TDERR_NotSpecified;
-                Enable();
-                if ((request->io_Flags & IOF_QUICK) == 0)
-                    ReplyMsg(&request->io_Message);
-                return;
-            }
-            request->io_Message.mn_Node.ln_Type = NT_MESSAGE;
-            fujinet_io_queue_append(&base->io_queue, node, request,
-                                    unit_index, request->io_Command);
-        }
-        Enable();
-        return;
-    }
-    base->io_processing = 1;
-    Enable();
-
-process_request:
     unit_index = request_unit_index(base, request);
     if (unit_index >= FUJINET_DISK_UNIT_COUNT) {
         request->io_Error = IOERR_ABORTED;
         if ((request->io_Flags & IOF_QUICK) == 0)
             ReplyMsg(&request->io_Message);
-        goto next_request;
+        return;
     }
     unit = &base->units[unit_index];
     request->io_Error = 0;
@@ -700,7 +671,7 @@ process_request:
             base->trace.errors[trace_index] = request->io_Error;
         }
         request->io_Flags &= (UBYTE)~IOF_QUICK;
-        goto next_request;
+        return;
     case TD_REMOVE:
         /* TD_REMOVE predates TD_ADDCHANGEINT.  It synchronously installs the
          * unit's single legacy change interrupt, or removes it when io_Data
@@ -747,31 +718,159 @@ process_request:
     if ((request->io_Flags & IOF_QUICK) == 0) {
         ReplyMsg(&request->io_Message);
     }
+}
 
-next_request:
-    Disable();
-    request = next_runnable_request(base);
-    if (request == NULL) {
-        uint8_t i;
-        Enable();
-        /* The serial backend cannot be opened independently by a CLI while
-         * the resident copy retains its handle. Release it between FIFO
-         * batches; the next driver request reconnects through ensure_client. */
-        fn_transport_close();
-        for (i = 0; i < FUJINET_DISK_UNIT_COUNT; ++i)
-            base->units[i].driver.client_initialized = 0;
-        Disable();
-        request = next_runnable_request(base);
-        if (request == NULL) {
+#ifndef FUJINET_DISK_NATIVE_TEST
+static void device_worker_entry(void)
+{
+    struct fujinet_disk_device_base *base =
+        (struct fujinet_disk_device_base *)FindTask(NULL)->tc_UserData;
+    ULONG signal_mask = 1UL << base->worker_signal;
+
+    for (;;) {
+        struct IORequest *request;
+        Wait(signal_mask);
+        for (;;) {
+            Disable();
+            request = next_runnable_request(base);
+            if (request != NULL) {
+                Enable();
+                device_process_request(request, base);
+                continue;
+            }
+            Enable();
+            /* The serial backend cannot be opened independently by a CLI
+             * while the resident copy retains its handle. Release it only
+             * after the FIFO is empty, then recheck before becoming idle. */
+            fn_transport_close();
+            {
+                uint8_t i;
+                for (i = 0; i < FUJINET_DISK_UNIT_COUNT; ++i)
+                    base->units[i].driver.client_initialized = 0;
+            }
+            Disable();
+            request = next_runnable_request(base);
+            if (request != NULL) {
+                Enable();
+                device_process_request(request, base);
+                continue;
+            }
             base->io_processing = 0;
             Enable();
-            return;
+            break;
         }
     }
-    io = (struct IOStdReq *)request;
-    trace_index = FUJINET_DISK_TRACE_CAPACITY;
+}
+#endif
+
+static void device_begin_io(
+    register struct IORequest *request FN_REGISTER("a1"),
+    register struct fujinet_disk_device_base *base FN_REGISTER("a6"))
+{
+    uint8_t unit_index;
+    uint8_t local_quick = 0;
+    fujinet_io_queue_node_t *node;
+
+    Disable();
+    unit_index = request_unit_index(base, request);
+    if (unit_index >= FUJINET_DISK_UNIT_COUNT) {
+        Enable();
+        request->io_Error = IOERR_OPENFAIL;
+        if ((request->io_Flags & IOF_QUICK) == 0)
+            ReplyMsg(&request->io_Message);
+        return;
+    }
+    /* TD_REMCHANGEINT reuses the request retained by TD_ADDCHANGEINT, so it
+     * must never enter the ordinary FIFO. */
+    if (request->io_Command == TD_REMCHANGEINT) {
+        remove_change_request(&base->units[unit_index], request);
+        request->io_Error = 0;
+        ((struct IOStdReq *)request)->io_Actual = 0;
+        Enable();
+        if ((request->io_Flags & IOF_QUICK) == 0)
+            ReplyMsg(&request->io_Message);
+        return;
+    }
+    if (request->io_Command == CMD_FLUSH) {
+        abort_queued_unit(base, unit_index);
+        request->io_Error = 0;
+        ((struct IOStdReq *)request)->io_Actual = 0;
+        Enable();
+        if ((request->io_Flags & IOF_QUICK) == 0)
+            ReplyMsg(&request->io_Message);
+        return;
+    }
+    unit_index = request_unit_index(base, request);
+    switch (request->io_Command) {
+    case TD_REMOVE:
+        /* TD_REMOVE is the synchronous legacy interrupt install/remove ABI;
+         * its request is never retained in the data-path FIFO. */
+        if (((struct IOStdReq *)request)->io_Data != NULL &&
+            base->units[unit_index].legacy_change_interrupt != NULL &&
+            base->units[unit_index].legacy_change_interrupt !=
+                (struct Interrupt *)((struct IOStdReq *)request)->io_Data)
+            request->io_Error = IOERR_UNITBUSY;
+        else {
+            base->units[unit_index].legacy_change_interrupt =
+                (struct Interrupt *)((struct IOStdReq *)request)->io_Data;
+            request->io_Error = 0;
+        }
+        ((struct IOStdReq *)request)->io_Actual = 0;
+        request->io_Flags &= (UBYTE)~IOF_QUICK;
+        Enable();
+        ReplyMsg(&request->io_Message);
+        return;
+    case TD_CHANGENUM:
+        ((struct IOStdReq *)request)->io_Actual =
+            base->units[unit_index].driver.change_count;
+        local_quick = 1;
+        break;
+    case TD_CHANGESTATE:
+        ((struct IOStdReq *)request)->io_Actual =
+            base->units[unit_index].driver.mounted ? 0 : 1;
+        local_quick = 1;
+        break;
+    case TD_PROTSTATUS:
+        ((struct IOStdReq *)request)->io_Actual =
+            (!base->units[unit_index].driver.mounted ||
+             !base->units[unit_index].driver.writable) ? 1 : 0;
+        local_quick = 1;
+        break;
+    default: break;
+    }
+    /* Status is locally computed, but while the worker owns a preceding
+     * request it must retain FIFO ordering with that request. */
+    if (local_quick && !base->io_processing) {
+        request->io_Error = 0;
+        Enable();
+        if ((request->io_Flags & IOF_QUICK) == 0)
+            ReplyMsg(&request->io_Message);
+        return;
+    }
+    request->io_Flags &= (UBYTE)~IOF_QUICK;
+    node = AllocMem(sizeof(*node), MEMF_PUBLIC | MEMF_CLEAR);
+    if (node == NULL) {
+        request->io_Error = TDERR_NotSpecified;
+        Enable();
+        ReplyMsg(&request->io_Message);
+        return;
+    }
+    /* Private FIFO insertion bypasses PutMsg(), so preserve the Exec message
+     * state transition before a later worker ReplyMsg(). */
+    request->io_Message.mn_Node.ln_Type = NT_MESSAGE;
+    fujinet_io_queue_append(&base->io_queue, node, request, unit_index,
+                            request->io_Command);
+    base->io_processing = 1;
+#ifndef FUJINET_DISK_NATIVE_TEST
+    Signal(&base->worker_task, 1UL << base->worker_signal);
+#endif
     Enable();
-    goto process_request;
+#ifdef FUJINET_DISK_NATIVE_TEST
+    {
+        struct IORequest *next = next_runnable_request(base);
+        if (next != NULL) device_process_request(next, base);
+    }
+#endif
 }
 
 static LONG device_abort_io(
