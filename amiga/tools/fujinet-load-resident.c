@@ -126,8 +126,6 @@ int main(int argc, char **argv)
 
     /* The initialized device/library executes from this segment and receives
      * its BPTR for eventual expunge. It must remain allocated on success. */
-    printf("Resident loaded: %s first_hunk_bytes=%lu resident_offset=%lu\n",
-           resident->rt_Name, (unsigned long)first_hunk_bytes,
-           (unsigned long)resident_offset);
+    printf("Resident loaded: %s\n", resident->rt_Name);
     return RETURN_OK;
 }
