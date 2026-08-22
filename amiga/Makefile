@@ -9,6 +9,14 @@ DEVICE_MAP := $(DEVICE).map
 MOUNT_TOOL := $(BUILD_DIR)/fujinet-mount
 RESIDENT_LOADER := $(BUILD_DIR)/fujinet-load-resident
 TD_PROBE := $(BUILD_DIR)/fujinet-td-probe
+NIO_DEVICE := $(BUILD_DIR)/fujinet-nio.device
+NIO_DEVICE_MAP := $(NIO_DEVICE).map
+NIO_EXCHANGE := $(BUILD_DIR)/fujinet-nio-exchange
+NIO_OBJECTS := $(BUILD_DIR)/nio.device/fujinet_nio_device.o \
+	$(BUILD_DIR)/nio.device/fujinet_nio_serial_backend.o \
+	$(BUILD_DIR)/common/fujinet_io_queue.o \
+	$(BUILD_DIR)/nio-framing/fn_session.o \
+	$(BUILD_DIR)/nio-framing/fn_slip.o
 SDK_INCLUDE := $(BUILD_DIR)/include
 SDK_LIBRARY := $(BUILD_DIR)/lib/libfujinet-amiga-disk.a
 SDK_SOURCES := common/fujinet_disk_dos_envec.c common/fujinet_disk_filesystem.c common/fujinet_disk_media_profile.c
@@ -26,7 +34,8 @@ OBJECTS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SOURCES))
 
 all: tests native sdk
 
-native: library $(DEVICE) $(MOUNT_TOOL) $(RESIDENT_LOADER) $(TD_PROBE)
+native: library $(DEVICE) $(MOUNT_TOOL) $(RESIDENT_LOADER) $(TD_PROBE) \
+	$(NIO_DEVICE) $(NIO_EXCHANGE)
 
 sdk: $(SDK_LIBRARY) $(SDK_INCLUDE)/fujinet-amiga-disk/support.h $(SDK_INCLUDE)/fujinet-amiga-disk/device.h
 
@@ -50,6 +59,21 @@ $(LIBRARY): library
 
 $(DEVICE): $(OBJECTS) $(LIBRARY)
 	$(CC) -nostartfiles -mcpu=68000 -msoft-float $^ -lamiga -Wl,-Map,$(DEVICE_MAP) -o $@
+
+$(NIO_DEVICE): $(NIO_OBJECTS)
+	$(CC) -nostartfiles -mcpu=68000 -msoft-float $^ -lamiga -Wl,-Map,$(NIO_DEVICE_MAP) -o $@
+
+$(BUILD_DIR)/nio-framing/fn_session.o: $(LIB_ROOT)/src/common/fn_session.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/nio-framing/fn_slip.o: $(LIB_ROOT)/src/common/fn_slip.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(NIO_EXCHANGE): tools/fujinet-nio-exchange.c include/fujinet_nio_device.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 $< -lamiga -o $@
 
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)

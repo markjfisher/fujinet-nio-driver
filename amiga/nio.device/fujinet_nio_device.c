@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #define FN_REGISTER(name)
 #else
+#include "fujinet_nio_backend.h"
 #define FN_REGISTER(name) __asm(name)
 #endif
 
@@ -64,25 +65,6 @@ struct ExecBase *SysBase;
 #ifndef FUJINET_NIO_NATIVE_TEST
 static const char device_name[] = DEVICE_NAME;
 static const char device_id[] = DEVICE_NAME " 0.1 (22.8.2026)\r\n";
-
-static uint8_t placeholder_backend_open(void)
-{
-    return FN_ERR_IO;
-}
-
-static void placeholder_backend_close(void) {}
-
-static uint8_t placeholder_backend_exchange(
-    const uint8_t *request, uint16_t request_len, uint8_t *response,
-    uint16_t response_capacity, uint16_t *response_len)
-{
-    (void)request;
-    (void)request_len;
-    (void)response;
-    (void)response_capacity;
-    if (response_len != NULL) *response_len = 0;
-    return FN_ERR_IO;
-}
 #endif
 
 static uint8_t pad_nonzero(const struct FujiNetNIORequest *req)
@@ -216,9 +198,9 @@ static struct fujinet_nio_device_base *device_init(
     base->segment_list = segment_list;
     fujinet_io_queue_init(&base->io_queue);
 #ifndef FUJINET_NIO_NATIVE_TEST
-    base->backend_open_fn = placeholder_backend_open;
-    base->backend_close_fn = placeholder_backend_close;
-    base->backend_exchange_fn = placeholder_backend_exchange;
+    base->backend_open_fn = backend_open;
+    base->backend_close_fn = backend_close;
+    base->backend_exchange_fn = backend_exchange;
     base->worker_signal = AllocSignal(-1);
     if (base->worker_signal == -1) return NULL;
     base->worker_stack = AllocMem(WORKER_STACK_SIZE, MEMF_PUBLIC | MEMF_CLEAR);
