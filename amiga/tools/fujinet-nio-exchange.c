@@ -44,16 +44,21 @@ static uint8_t packet_checksum(const uint8_t *data, uint16_t len)
     return (uint8_t)(chk & 0xFF);
 }
 
-static uint16_t build_clock_get(uint8_t *buf)
+static uint16_t build_clock_cmd(uint8_t *buf, uint8_t cmd)
 {
     buf[0] = FN_DEVICE_CLOCK;
-    buf[1] = FN_CMD_CLOCK_GET;
+    buf[1] = cmd;
     buf[2] = FN_HEADER_SIZE;
     buf[3] = 0;
     buf[4] = 0;
     buf[5] = 0;
     buf[4] = packet_checksum(buf, FN_HEADER_SIZE);
     return FN_HEADER_SIZE;
+}
+
+static uint16_t build_clock_get(uint8_t *buf)
+{
+    return build_clock_cmd(buf, FN_CMD_CLOCK_GET);
 }
 
 static uint16_t build_file_list(uint8_t *buf, const char *uri)
@@ -140,13 +145,19 @@ static LONG try_open_serial(void)
     return result;
 }
 
-static int clock_response_ok(const struct FujiNetNIORequest *req,
-                             const uint8_t *response)
+static int clock_cmd_response_ok(const struct FujiNetNIORequest *req,
+                                 const uint8_t *response, uint8_t cmd)
 {
     return req->fn_io.io_Error == 0 && req->fn_nio_error == FN_OK &&
            req->fn_response_length >= FN_HEADER_SIZE &&
            response[0] == FN_DEVICE_CLOCK &&
-           response[1] == FN_CMD_CLOCK_GET;
+           response[1] == cmd;
+}
+
+static int clock_response_ok(const struct FujiNetNIORequest *req,
+                             const uint8_t *response)
+{
+    return clock_cmd_response_ok(req, response, FN_CMD_CLOCK_GET);
 }
 
 static void run_job(struct exchange_job *job)
@@ -196,12 +207,15 @@ static void job_b_entry(void)
     run_job(&job_b);
 }
 
-static void wait_started_jobs(void)
+static uint8_t spawned_a;
+static uint8_t spawned_b;
+
+static void wait_spawned_jobs(void)
 {
     ULONG spins;
 
     for (spins = 0; spins < 400; ++spins) {
-        if ((!job_a.started || job_a.done) && (!job_b.started || job_b.done))
+        if ((!spawned_a || job_a.done) && (!spawned_b || job_b.done))
             return;
         Delay(1);
     }
@@ -291,8 +305,8 @@ int main(void)
     }
 
     serial_after = try_open_serial();
-    printf("TIMEOUT_KEPT_SERIAL busy=%d\n", serial_after != 0);
-    if (serial_after == 0) failures = 1;
+    printf("TIMEOUT_RESET serial-busy=%d\n", serial_after != 0);
+    if (serial_after != 0) failures = 1;
 
     fill_exchange(&req, port, clock_req, clock_len, response, sizeof(response));
     do_exchange(&req, port);
@@ -305,15 +319,19 @@ int main(void)
 
     memset(&job_a, 0, sizeof(job_a));
     memset(&job_b, 0, sizeof(job_b));
-    job_a.request_length = build_clock_get(job_a.request);
-    job_b.request_length = build_clock_get(job_b.request);
+    spawned_a = 0;
+    spawned_b = 0;
+    job_a.request_length = build_clock_cmd(job_a.request, FN_CMD_CLOCK_GET);
+    job_b.request_length = build_clock_cmd(job_b.request, FN_CMD_CLOCK_GET_TZ);
     proc_a = CreateNewProcTags(NP_Entry, (ULONG)job_a_entry, NP_StackSize,
                                8192, NP_Name, (ULONG) "nio-exch-a", TAG_DONE);
+    if (proc_a != NULL) spawned_a = 1;
     proc_b = CreateNewProcTags(NP_Entry, (ULONG)job_b_entry, NP_StackSize,
                                8192, NP_Name, (ULONG) "nio-exch-b", TAG_DONE);
+    if (proc_b != NULL) spawned_b = 1;
     if (proc_a == NULL || proc_b == NULL) {
         printf("CONCURRENT spawn-fail\n");
-        wait_started_jobs();
+        wait_spawned_jobs();
         return RETURN_FAIL;
     }
     for (spins = 0; spins < 400 && !(job_a.done && job_b.done); ++spins)
@@ -322,16 +340,19 @@ int main(void)
         printf("CONCURRENT wait-expire\n");
         return RETURN_FAIL;
     }
-    printf("CONCURRENT a_io=%d a_nio=%u a_len=%u b_io=%d b_nio=%u b_len=%u\n",
+    printf("CONCURRENT a_io=%d a_nio=%u a_len=%u a_cmd=%u b_io=%d b_nio=%u b_len=%u b_cmd=%u\n",
            (int)job_a.io_error, (unsigned)job_a.nio_error,
-           (unsigned)job_a.response_length, (int)job_b.io_error,
-           (unsigned)job_b.nio_error, (unsigned)job_b.response_length);
+           (unsigned)job_a.response_length, (unsigned)job_a.response[1],
+           (int)job_b.io_error, (unsigned)job_b.nio_error,
+           (unsigned)job_b.response_length, (unsigned)job_b.response[1]);
     if (!(job_a.io_error == 0 && job_b.io_error == 0 &&
           job_a.nio_error == FN_OK && job_b.nio_error == FN_OK &&
           job_a.response_length >= FN_HEADER_SIZE &&
           job_b.response_length >= FN_HEADER_SIZE &&
           job_a.response[0] == FN_DEVICE_CLOCK &&
-          job_b.response[0] == FN_DEVICE_CLOCK)) {
+          job_b.response[0] == FN_DEVICE_CLOCK &&
+          job_a.response[1] == FN_CMD_CLOCK_GET &&
+          job_b.response[1] == FN_CMD_CLOCK_GET_TZ)) {
         failures = 1;
     } else {
         serial_after = try_open_serial();

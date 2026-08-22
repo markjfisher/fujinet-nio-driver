@@ -9,12 +9,13 @@ QUEUE_TEST := $(BUILD_DIR)/test_fujinet_io_queue
 EXEC_BOUNDARY_TEST := $(BUILD_DIR)/test_fujinet_exec_boundary
 RESIDENT_TEST := $(BUILD_DIR)/test_fujinet_disk_resident
 NIO_DEVICE_TEST := $(BUILD_DIR)/test_fujinet_nio_device
+SERIAL_CHANNEL_TEST := $(BUILD_DIR)/test_fujinet_nio_serial_channel
 LIBRARY := $(LIB_ROOT)/build/fujinet-nio-linux.a
 
 .PHONY: all test library clean
 
 all: $(TEST) $(LINK_TEST) $(QUEUE_TEST) $(EXEC_BOUNDARY_TEST) $(RESIDENT_TEST) \
-	$(NIO_DEVICE_TEST)
+	$(NIO_DEVICE_TEST) $(SERIAL_CHANNEL_TEST)
 
 $(TEST): test_fujinet_disk_driver.c \
 		$(DRIVER_ROOT)/common/fujinet_disk_driver.c \
@@ -61,14 +62,19 @@ $(NIO_DEVICE_TEST): test_fujinet_nio_device.c \
 	$(CC) $(CFLAGS) -Wno-unused-function -DFUJINET_NIO_NATIVE_TEST -Istubs \
 		-I$(DRIVER_ROOT)/include -I$(LIB_ROOT)/include $^ -o $@
 
+$(SERIAL_CHANNEL_TEST): test_fujinet_nio_serial_channel.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/include -I$(LIB_ROOT)/include $^ -o $@
+
 test: $(TEST) $(LINK_TEST) $(QUEUE_TEST) $(EXEC_BOUNDARY_TEST) $(RESIDENT_TEST) \
-		$(NIO_DEVICE_TEST)
+		$(NIO_DEVICE_TEST) $(SERIAL_CHANNEL_TEST)
 	./$(TEST)
 	./$(LINK_TEST)
 	./$(QUEUE_TEST)
 	./$(EXEC_BOUNDARY_TEST)
 	./$(RESIDENT_TEST)
 	./$(NIO_DEVICE_TEST)
+	./$(SERIAL_CHANNEL_TEST)
 
 clean:
 	rm -rf $(BUILD_DIR)

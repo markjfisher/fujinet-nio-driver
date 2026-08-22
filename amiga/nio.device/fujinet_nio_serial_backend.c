@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "fujinet_nio_backend.h"
+#include "fujinet_nio_serial_channel.h"
 #include "fujinet-nio.h"
 #include "fn_protocol.h"
 #include "fn_session.h"
@@ -35,7 +36,18 @@ static uint16_t read_pos;
 static uint16_t read_len;
 static fn_stream_session_t session;
 static uint8_t session_initialized;
+static uint8_t channel_error;
 
+/*
+ * Writes use synchronous DoIO(CMD_WRITE). timeout_ms is unused on purpose:
+ * aborting an outstanding serial CMD_WRITE is not reliable on Amiga
+ * serial.device (including Amiberry), the same reason the read path polls
+ * SDCMD_QUERY instead of parking a CMD_READ. Each write is one SLIP byte
+ * into a finite TX buffer; completion is bounded by the serial driver
+ * accepting that byte, not by an application timer. A hung serial.device
+ * is a host/emulator defect; treating it as FN_ERR_TIMEOUT would require
+ * AbortIO that this backend must not rely on.
+ */
 static uint8_t serial_write(const uint8_t *buf, uint16_t len)
 {
     serial_req->IOSer.io_Command = CMD_WRITE;
@@ -121,12 +133,41 @@ static uint8_t session_read_byte(void *context, uint8_t *value,
                                  uint16_t timeout_ms)
 {
     (void)context;
-    return serial_read_byte(value, timeout_ms) == FN_OK ? 1 : 0;
+    if (channel_error != 0) return 0;
+    return fn_serial_channel_got_byte(
+        serial_read_byte(value, timeout_ms), &channel_error);
 }
 
 static void session_flush(void *context)
 {
+    ULONG available;
+
     (void)context;
+    read_pos = 0;
+    read_len = 0;
+    if (!serial_open) return;
+
+    for (;;) {
+        serial_req->IOSer.io_Command = SDCMD_QUERY;
+        serial_req->IOSer.io_Data = NULL;
+        serial_req->IOSer.io_Length = 0;
+        serial_req->IOSer.io_Actual = 0;
+        if (DoIO((struct IORequest *)serial_req) != 0) {
+            if (channel_error == 0) channel_error = FN_ERR_IO;
+            return;
+        }
+        available = serial_req->IOSer.io_Actual;
+        if (available == 0) return;
+        if (available > sizeof(read_buf)) available = sizeof(read_buf);
+        serial_req->IOSer.io_Command = CMD_READ;
+        serial_req->IOSer.io_Data = (APTR)read_buf;
+        serial_req->IOSer.io_Length = available;
+        serial_req->IOSer.io_Actual = 0;
+        if (DoIO((struct IORequest *)serial_req) != 0) {
+            if (channel_error == 0) channel_error = FN_ERR_IO;
+            return;
+        }
+    }
 }
 
 static const fn_stream_channel_ops_t session_ops = {
@@ -178,6 +219,7 @@ void backend_close(void)
     memset(&session, 0, sizeof(session));
     read_pos = 0;
     read_len = 0;
+    channel_error = 0;
     release_timer();
     release_serial();
 }
@@ -242,6 +284,7 @@ uint8_t backend_open(void)
     session_initialized = 1;
     read_pos = 0;
     read_len = 0;
+    channel_error = 0;
     return FN_OK;
 }
 
@@ -258,9 +301,16 @@ uint8_t backend_exchange(
     if (!serial_open || !timer_open || !session_initialized) return FN_ERR_IO;
     if (response_len == NULL) return FN_ERR_INVALID;
 
+    channel_error = 0;
     result = fn_stream_session_request(&session, request, request_len, response,
                                        response_capacity, response_len,
                                        FN_SERIAL_BACKEND_TIMEOUT_MS);
-    if (result == FN_ERR_IO) return FN_ERR_TRANSPORT;
+    result = fn_serial_channel_map_session_result(result, &channel_error);
+    /*
+     * Timeout is not FN_ERR_TRANSPORT, but leftover RX / a late SLIP frame
+     * would desynchronize the next exchange. Drain now; the worker then
+     * backend_close()s so the next exchange lazy-reopens a clean session.
+     */
+    if (result == FN_ERR_TIMEOUT) session_flush(NULL);
     return result;
 }

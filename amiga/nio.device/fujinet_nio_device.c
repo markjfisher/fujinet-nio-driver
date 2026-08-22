@@ -158,7 +158,10 @@ static void process_exchange(struct fujinet_nio_device_base *base,
     base->in_progress_aborted = 0;
     base->worker_state = NIO_WORKER_IDLE;
     Enable();
-    if (nio_error == FN_ERR_TRANSPORT) close_backend(base);
+    /* Timeout resets framing like TRANSPORT: a late SLIP frame must not
+     * be consumed by the next exchange. Next BeginIO may lazy-reopen. */
+    if (nio_error == FN_ERR_TRANSPORT || nio_error == FN_ERR_TIMEOUT)
+        close_backend(base);
     ReplyMsg(&req->fn_io.io_Message);
 }
 

@@ -69,6 +69,7 @@ static unsigned backend_opens;
 static unsigned backend_closes;
 static unsigned backend_exchanges;
 static uint8_t backend_fatal;
+static uint8_t backend_timeout;
 static uint8_t backend_delay_abort;
 static uint8_t backend_delay_expunge;
 static uint8_t backend_delay_close;
@@ -115,6 +116,10 @@ static uint8_t test_backend_exchange(const uint8_t *request,
         backend_fatal = 0;
         return FN_ERR_TRANSPORT;
     }
+    if (backend_timeout) {
+        backend_timeout = 0;
+        return FN_ERR_TIMEOUT;
+    }
     if (request != NULL && request_len > 0 && response != NULL) {
         uint16_t n = request_len;
         if (n > response_capacity) n = response_capacity;
@@ -137,6 +142,7 @@ static void reset_harness(void)
     backend_closes = 0;
     backend_exchanges = 0;
     backend_fatal = 0;
+    backend_timeout = 0;
     backend_delay_abort = 0;
     backend_delay_expunge = 0;
     backend_delay_close = 0;
@@ -442,6 +448,32 @@ static void test_fatal_backend(void)
     CHECK("reopen io_Error 0", req.fn_io.io_Error == 0);
 }
 
+static void test_timeout_resets_backend(void)
+{
+    struct FujiNetNIORequest req;
+    UBYTE request_bytes[1] = {7};
+    UBYTE response[8];
+
+    reset_harness();
+    init_exchange(&req, request_bytes, 1, response, sizeof(response));
+    open_unit0(&req);
+    backend_timeout = 1;
+    fujinet_nio_native_test_begin_io(&req.fn_io);
+    fujinet_nio_native_test_worker_step();
+    CHECK("timeout io_Error stays Exec-ok", req.fn_io.io_Error == 0);
+    CHECK("timeout FN_ERR_TIMEOUT", req.fn_nio_error == FN_ERR_TIMEOUT);
+    CHECK("timeout length 0", req.fn_response_length == 0);
+    CHECK("timeout closed backend", backend_closes == 1);
+    CHECK("timeout backend not open",
+          fujinet_nio_native_test_backend_is_open() == 0);
+
+    init_exchange(&req, request_bytes, 1, response, sizeof(response));
+    fujinet_nio_native_test_begin_io(&req.fn_io);
+    fujinet_nio_native_test_worker_step();
+    CHECK("timeout next exchange lazy-reopens", backend_opens == 2);
+    CHECK("timeout reopen FN_OK", req.fn_nio_error == FN_OK);
+}
+
 static void test_expunge_busy(void)
 {
     struct FujiNetNIORequest req;
@@ -622,6 +654,7 @@ int main(void)
     test_open_invalid_unit();
     test_opencnt_zero_keeps_backend();
     test_fatal_backend();
+    test_timeout_resets_backend();
     test_expunge_busy();
     test_expunge_idle();
     test_delayed_expunge_on_final_close();
