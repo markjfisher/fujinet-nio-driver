@@ -162,15 +162,15 @@ static void process_exchange(struct fujinet_nio_device_base *base,
     if (base->in_progress_aborted) {
         apply_abort_completion(req);
     } else {
+        if (nio_error == FN_OK &&
+            response_len > req->fn_response_capacity) {
+            nio_error = FN_ERR_IO;
+            response_len = 0;
+        }
         req->fn_io.io_Error = 0;
         req->fn_nio_error = nio_error;
-        if (nio_error == FN_OK) {
-            if (response_len > req->fn_response_capacity)
-                response_len = req->fn_response_capacity;
-            req->fn_response_length = response_len;
-        } else {
-            req->fn_response_length = 0;
-        }
+        if (nio_error == FN_OK) req->fn_response_length = response_len;
+        else req->fn_response_length = 0;
     }
     base->in_progress = NULL;
     base->in_progress_aborted = 0;
@@ -204,6 +204,8 @@ static void worker_pump(struct fujinet_nio_device_base *base)
 }
 
 static void device_worker_entry(void);
+static BPTR device_expunge(register struct fujinet_nio_device_base *base
+                               FN_REGISTER("a6"));
 
 static struct fujinet_nio_device_base *device_init(
     register struct fujinet_nio_device_base *base FN_REGISTER("d0"),
@@ -267,7 +269,14 @@ static BPTR device_close(
 {
     fujinet_io_queue_node_t *queued;
     uint8_t reply_aborted = 0;
+    uint8_t delayed_expunge = 0;
 
+    /*
+     * Callers must AbortIO/WaitIO before CloseDevice. A still-queued
+     * request on this IORequest is completed as aborted so it is not
+     * left in the FIFO. An in-progress exchange is not cancelled; the
+     * worker still ReplyMsgs once.
+     */
     Disable();
     queued = fujinet_io_queue_remove_request(&base->io_queue, request);
     if (queued != NULL) {
@@ -281,9 +290,13 @@ static BPTR device_close(
     if (base->device.dd_Library.lib_OpenCnt != 0) {
         --base->device.dd_Library.lib_OpenCnt;
     }
+    /* OpenCnt 0 does not close the backend. LIBF_DELEXP does, via expunge. */
+    delayed_expunge =
+        (uint8_t)(base->device.dd_Library.lib_OpenCnt == 0 &&
+                  (base->device.dd_Library.lib_Flags & LIBF_DELEXP) != 0);
     Enable();
     if (reply_aborted) ReplyMsg(&request->io_Message);
-    /* OpenCnt reaching zero does not close the backend. */
+    if (delayed_expunge) return device_expunge(base);
     return 0;
 }
 
@@ -301,6 +314,7 @@ static BPTR device_expunge(
         return 0;
     }
     segment_list = base->segment_list;
+    base->device.dd_Library.lib_Flags &= (UBYTE)~LIBF_DELEXP;
     Enable();
 
 #ifndef FUJINET_NIO_NATIVE_TEST

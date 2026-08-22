@@ -71,6 +71,8 @@ static unsigned backend_exchanges;
 static uint8_t backend_fatal;
 static uint8_t backend_delay_abort;
 static uint8_t backend_delay_expunge;
+static uint8_t backend_delay_close;
+static uint8_t backend_oversize_len;
 static struct FujiNetNIORequest *delay_target;
 static uint8_t canned_response[4] = {9, 8, 7, 6};
 static uint16_t canned_len = 4;
@@ -101,6 +103,14 @@ static uint8_t test_backend_exchange(const uint8_t *request,
     if (backend_delay_expunge) {
         expunge_from_backend = fujinet_nio_native_test_expunge();
     }
+    if (backend_delay_close && delay_target != NULL) {
+        fujinet_nio_native_test_close(&delay_target->fn_io);
+    }
+    if (backend_oversize_len) {
+        backend_oversize_len = 0;
+        *response_len = (uint16_t)(response_capacity + 1);
+        return FN_OK;
+    }
     if (backend_fatal) {
         backend_fatal = 0;
         return FN_ERR_TRANSPORT;
@@ -129,6 +139,8 @@ static void reset_harness(void)
     backend_fatal = 0;
     backend_delay_abort = 0;
     backend_delay_expunge = 0;
+    backend_delay_close = 0;
+    backend_oversize_len = 0;
     delay_target = NULL;
     expunge_from_backend = (BPTR)0;
     fujinet_nio_native_test_reset();
@@ -504,6 +516,73 @@ static void test_abort_in_progress_fatal_closes(void)
           fujinet_nio_native_test_backend_is_open() == 0);
 }
 
+static void test_delayed_expunge_on_final_close(void)
+{
+    struct FujiNetNIORequest req;
+    UBYTE request_bytes[1] = {8};
+    UBYTE response[8];
+    BPTR expunge_result;
+    BPTR close_result;
+
+    reset_harness();
+    init_exchange(&req, request_bytes, 1, response, sizeof(response));
+    open_unit0(&req);
+    fujinet_nio_native_test_begin_io(&req.fn_io);
+    fujinet_nio_native_test_worker_step();
+    expunge_result = fujinet_nio_native_test_expunge();
+    CHECK("busy expunge defers", expunge_result == 0);
+    CHECK("busy expunge sets DELEXP",
+          (fujinet_nio_native_test_lib_flags() & LIBF_DELEXP) != 0);
+    CHECK("busy expunge keeps backend",
+          fujinet_nio_native_test_backend_is_open() == 1);
+    close_result = fujinet_nio_native_test_close(&req.fn_io);
+    CHECK("final close OpenCnt 0", fujinet_nio_native_test_open_cnt() == 0);
+    CHECK("final close completes delayed expunge", close_result == (BPTR)1);
+    CHECK("delayed expunge closed backend", backend_closes == 1);
+    CHECK("delayed expunge backend_is_open 0",
+          fujinet_nio_native_test_backend_is_open() == 0);
+}
+
+static void test_backend_oversize_response_is_fn_err_io(void)
+{
+    struct FujiNetNIORequest req;
+    UBYTE request_bytes[1] = {1};
+    UBYTE response[8];
+
+    reset_harness();
+    init_exchange(&req, request_bytes, 1, response, sizeof(response));
+    open_unit0(&req);
+    backend_oversize_len = 1;
+    fujinet_nio_native_test_begin_io(&req.fn_io);
+    fujinet_nio_native_test_worker_step();
+    CHECK("oversize backend io_Error 0", req.fn_io.io_Error == 0);
+    CHECK("oversize backend FN_ERR_IO", req.fn_nio_error == FN_ERR_IO);
+    CHECK("oversize backend length 0", req.fn_response_length == 0);
+    CHECK("oversize backend still open",
+          fujinet_nio_native_test_backend_is_open() == 1);
+}
+
+static void test_close_in_progress_does_not_abort(void)
+{
+    struct FujiNetNIORequest req;
+    UBYTE request_bytes[1] = {3};
+    UBYTE response[8];
+
+    reset_harness();
+    init_exchange(&req, request_bytes, 1, response, sizeof(response));
+    open_unit0(&req);
+    fujinet_nio_native_test_begin_io(&req.fn_io);
+    backend_delay_close = 1;
+    delay_target = &req;
+    replies = 0;
+    fujinet_nio_native_test_worker_step();
+    CHECK("close in-progress OpenCnt 0", fujinet_nio_native_test_open_cnt() == 0);
+    CHECK("close in-progress does not abort", req.fn_io.io_Error == 0);
+    CHECK("close in-progress FN_OK", req.fn_nio_error == FN_OK);
+    CHECK("close in-progress one ReplyMsg", replies == 1);
+    CHECK("close in-progress did not close backend", backend_closes == 0);
+}
+
 static void test_fifo_order(void)
 {
     struct FujiNetNIORequest a, b;
@@ -545,6 +624,9 @@ int main(void)
     test_fatal_backend();
     test_expunge_busy();
     test_expunge_idle();
+    test_delayed_expunge_on_final_close();
+    test_backend_oversize_response_is_fn_err_io();
+    test_close_in_progress_does_not_abort();
     test_fifo_order();
 
     if (failures) {

@@ -6,6 +6,13 @@
 #define FUJINET_NIO_DEVICE_NAME    "fujinet-nio.device"
 #define FUJINET_NIO_DEVICE_UNIT    0
 
+/*
+ * CloseDevice requires AbortIO/WaitIO first on this IORequest. The
+ * device does not abort an in-progress exchange. A delayed expunge
+ * (LIBF_DELEXP) completes when the last CloseDevice drops OpenCnt to 0
+ * and the queue and in-progress slot are idle.
+ */
+
 /* The only command accepted by the broker worker */
 #define FUJINET_NIO_CMD_EXCHANGE   (CMD_NONSTD + 0)
 
