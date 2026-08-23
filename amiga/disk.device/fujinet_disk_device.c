@@ -22,6 +22,7 @@
 #ifdef FUJINET_DISK_NATIVE_TEST
 #include <stdlib.h>
 #define FN_REGISTER(name)
+static uint8_t native_drain_after_begin = 1;
 #else
 #define FN_REGISTER(name) __asm(name)
 #endif
@@ -83,6 +84,8 @@ struct fujinet_disk_device_base {
 static uint8_t remove_change_request(struct fujinet_disk_unit_state *unit,
                                       struct IORequest *request);
 static void discard_change_requests(struct fujinet_disk_device_base *base);
+static BPTR complete_pending_expunge(struct fujinet_disk_device_base *base);
+static void worker_drain(struct fujinet_disk_device_base *base);
 static void device_worker_entry(void);
 
 struct ExecBase *SysBase;
@@ -272,8 +275,17 @@ static BPTR device_close(
     }
     request->io_Device = NULL;
     request->io_Unit = NULL;
+    Disable();
     if (base->device.dd_Library.lib_OpenCnt != 0) {
         --base->device.dd_Library.lib_OpenCnt;
+    }
+    {
+        uint8_t delayed_expunge =
+            (uint8_t)(base->device.dd_Library.lib_OpenCnt == 0 &&
+                      (base->device.dd_Library.lib_Flags & LIBF_DELEXP) != 0);
+        Enable();
+        if (delayed_expunge)
+            return complete_pending_expunge(base);
     }
     return 0;
 }
@@ -281,11 +293,10 @@ static BPTR device_close(
 static BPTR device_expunge(
     register struct fujinet_disk_device_base *base FN_REGISTER("a6"))
 {
-    /* The serial-backed session is process-global today, so unloading is
-     * deliberately deferred until Stage 7 defines explicit lifecycle. */
-    discard_change_requests(base);
+    /* LIBF_DELEXP is pending explicit teardown. Complete once when safe;
+     * otherwise last CloseDevice or worker idle finishes it. No unload. */
     base->device.dd_Library.lib_Flags |= LIBF_DELEXP;
-    return 0;
+    return complete_pending_expunge(base);
 }
 
 static ULONG device_reserved(void)
@@ -357,6 +368,27 @@ static void discard_change_requests(struct fujinet_disk_device_base *base)
             node = next;
         }
     }
+}
+
+static BPTR complete_pending_expunge(struct fujinet_disk_device_base *base)
+{
+    uint8_t i;
+
+    Disable();
+    if ((base->device.dd_Library.lib_Flags & LIBF_DELEXP) == 0 ||
+        base->device.dd_Library.lib_OpenCnt != 0 ||
+        base->io_queue.head != NULL ||
+        base->io_processing != 0) {
+        Enable();
+        return 0;
+    }
+    base->device.dd_Library.lib_Flags &= (UBYTE)~LIBF_DELEXP;
+    Enable();
+    discard_change_requests(base);
+    fn_transport_close();
+    for (i = 0; i < FUJINET_DISK_UNIT_COUNT; ++i)
+        base->units[i].driver.client_initialized = 0;
+    return 0;
 }
 
 static struct IORequest *next_runnable_request(
@@ -720,6 +752,31 @@ static void device_process_request(struct IORequest *request,
     }
 }
 
+static void worker_drain(struct fujinet_disk_device_base *base)
+{
+    for (;;) {
+        struct IORequest *request;
+
+        Disable();
+        request = next_runnable_request(base);
+        if (request != NULL) {
+            Enable();
+            device_process_request(request, base);
+            continue;
+        }
+        base->io_processing = 0;
+        Enable();
+        (void)complete_pending_expunge(base);
+        Disable();
+        if (base->io_processing) {
+            Enable();
+            continue;
+        }
+        Enable();
+        return;
+    }
+}
+
 #ifndef FUJINET_DISK_NATIVE_TEST
 static void device_worker_entry(void)
 {
@@ -728,37 +785,8 @@ static void device_worker_entry(void)
     ULONG signal_mask = 1UL << base->worker_signal;
 
     for (;;) {
-        struct IORequest *request;
         Wait(signal_mask);
-        for (;;) {
-            Disable();
-            request = next_runnable_request(base);
-            if (request != NULL) {
-                Enable();
-                device_process_request(request, base);
-                continue;
-            }
-            Enable();
-            /* The serial backend cannot be opened independently by a CLI
-             * while the resident copy retains its handle. Release it only
-             * after the FIFO is empty, then recheck before becoming idle. */
-            fn_transport_close();
-            {
-                uint8_t i;
-                for (i = 0; i < FUJINET_DISK_UNIT_COUNT; ++i)
-                    base->units[i].driver.client_initialized = 0;
-            }
-            Disable();
-            request = next_runnable_request(base);
-            if (request != NULL) {
-                Enable();
-                device_process_request(request, base);
-                continue;
-            }
-            base->io_processing = 0;
-            Enable();
-            break;
-        }
+        worker_drain(base);
     }
 }
 #endif
@@ -866,10 +894,8 @@ static void device_begin_io(
 #endif
     Enable();
 #ifdef FUJINET_DISK_NATIVE_TEST
-    {
-        struct IORequest *next = next_runnable_request(base);
-        if (next != NULL) device_process_request(next, base);
-    }
+    if (native_drain_after_begin)
+        worker_drain(base);
 #endif
 }
 
@@ -952,6 +978,7 @@ static struct ExecBase native_test_sys_base;
 void fujinet_disk_native_test_reset(void)
 {
     memset(&native_test_base, 0, sizeof(native_test_base));
+    native_drain_after_begin = 1;
     (void)device_init(&native_test_base, 0, &native_test_sys_base);
 }
 
@@ -980,6 +1007,68 @@ void fujinet_disk_native_test_begin_io(uint8_t unit, struct IORequest *request)
     if (unit >= FUJINET_DISK_UNIT_COUNT) return;
     request->io_Unit = &native_test_base.exec_units[unit];
     device_begin_io(request, &native_test_base);
+}
+
+void fujinet_disk_native_test_queue_io(uint8_t unit, struct IORequest *request)
+{
+    uint8_t previous = native_drain_after_begin;
+    native_drain_after_begin = 0;
+    fujinet_disk_native_test_begin_io(unit, request);
+    native_drain_after_begin = previous;
+}
+
+void fujinet_disk_native_test_drain(void)
+{
+    worker_drain(&native_test_base);
+}
+
+struct Device *fujinet_disk_native_test_open(struct IORequest *request,
+                                             ULONG unit)
+{
+    return device_open(request, unit, 0, &native_test_base);
+}
+
+BPTR fujinet_disk_native_test_close(struct IORequest *request)
+{
+    return device_close(request, &native_test_base);
+}
+
+BPTR fujinet_disk_native_test_expunge(void)
+{
+    return device_expunge(&native_test_base);
+}
+
+UWORD fujinet_disk_native_test_open_cnt(void)
+{
+    return native_test_base.device.dd_Library.lib_OpenCnt;
+}
+
+UBYTE fujinet_disk_native_test_lib_flags(void)
+{
+    return native_test_base.device.dd_Library.lib_Flags;
+}
+
+uint8_t fujinet_disk_native_test_client_initialized(uint8_t unit)
+{
+    if (unit >= FUJINET_DISK_UNIT_COUNT) return 0;
+    return native_test_base.units[unit].driver.client_initialized;
+}
+
+void fujinet_disk_native_test_set_client_initialized(uint8_t unit, uint8_t value)
+{
+    if (unit >= FUJINET_DISK_UNIT_COUNT) return;
+    native_test_base.units[unit].driver.client_initialized = value;
+}
+
+uint8_t fujinet_disk_native_test_change_int_count(uint8_t unit)
+{
+    uint8_t count = 0;
+    struct Node *node;
+    if (unit >= FUJINET_DISK_UNIT_COUNT) return 0;
+    for (node = native_test_base.units[unit].change_requests.lh_Head;
+         node->ln_Succ != NULL; node = node->ln_Succ)
+        ++count;
+    return count;
 }
 #endif
 
