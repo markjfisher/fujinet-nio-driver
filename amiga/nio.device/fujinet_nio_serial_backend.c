@@ -18,7 +18,11 @@ extern struct ExecBase *SysBase;
 #define FN_SERIAL_BACKEND_BAUD 19200
 #define FN_SERIAL_BACKEND_UNIT 0
 #define FN_SERIAL_BACKEND_TIMER_UNIT UNIT_MICROHZ
-#define FN_SERIAL_BACKEND_POLL_MS 10
+/* The exchange worker waits for a complete FujiBus frame. A 10 ms empty-RX
+ * poll adds up to a full video frame of avoidable response latency for each
+ * short request; 1 ms keeps the worker yielding without quantising a read
+ * response at the display rate. */
+#define FN_SERIAL_BACKEND_POLL_MS 1
 #define FN_SERIAL_BACKEND_TIMEOUT_MS 5000
 #define FN_SERIAL_BACKEND_WIRE_BUF_SIZE ((FN_MAX_PACKET_SIZE * 2) + 2)
 
