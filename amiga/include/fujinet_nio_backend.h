@@ -11,5 +11,7 @@ uint8_t backend_exchange(
     uint8_t *response,
     uint16_t response_capacity,
     uint16_t *response_len);
+uint8_t backend_set_baud(uint32_t baud);
+uint32_t backend_get_baud(void);
 
 #endif

@@ -12,6 +12,7 @@ TD_PROBE := $(BUILD_DIR)/fujinet-td-probe
 NIO_DEVICE := $(BUILD_DIR)/fujinet-nio.device
 NIO_DEVICE_MAP := $(NIO_DEVICE).map
 NIO_EXCHANGE := $(BUILD_DIR)/fujinet-nio-exchange
+NIO_BAUD := $(BUILD_DIR)/fujinet-nio-baud
 NIO_OBJECTS := $(BUILD_DIR)/nio.device/fujinet_nio_device.o \
 	$(BUILD_DIR)/nio.device/fujinet_nio_serial_backend.o \
 	$(BUILD_DIR)/common/fujinet_io_queue.o \
@@ -35,7 +36,7 @@ OBJECTS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SOURCES))
 all: tests native sdk
 
 native: library $(DEVICE) $(MOUNT_TOOL) $(RESIDENT_LOADER) $(TD_PROBE) \
-	$(NIO_DEVICE) $(NIO_EXCHANGE)
+	$(NIO_DEVICE) $(NIO_EXCHANGE) $(NIO_BAUD)
 
 sdk: $(SDK_LIBRARY) $(SDK_INCLUDE)/fujinet-amiga-disk/support.h $(SDK_INCLUDE)/fujinet-amiga-disk/device.h
 
@@ -72,6 +73,10 @@ $(BUILD_DIR)/nio-framing/fn_slip.o: $(LIB_ROOT)/src/common/fn_slip.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 $(NIO_EXCHANGE): tools/fujinet-nio-exchange.c include/fujinet_nio_device.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 $< -lamiga -o $@
+
+$(NIO_BAUD): tools/fujinet-nio-baud.c include/fujinet_nio_device.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 $< -lamiga -o $@
 

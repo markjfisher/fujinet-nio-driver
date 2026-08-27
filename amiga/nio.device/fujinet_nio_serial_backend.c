@@ -15,7 +15,9 @@
 
 extern struct ExecBase *SysBase;
 
-#define FN_SERIAL_BACKEND_BAUD 19200
+#ifndef FN_SERIAL_BACKEND_BAUD
+#define FN_SERIAL_BACKEND_BAUD 19200UL
+#endif
 #define FN_SERIAL_BACKEND_UNIT 0
 #define FN_SERIAL_BACKEND_TIMER_UNIT UNIT_MICROHZ
 /* The exchange worker waits for a complete FujiBus frame. A 10 ms empty-RX
@@ -41,6 +43,7 @@ static uint16_t read_len;
 static fn_stream_session_t session;
 static uint8_t session_initialized;
 static uint8_t channel_error;
+static uint32_t serial_baud = FN_SERIAL_BACKEND_BAUD;
 
 /*
  * Writes use synchronous DoIO(CMD_WRITE). timeout_ms is unused on purpose:
@@ -133,6 +136,14 @@ static uint8_t session_write_byte(void *context, uint8_t value,
     return serial_write(&value, 1);
 }
 
+static uint8_t session_write_bytes(void *context, const uint8_t *data,
+                                   uint16_t length, uint16_t timeout_ms)
+{
+    (void)context;
+    (void)timeout_ms;
+    return serial_write(data, length);
+}
+
 static uint8_t session_read_byte(void *context, uint8_t *value,
                                  uint16_t timeout_ms)
 {
@@ -179,7 +190,8 @@ static const fn_stream_channel_ops_t session_ops = {
     session_close,
     session_write_byte,
     session_read_byte,
-    session_flush
+    session_flush,
+    session_write_bytes
 };
 
 static void release_timer(void)
@@ -228,6 +240,21 @@ void backend_close(void)
     release_serial();
 }
 
+uint8_t backend_set_baud(uint32_t baud)
+{
+    /* serial.device accepts a ULONG baud rate. Keep the public setting within
+     * the practical range shared by the Amiga UART and FujiNet ESP32 UART
+     * configurations; reopening applies it atomically between exchanges. */
+    if (baud < 300UL || baud > 230400UL) return FN_ERR_INVALID;
+    serial_baud = baud;
+    return FN_OK;
+}
+
+uint32_t backend_get_baud(void)
+{
+    return serial_baud;
+}
+
 uint8_t backend_open(void)
 {
     if (serial_open && timer_open && session_initialized) return FN_OK;
@@ -249,7 +276,7 @@ uint8_t backend_open(void)
     }
     serial_open = 1;
 
-    serial_req->io_Baud = FN_SERIAL_BACKEND_BAUD;
+    serial_req->io_Baud = serial_baud;
     serial_req->io_ReadLen = 8;
     serial_req->io_WriteLen = 8;
     serial_req->io_StopBits = 1;

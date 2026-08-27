@@ -13,8 +13,10 @@
  * and the queue and in-progress slot are idle.
  */
 
-/* The only command accepted by the broker worker */
+/* Broker commands. Control commands affect only its RS-232 backend. */
 #define FUJINET_NIO_CMD_EXCHANGE   (CMD_NONSTD + 0)
+#define FUJINET_NIO_CMD_SET_BAUD   (CMD_NONSTD + 1)
+#define FUJINET_NIO_CMD_GET_BAUD   (CMD_NONSTD + 2)
 
 /* Current struct size; callers must set fn_struct_size to this value */
 #define FUJINET_NIO_REQUEST_SIZE   (sizeof(struct FujiNetNIORequest))

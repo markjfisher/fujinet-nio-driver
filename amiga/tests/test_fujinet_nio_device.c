@@ -15,12 +15,16 @@ typedef void (*fujinet_nio_backend_close_fn)(void);
 typedef uint8_t (*fujinet_nio_backend_exchange_fn)(
     const uint8_t *request, uint16_t request_len, uint8_t *response,
     uint16_t response_capacity, uint16_t *response_len);
+typedef uint8_t (*fujinet_nio_backend_set_baud_fn)(uint32_t baud);
+typedef uint32_t (*fujinet_nio_backend_get_baud_fn)(void);
 
 void fujinet_nio_native_test_reset(void);
 void fujinet_nio_native_test_set_backend(
     fujinet_nio_backend_open_fn open_fn,
     fujinet_nio_backend_close_fn close_fn,
-    fujinet_nio_backend_exchange_fn exchange_fn);
+    fujinet_nio_backend_exchange_fn exchange_fn,
+    fujinet_nio_backend_set_baud_fn set_baud_fn,
+    fujinet_nio_backend_get_baud_fn get_baud_fn);
 struct Device *fujinet_nio_native_test_open(struct IORequest *request,
                                             ULONG unit);
 BPTR fujinet_nio_native_test_close(struct IORequest *request);
@@ -78,6 +82,7 @@ static struct FujiNetNIORequest *delay_target;
 static uint8_t canned_response[4] = {9, 8, 7, 6};
 static uint16_t canned_len = 4;
 static BPTR expunge_from_backend;
+static uint32_t backend_baud;
 
 static uint8_t test_backend_open(void)
 {
@@ -88,6 +93,18 @@ static uint8_t test_backend_open(void)
 static void test_backend_close(void)
 {
     ++backend_closes;
+}
+
+static uint8_t test_backend_set_baud(uint32_t baud)
+{
+    if (baud < 300 || baud > 230400) return FN_ERR_INVALID;
+    backend_baud = baud;
+    return FN_OK;
+}
+
+static uint32_t test_backend_get_baud(void)
+{
+    return backend_baud;
 }
 
 static uint8_t test_backend_exchange(const uint8_t *request,
@@ -149,9 +166,12 @@ static void reset_harness(void)
     backend_oversize_len = 0;
     delay_target = NULL;
     expunge_from_backend = (BPTR)0;
+    backend_baud = 19200;
     fujinet_nio_native_test_reset();
     fujinet_nio_native_test_set_backend(test_backend_open, test_backend_close,
-                                        test_backend_exchange);
+                                        test_backend_exchange,
+                                        test_backend_set_baud,
+                                        test_backend_get_baud);
 }
 
 static void init_exchange(struct FujiNetNIORequest *req,
@@ -167,6 +187,20 @@ static void init_exchange(struct FujiNetNIORequest *req,
     req->fn_response_data = response_data;
     req->fn_response_capacity = response_cap;
     req->fn_response_length = 0xFFFF;
+}
+
+static void write_le32(UBYTE *data, uint32_t value)
+{
+    data[0] = (UBYTE)value;
+    data[1] = (UBYTE)(value >> 8);
+    data[2] = (UBYTE)(value >> 16);
+    data[3] = (UBYTE)(value >> 24);
+}
+
+static uint32_t read_le32(const UBYTE *data)
+{
+    return (uint32_t)data[0] | ((uint32_t)data[1] << 8) |
+           ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24);
 }
 
 static void open_unit0(struct FujiNetNIORequest *req)
@@ -205,6 +239,45 @@ static void test_happy_injected(void)
     CHECK("one exchange", backend_exchanges == 1);
 }
 
+static void test_baud_controls(void)
+{
+    struct FujiNetNIORequest exchange, set, get;
+    UBYTE request[1] = {1};
+    UBYTE response[8];
+    UBYTE baud_bytes[4];
+
+    reset_harness();
+    init_exchange(&exchange, request, sizeof(request), response, sizeof(response));
+    open_unit0(&exchange);
+    fujinet_nio_native_test_begin_io(&exchange.fn_io);
+    fujinet_nio_native_test_worker_step();
+    CHECK("baud setup exchange opened backend", backend_opens == 1);
+
+    write_le32(baud_bytes, 115200);
+    init_exchange(&set, baud_bytes, sizeof(baud_bytes), NULL, 0);
+    set.fn_io.io_Command = FUJINET_NIO_CMD_SET_BAUD;
+    fujinet_nio_native_test_open(&set.fn_io, FUJINET_NIO_DEVICE_UNIT);
+    replies = 0;
+    fujinet_nio_native_test_begin_io(&set.fn_io);
+    fujinet_nio_native_test_worker_step();
+    CHECK("baud set replied", replies == 1);
+    CHECK("baud set FN_OK", set.fn_nio_error == FN_OK);
+    CHECK("baud set no exchange", backend_exchanges == 1);
+    CHECK("baud set closes current backend", backend_closes == 1);
+    CHECK("baud set value", backend_baud == 115200);
+
+    init_exchange(&get, NULL, 0, baud_bytes, sizeof(baud_bytes));
+    get.fn_io.io_Command = FUJINET_NIO_CMD_GET_BAUD;
+    fujinet_nio_native_test_open(&get.fn_io, FUJINET_NIO_DEVICE_UNIT);
+    replies = 0;
+    fujinet_nio_native_test_begin_io(&get.fn_io);
+    fujinet_nio_native_test_worker_step();
+    CHECK("baud get replied", replies == 1);
+    CHECK("baud get FN_OK", get.fn_nio_error == FN_OK);
+    CHECK("baud get length", get.fn_response_length == 4);
+    CHECK("baud get value", read_le32(baud_bytes) == 115200);
+}
+
 static void test_empty_request(void)
 {
     struct FujiNetNIORequest req;
@@ -228,7 +301,7 @@ static void test_overlapping_malformed(void)
 
     reset_harness();
     init_exchange(&req, NULL, 0, response, sizeof(response));
-    req.fn_io.io_Command = (UWORD)(FUJINET_NIO_CMD_EXCHANGE + 1);
+    req.fn_io.io_Command = (UWORD)(FUJINET_NIO_CMD_GET_BAUD + 1);
     req.fn_struct_size = 1;
     req.fn_flags = 1;
     req.fn_pad[0] = 1;
@@ -643,6 +716,7 @@ int main(void)
 {
     test_stub_ndk_symbols();
     test_happy_injected();
+    test_baud_controls();
     test_empty_request();
     test_overlapping_malformed();
     test_beginio_first_match_rows();

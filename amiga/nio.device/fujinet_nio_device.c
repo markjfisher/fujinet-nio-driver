@@ -35,6 +35,8 @@ typedef void (*fujinet_nio_backend_close_fn)(void);
 typedef uint8_t (*fujinet_nio_backend_exchange_fn)(
     const uint8_t *request, uint16_t request_len, uint8_t *response,
     uint16_t response_capacity, uint16_t *response_len);
+typedef uint8_t (*fujinet_nio_backend_set_baud_fn)(uint32_t baud);
+typedef uint32_t (*fujinet_nio_backend_get_baud_fn)(void);
 
 enum {
     NIO_WORKER_IDLE = 0,
@@ -58,6 +60,8 @@ struct fujinet_nio_device_base {
     fujinet_nio_backend_open_fn backend_open_fn;
     fujinet_nio_backend_close_fn backend_close_fn;
     fujinet_nio_backend_exchange_fn backend_exchange_fn;
+    fujinet_nio_backend_set_baud_fn backend_set_baud_fn;
+    fujinet_nio_backend_get_baud_fn backend_get_baud_fn;
 };
 
 struct ExecBase *SysBase;
@@ -172,6 +176,63 @@ static void process_exchange(struct fujinet_nio_device_base *base,
     ReplyMsg(&req->fn_io.io_Message);
 }
 
+static uint32_t read_le32(const UBYTE *data)
+{
+    return (uint32_t)data[0] | ((uint32_t)data[1] << 8) |
+           ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24);
+}
+
+static void write_le32(UBYTE *data, uint32_t value)
+{
+    data[0] = (UBYTE)value;
+    data[1] = (UBYTE)(value >> 8);
+    data[2] = (UBYTE)(value >> 16);
+    data[3] = (UBYTE)(value >> 24);
+}
+
+static void process_control(struct fujinet_nio_device_base *base,
+                            struct FujiNetNIORequest *req)
+{
+    uint8_t nio_error = FN_OK;
+
+    if (req->fn_io.io_Command == FUJINET_NIO_CMD_SET_BAUD) {
+        /* This request is serialized behind every exchange. Closing the
+         * backend here makes the next exchange reopen serial.device with the
+         * new rate; no active stream can observe a mid-frame reconfiguration. */
+        close_backend(base);
+        if (base->backend_set_baud_fn == NULL) {
+            nio_error = FN_ERR_UNSUPPORTED;
+        } else {
+            nio_error = base->backend_set_baud_fn(read_le32(req->fn_request_data));
+        }
+    } else if (req->fn_io.io_Command == FUJINET_NIO_CMD_GET_BAUD) {
+        if (base->backend_get_baud_fn == NULL) {
+            nio_error = FN_ERR_UNSUPPORTED;
+        } else {
+            write_le32(req->fn_response_data, base->backend_get_baud_fn());
+            req->fn_response_length = 4;
+        }
+    } else {
+        nio_error = FN_ERR_INVALID;
+    }
+
+    Disable();
+    base->worker_state = NIO_WORKER_COMPLETING;
+    if (base->in_progress_aborted) {
+        apply_abort_completion(req);
+    } else {
+        req->fn_io.io_Error = 0;
+        req->fn_nio_error = nio_error;
+        if (nio_error != FN_OK || req->fn_io.io_Command != FUJINET_NIO_CMD_GET_BAUD)
+            req->fn_response_length = 0;
+    }
+    base->in_progress = NULL;
+    base->in_progress_aborted = 0;
+    base->worker_state = NIO_WORKER_IDLE;
+    Enable();
+    ReplyMsg(&req->fn_io.io_Message);
+}
+
 static void worker_pump(struct fujinet_nio_device_base *base)
 {
     for (;;) {
@@ -188,7 +249,10 @@ static void worker_pump(struct fujinet_nio_device_base *base)
         base->in_progress_aborted = 0;
         base->worker_state = NIO_WORKER_IN_PROGRESS;
         Enable();
-        process_exchange(base, req);
+        if (req->fn_io.io_Command == FUJINET_NIO_CMD_EXCHANGE)
+            process_exchange(base, req);
+        else
+            process_control(base, req);
 #ifdef FUJINET_NIO_NATIVE_TEST
         return;
 #endif
@@ -211,6 +275,8 @@ static struct fujinet_nio_device_base *device_init(
     base->backend_open_fn = backend_open;
     base->backend_close_fn = backend_close;
     base->backend_exchange_fn = backend_exchange;
+    base->backend_set_baud_fn = backend_set_baud;
+    base->backend_get_baud_fn = backend_get_baud;
     base->worker_signal = AllocSignal(-1);
     if (base->worker_signal == -1) return NULL;
     base->worker_stack = AllocMem(WORKER_STACK_SIZE, MEMF_PUBLIC | MEMF_CLEAR);
@@ -358,7 +424,9 @@ static void device_begin_io(
     struct FujiNetNIORequest *req = (struct FujiNetNIORequest *)request;
     fujinet_io_queue_node_t *node;
 
-    if (request->io_Command != FUJINET_NIO_CMD_EXCHANGE) {
+    if (request->io_Command != FUJINET_NIO_CMD_EXCHANGE &&
+        request->io_Command != FUJINET_NIO_CMD_SET_BAUD &&
+        request->io_Command != FUJINET_NIO_CMD_GET_BAUD) {
         reject_begin_io(req, IOERR_NOCMD);
         return;
     }
@@ -378,11 +446,20 @@ static void device_begin_io(
         reject_begin_io(req, IOERR_BADADDRESS);
         return;
     }
-    if (req->fn_request_length > FN_MAX_PACKET_SIZE) {
-        reject_begin_io(req, IOERR_BADLENGTH);
-        return;
-    }
-    if (req->fn_response_capacity > FN_MAX_PACKET_SIZE) {
+    if (request->io_Command == FUJINET_NIO_CMD_EXCHANGE) {
+        if (req->fn_request_length > FN_MAX_PACKET_SIZE ||
+            req->fn_response_capacity > FN_MAX_PACKET_SIZE) {
+            reject_begin_io(req, IOERR_BADLENGTH);
+            return;
+        }
+    } else if (request->io_Command == FUJINET_NIO_CMD_SET_BAUD) {
+        if (req->fn_request_data == NULL || req->fn_request_length != 4 ||
+            req->fn_response_capacity != 0) {
+            reject_begin_io(req, IOERR_BADLENGTH);
+            return;
+        }
+    } else if (req->fn_request_length != 0 || req->fn_response_data == NULL ||
+               req->fn_response_capacity < 4) {
         reject_begin_io(req, IOERR_BADLENGTH);
         return;
     }
@@ -481,11 +558,15 @@ void fujinet_nio_native_test_reset(void)
 void fujinet_nio_native_test_set_backend(
     fujinet_nio_backend_open_fn open_fn,
     fujinet_nio_backend_close_fn close_fn,
-    fujinet_nio_backend_exchange_fn exchange_fn)
+    fujinet_nio_backend_exchange_fn exchange_fn,
+    fujinet_nio_backend_set_baud_fn set_baud_fn,
+    fujinet_nio_backend_get_baud_fn get_baud_fn)
 {
     native_test_base.backend_open_fn = open_fn;
     native_test_base.backend_close_fn = close_fn;
     native_test_base.backend_exchange_fn = exchange_fn;
+    native_test_base.backend_set_baud_fn = set_baud_fn;
+    native_test_base.backend_get_baud_fn = get_baud_fn;
 }
 
 struct Device *fujinet_nio_native_test_open(struct IORequest *request,

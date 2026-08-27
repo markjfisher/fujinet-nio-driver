@@ -79,6 +79,23 @@ name mismatch, non-resident rejection, registration, `OpenDevice()`, and
 standard trackdisk status commands on both the normal test OS and Workbench
 3.1.
 
+## RS-232 baud rate
+
+`make native` also builds `build/amiga/fujinet-nio-baud`. With the resident
+`fujinet-nio.device` loaded, use it to inspect or select the rate used when
+the serial backend next opens:
+
+```text
+fujinet-nio-baud
+fujinet-nio-baud 115200
+```
+
+Supported values are 300–230400 baud. The selection is held by the resident
+device until it is unloaded or the machine reboots; put the desired command in
+`S:Startup-Sequence` to make it persistent. This affects only the RS-232
+byte-stream backend. Packet-native transports such as Zorro or floppy use
+their own transport configuration and are unaffected.
+
 The native device exposes `FUJINET_DISK_CMD_MOUNT` as its private read-only
 Mount command and `FUJINET_DISK_CMD_MOUNT_WRITABLE` as the writable variant;
 `io_Data` points to a NUL-terminated URI. Both are outside the trackdisk
