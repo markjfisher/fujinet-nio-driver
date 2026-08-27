@@ -124,10 +124,12 @@ static void process_exchange(struct fujinet_nio_device_base *base,
                              struct FujiNetNIORequest *req)
 {
     uint8_t nio_error;
+    uint8_t completion_stage = 1;
     uint16_t response_len = 0;
 
     nio_error = ensure_backend_open(base);
     if (nio_error == FN_OK) {
+        completion_stage = 2;
         if (base->backend_exchange_fn == NULL) {
             nio_error = FN_ERR_IO;
             response_len = 0;
@@ -151,6 +153,11 @@ static void process_exchange(struct fujinet_nio_device_base *base,
         }
         req->fn_io.io_Error = 0;
         req->fn_nio_error = nio_error;
+        /* Temporary, request-local diagnostic. The caller supplied zeroes;
+         * return the completion stage and backend result without changing
+         * the resident base or the public request layout. */
+        req->fn_pad[0] = completion_stage;
+        req->fn_pad[1] = nio_error;
         if (nio_error == FN_OK) req->fn_response_length = response_len;
         else req->fn_response_length = 0;
     }
