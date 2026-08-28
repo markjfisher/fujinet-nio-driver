@@ -27,6 +27,11 @@ extern struct ExecBase *SysBase;
 #define FN_SERIAL_BACKEND_POLL_MS 1
 #define FN_SERIAL_BACKEND_TIMEOUT_MS 5000
 #define FN_SERIAL_BACKEND_WIRE_BUF_SIZE ((FN_MAX_PACKET_SIZE * 2) + 2)
+/* serial.device requires io_RBufLen to be a multiple of 64. Keep its
+ * receive buffer large enough for the full SLIP frame, including delimiters,
+ * then round upward rather than handing it the 2050-byte wire buffer size. */
+#define FN_SERIAL_BACKEND_RBUF_SIZE \
+    (((FN_SERIAL_BACKEND_WIRE_BUF_SIZE + 63) / 64) * 64)
 
 static const UBYTE serial_device_name[] = "serial.device";
 
@@ -319,7 +324,7 @@ uint8_t backend_open(void)
     serial_req->io_ReadLen = 8;
     serial_req->io_WriteLen = 8;
     serial_req->io_StopBits = 1;
-    serial_req->io_RBufLen = FN_SERIAL_BACKEND_WIRE_BUF_SIZE;
+    serial_req->io_RBufLen = FN_SERIAL_BACKEND_RBUF_SIZE;
     serial_req->io_SerFlags = SERF_XDISABLED;
     serial_req->IOSer.io_Command = SDCMD_SETPARAMS;
     if (DoIO((struct IORequest *)serial_req) != 0) {
