@@ -277,6 +277,10 @@ int main(void)
     }
 
     do_exchange(&req, port);
+    /* native = serial.device io_Error; status-hi = high byte of io_Status:
+     * 1=IO_STATF_OVERRUN, 2=IO_STATF_FRAMEERROR, 4=IO_STATF_PARITYERR.
+     * cause=9 means flush drained IO_STATF_OVERRUN before CMD_WRITE but
+     * CMD_READ still failed; cause=7 means flush drain never triggered. */
     printf("EXCHANGE io=%d nio=%u len=%u stage=%u result=%u cause=%u native=%u status-hi=%u\n",
            (int)req.fn_io.io_Error, (unsigned)req.fn_nio_error,
            (unsigned)req.fn_response_length, (unsigned)req.fn_pad[0],

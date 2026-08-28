@@ -38,6 +38,7 @@ typedef uint8_t (*fujinet_nio_backend_exchange_fn)(
     uint8_t *native_io_error, uint16_t *native_status);
 typedef uint8_t (*fujinet_nio_backend_set_baud_fn)(uint32_t baud);
 typedef uint32_t (*fujinet_nio_backend_get_baud_fn)(void);
+typedef uint8_t (*fujinet_nio_backend_recover_fn)(void);
 
 enum {
     NIO_WORKER_IDLE = 0,
@@ -63,6 +64,7 @@ struct fujinet_nio_device_base {
     fujinet_nio_backend_exchange_fn backend_exchange_fn;
     fujinet_nio_backend_set_baud_fn backend_set_baud_fn;
     fujinet_nio_backend_get_baud_fn backend_get_baud_fn;
+    fujinet_nio_backend_recover_fn backend_recover_fn;
 };
 
 struct ExecBase *SysBase;
@@ -170,6 +172,10 @@ static void process_exchange(struct fujinet_nio_device_base *base,
         req->fn_pad[0] = completion_stage;
         req->fn_pad[1] = nio_error;
         req->fn_pad[2] = detail;
+        /* fn_flags: low byte = native serial.device io_Error; high byte =
+         * high byte of io_Status from the failed CMD_READ.  Bit encoding:
+         * 0x01 = IO_STATF_OVERRUN, 0x02 = IO_STATF_FRAMEERROR,
+         * 0x04 = IO_STATF_PARITYERR.  All zero = no line-status error. */
         req->fn_flags = (UWORD)(native_io_error |
             ((native_status >> 8) << 8));
         if (nio_error == FN_OK) req->fn_response_length = response_len;
@@ -179,10 +185,19 @@ static void process_exchange(struct fujinet_nio_device_base *base,
     base->in_progress_aborted = 0;
     base->worker_state = NIO_WORKER_IDLE;
     Enable();
-    /* Timeout resets framing like TRANSPORT: a late SLIP frame must not
-     * be consumed by the next exchange. Next BeginIO may lazy-reopen. */
-    if (nio_error == FN_ERR_TRANSPORT || nio_error == FN_ERR_TIMEOUT)
+    /* On transport errors caused by IO_STATF_OVERRUN, do a soft reset
+     * (keep serial/timer open, reinit SLIP session only).  The CIA Level-6
+     * ISR stays warm, so the next exchange skips SDCMD_SETPARAMS and
+     * succeeds — matching the REUSE behaviour we have confirmed works.
+     * For all other transport errors and timeouts, close fully so the next
+     * exchange reopens with a clean serial state. */
+    if (nio_error == FN_ERR_TRANSPORT) {
+        if (base->backend_recover_fn == NULL ||
+            !base->backend_recover_fn())
+            close_backend(base);
+    } else if (nio_error == FN_ERR_TIMEOUT) {
         close_backend(base);
+    }
     ReplyMsg(&req->fn_io.io_Message);
 }
 
@@ -287,6 +302,7 @@ static struct fujinet_nio_device_base *device_init(
     base->backend_exchange_fn = backend_exchange;
     base->backend_set_baud_fn = backend_set_baud;
     base->backend_get_baud_fn = backend_get_baud;
+    base->backend_recover_fn = backend_recover_from_overrun;
     base->worker_signal = AllocSignal(-1);
     if (base->worker_signal == -1) return NULL;
     base->worker_stack = AllocMem(WORKER_STACK_SIZE, MEMF_PUBLIC | MEMF_CLEAR);
