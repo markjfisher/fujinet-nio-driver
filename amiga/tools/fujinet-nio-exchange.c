@@ -24,6 +24,9 @@ struct exchange_job {
     volatile ULONG done;
     BYTE io_error;
     UBYTE nio_error;
+    UBYTE broker_stage;
+    UBYTE broker_result;
+    UBYTE broker_cause;
     UWORD response_length;
     UBYTE response[64];
     UBYTE request[16];
@@ -187,6 +190,9 @@ static void run_job(struct exchange_job *job)
     do_exchange(&req, port);
     job->io_error = req.fn_io.io_Error;
     job->nio_error = req.fn_nio_error;
+    job->broker_stage = req.fn_pad[0];
+    job->broker_result = req.fn_pad[1];
+    job->broker_cause = req.fn_pad[2];
     job->response_length = req.fn_response_length;
     if (req.fn_response_length > 0 &&
         req.fn_response_length <= sizeof(job->response)) {
@@ -232,7 +238,11 @@ static int isolation_ok(void)
            disk_present ? "present" : "absent",
            fls_present ? "present" : "absent",
            serial_before == 0);
-    return !disk_present && !fls_present && serial_before == 0;
+    /* The tool is also the field diagnostic for a normal Workbench session,
+     * where DiskDevice may legitimately already be resident.  FLS remains a
+     * useful warning because it can own the legacy serial transport, but it
+     * must not prevent direct broker diagnostics. */
+    return serial_before == 0;
 }
 
 int main(void)
@@ -267,13 +277,20 @@ int main(void)
     }
 
     do_exchange(&req, port);
-    printf("EXCHANGE io=%d nio=%u len=%u\n", (int)req.fn_io.io_Error,
-           (unsigned)req.fn_nio_error, (unsigned)req.fn_response_length);
+    printf("EXCHANGE io=%d nio=%u len=%u stage=%u result=%u cause=%u native=%u status-hi=%u\n",
+           (int)req.fn_io.io_Error, (unsigned)req.fn_nio_error,
+           (unsigned)req.fn_response_length, (unsigned)req.fn_pad[0],
+           (unsigned)req.fn_pad[1], (unsigned)req.fn_pad[2],
+           (unsigned)(req.fn_flags & 0xFF), (unsigned)(req.fn_flags >> 8));
     if (!clock_response_ok(&req, response)) failures = 1;
 
+    fill_exchange(&req, port, clock_req, clock_len, response, sizeof(response));
     do_exchange(&req, port);
-    printf("REUSE io=%d nio=%u len=%u\n", (int)req.fn_io.io_Error,
-           (unsigned)req.fn_nio_error, (unsigned)req.fn_response_length);
+    printf("REUSE io=%d nio=%u len=%u stage=%u result=%u cause=%u native=%u status-hi=%u\n",
+           (int)req.fn_io.io_Error, (unsigned)req.fn_nio_error,
+           (unsigned)req.fn_response_length, (unsigned)req.fn_pad[0],
+           (unsigned)req.fn_pad[1], (unsigned)req.fn_pad[2],
+           (unsigned)(req.fn_flags & 0xFF), (unsigned)(req.fn_flags >> 8));
     if (!clock_response_ok(&req, response)) failures = 1;
 
     CloseDevice(&req.fn_io);
@@ -290,15 +307,19 @@ int main(void)
         return RETURN_FAIL;
     }
     do_exchange(&req, port);
-    printf("AFTER_OPENCNT0 io=%d nio=%u len=%u\n", (int)req.fn_io.io_Error,
-           (unsigned)req.fn_nio_error, (unsigned)req.fn_response_length);
+    printf("AFTER_OPENCNT0 io=%d nio=%u len=%u stage=%u result=%u cause=%u\n",
+           (int)req.fn_io.io_Error, (unsigned)req.fn_nio_error,
+           (unsigned)req.fn_response_length, (unsigned)req.fn_pad[0],
+           (unsigned)req.fn_pad[1], (unsigned)req.fn_pad[2]);
     if (!clock_response_ok(&req, response)) failures = 1;
 
     bad_req[0] = 0x99;
     fill_exchange(&req, port, bad_req, 1, response, sizeof(response));
     do_exchange(&req, port);
-    printf("TIMEOUT io=%d nio=%u len=%u\n", (int)req.fn_io.io_Error,
-           (unsigned)req.fn_nio_error, (unsigned)req.fn_response_length);
+    printf("TIMEOUT io=%d nio=%u len=%u stage=%u result=%u cause=%u\n",
+           (int)req.fn_io.io_Error, (unsigned)req.fn_nio_error,
+           (unsigned)req.fn_response_length, (unsigned)req.fn_pad[0],
+           (unsigned)req.fn_pad[1], (unsigned)req.fn_pad[2]);
     if (req.fn_io.io_Error != 0 || req.fn_nio_error != FN_ERR_TIMEOUT ||
         req.fn_response_length != 0) {
         failures = 1;
@@ -310,8 +331,10 @@ int main(void)
 
     fill_exchange(&req, port, clock_req, clock_len, response, sizeof(response));
     do_exchange(&req, port);
-    printf("RECOVERY io=%d nio=%u len=%u\n", (int)req.fn_io.io_Error,
-           (unsigned)req.fn_nio_error, (unsigned)req.fn_response_length);
+    printf("RECOVERY io=%d nio=%u len=%u stage=%u result=%u cause=%u\n",
+           (int)req.fn_io.io_Error, (unsigned)req.fn_nio_error,
+           (unsigned)req.fn_response_length, (unsigned)req.fn_pad[0],
+           (unsigned)req.fn_pad[1], (unsigned)req.fn_pad[2]);
     if (!clock_response_ok(&req, response)) failures = 1;
 
     CloseDevice(&req.fn_io);
@@ -340,11 +363,15 @@ int main(void)
         printf("CONCURRENT wait-expire\n");
         return RETURN_FAIL;
     }
-    printf("CONCURRENT a_io=%d a_nio=%u a_len=%u a_cmd=%u b_io=%d b_nio=%u b_len=%u b_cmd=%u\n",
+    printf("CONCURRENT a_io=%d a_nio=%u a_len=%u a_stage=%u a_result=%u a_cause=%u a_cmd=%u b_io=%d b_nio=%u b_len=%u b_stage=%u b_result=%u b_cause=%u b_cmd=%u\n",
            (int)job_a.io_error, (unsigned)job_a.nio_error,
-           (unsigned)job_a.response_length, (unsigned)job_a.response[1],
+           (unsigned)job_a.response_length, (unsigned)job_a.broker_stage,
+           (unsigned)job_a.broker_result, (unsigned)job_a.broker_cause,
+           (unsigned)job_a.response[1],
            (int)job_b.io_error, (unsigned)job_b.nio_error,
-           (unsigned)job_b.response_length, (unsigned)job_b.response[1]);
+           (unsigned)job_b.response_length, (unsigned)job_b.broker_stage,
+           (unsigned)job_b.broker_result, (unsigned)job_b.broker_cause,
+           (unsigned)job_b.response[1]);
     if (!(job_a.io_error == 0 && job_b.io_error == 0 &&
           job_a.nio_error == FN_OK && job_b.nio_error == FN_OK &&
           job_a.response_length >= FN_HEADER_SIZE &&
@@ -371,8 +398,10 @@ int main(void)
         return RETURN_FAIL;
     }
     do_exchange(&req, port);
-    printf("MARKER io=%d nio=%u len=%u\n", (int)req.fn_io.io_Error,
-           (unsigned)req.fn_nio_error, (unsigned)req.fn_response_length);
+    printf("MARKER io=%d nio=%u len=%u stage=%u result=%u cause=%u\n",
+           (int)req.fn_io.io_Error, (unsigned)req.fn_nio_error,
+           (unsigned)req.fn_response_length, (unsigned)req.fn_pad[0],
+           (unsigned)req.fn_pad[1], (unsigned)req.fn_pad[2]);
     if (req.fn_io.io_Error != 0 || req.fn_nio_error != FN_OK) failures = 1;
     CloseDevice(&req.fn_io);
     DeletePort(port);

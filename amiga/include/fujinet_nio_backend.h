@@ -3,6 +3,18 @@
 
 #include <stdint.h>
 
+/* Request-local exchange diagnostic returned through fn_pad[2].  The public
+ * fn_nio_error remains the authoritative exchange result. */
+#define FUJINET_NIO_DETAIL_NONE        0
+#define FUJINET_NIO_DETAIL_BACKEND_OPEN 1
+#define FUJINET_NIO_DETAIL_SERIAL_IO   2
+#define FUJINET_NIO_DETAIL_SESSION_IO  3
+#define FUJINET_NIO_DETAIL_TIMEOUT     4
+#define FUJINET_NIO_DETAIL_SERIAL_WRITE 5
+#define FUJINET_NIO_DETAIL_SERIAL_QUERY 6
+#define FUJINET_NIO_DETAIL_SERIAL_READ  7
+#define FUJINET_NIO_DETAIL_TIMER_WAIT   8
+
 uint8_t backend_open(void);
 void backend_close(void);
 uint8_t backend_exchange(
@@ -10,7 +22,10 @@ uint8_t backend_exchange(
     uint16_t request_len,
     uint8_t *response,
     uint16_t response_capacity,
-    uint16_t *response_len);
+    uint16_t *response_len,
+    uint8_t *detail,
+    uint8_t *native_io_error,
+    uint16_t *native_status);
 uint8_t backend_set_baud(uint32_t baud);
 uint32_t backend_get_baud(void);
 

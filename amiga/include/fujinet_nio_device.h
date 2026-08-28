@@ -32,7 +32,10 @@ struct FujiNetNIORequest {
     /* ABI size guard; must be FUJINET_NIO_REQUEST_SIZE (see architecture §2.1 / §2.2) */
     UWORD        fn_struct_size;
 
-    UWORD        fn_flags;          /* reserved; must be zero */
+    /* Must be zero on submission. On an EXCHANGE reply its low byte is the
+     * native serial.device error associated with fn_pad[2], or zero; its
+     * high byte is the meaningful high byte of serial.device io_Status. */
+    UWORD        fn_flags;
 
     /* Opaque FujiBus frame; caller-owned until reply (see architecture §5) */
     const UBYTE *fn_request_data;
@@ -45,7 +48,10 @@ struct FujiNetNIORequest {
 
     UBYTE        fn_nio_error;      /* FN-space result; see architecture §2.1 */
 
-    UBYTE        fn_pad[3];         /* alignment; must be zero */
+    /* Caller must zero these before submission. On an EXCHANGE reply the
+     * broker returns completion stage in [0], broker result in [1], and a
+     * request-local failure detail in [2]. */
+    UBYTE        fn_pad[3];
 };
 
 #endif

@@ -43,6 +43,9 @@ static uint16_t read_len;
 static fn_stream_session_t session;
 static uint8_t session_initialized;
 static uint8_t channel_error;
+static uint8_t serial_failure_detail;
+static uint8_t serial_failure_io_error;
+static uint16_t serial_failure_status;
 static uint32_t serial_baud = FN_SERIAL_BACKEND_BAUD;
 
 /*
@@ -60,7 +63,12 @@ static uint8_t serial_write(const uint8_t *buf, uint16_t len)
     serial_req->IOSer.io_Command = CMD_WRITE;
     serial_req->IOSer.io_Data = (APTR)buf;
     serial_req->IOSer.io_Length = len;
-    if (DoIO((struct IORequest *)serial_req) != 0) return FN_ERR_IO;
+    if (DoIO((struct IORequest *)serial_req) != 0) {
+        serial_failure_detail = FUJINET_NIO_DETAIL_SERIAL_WRITE;
+        serial_failure_io_error = (uint8_t)serial_req->IOSer.io_Error;
+        serial_failure_status = serial_req->io_Status;
+        return FN_ERR_IO;
+    }
     return FN_OK;
 }
 
@@ -77,7 +85,12 @@ static uint8_t serial_read_byte(uint8_t *byte_out, uint16_t timeout_ms)
     serial_req->IOSer.io_Data = NULL;
     serial_req->IOSer.io_Length = 0;
     serial_req->IOSer.io_Actual = 0;
-    if (DoIO((struct IORequest *)serial_req) != 0) return FN_ERR_IO;
+    if (DoIO((struct IORequest *)serial_req) != 0) {
+        serial_failure_detail = FUJINET_NIO_DETAIL_SERIAL_QUERY;
+        serial_failure_io_error = (uint8_t)serial_req->IOSer.io_Error;
+        serial_failure_status = serial_req->io_Status;
+        return FN_ERR_IO;
+    }
     available = serial_req->IOSer.io_Actual;
     if (available == 0) {
         uint16_t remaining = timeout_ms;
@@ -88,13 +101,23 @@ static uint8_t serial_read_byte(uint8_t *byte_out, uint16_t timeout_ms)
             timer_req->tr_node.io_Command = TR_ADDREQUEST;
             timer_req->tr_time.tv_secs = 0;
             timer_req->tr_time.tv_micro = slice * 1000;
-            if (DoIO((struct IORequest *)timer_req) != 0) return FN_ERR_IO;
+            if (DoIO((struct IORequest *)timer_req) != 0) {
+                serial_failure_detail = FUJINET_NIO_DETAIL_TIMER_WAIT;
+                serial_failure_io_error = (uint8_t)timer_req->tr_node.io_Error;
+                serial_failure_status = 0;
+                return FN_ERR_IO;
+            }
 
             serial_req->IOSer.io_Command = SDCMD_QUERY;
             serial_req->IOSer.io_Data = NULL;
             serial_req->IOSer.io_Length = 0;
             serial_req->IOSer.io_Actual = 0;
-            if (DoIO((struct IORequest *)serial_req) != 0) return FN_ERR_IO;
+            if (DoIO((struct IORequest *)serial_req) != 0) {
+                serial_failure_detail = FUJINET_NIO_DETAIL_SERIAL_QUERY;
+                serial_failure_io_error = (uint8_t)serial_req->IOSer.io_Error;
+                serial_failure_status = serial_req->io_Status;
+                return FN_ERR_IO;
+            }
             if (serial_req->IOSer.io_Actual != 0) {
                 available = serial_req->IOSer.io_Actual;
                 break;
@@ -109,7 +132,12 @@ static uint8_t serial_read_byte(uint8_t *byte_out, uint16_t timeout_ms)
     serial_req->IOSer.io_Data = (APTR)read_buf;
     serial_req->IOSer.io_Length = available;
     serial_req->IOSer.io_Actual = 0;
-    if (DoIO((struct IORequest *)serial_req) != 0) return FN_ERR_IO;
+    if (DoIO((struct IORequest *)serial_req) != 0) {
+        serial_failure_detail = FUJINET_NIO_DETAIL_SERIAL_READ;
+        serial_failure_io_error = (uint8_t)serial_req->IOSer.io_Error;
+        serial_failure_status = serial_req->io_Status;
+        return FN_ERR_IO;
+    }
     read_pos = 1;
     read_len = (uint16_t)serial_req->IOSer.io_Actual;
     if (read_len == 0) return FN_ERR_NOT_READY;
@@ -131,17 +159,25 @@ static void session_close(void *context)
 static uint8_t session_write_byte(void *context, uint8_t value,
                                   uint16_t timeout_ms)
 {
+    uint8_t result;
+
     (void)context;
     (void)timeout_ms;
-    return serial_write(&value, 1);
+    result = serial_write(&value, 1);
+    if (result != FN_OK && channel_error == 0) channel_error = result;
+    return result;
 }
 
 static uint8_t session_write_bytes(void *context, const uint8_t *data,
                                    uint16_t length, uint16_t timeout_ms)
 {
+    uint8_t result;
+
     (void)context;
     (void)timeout_ms;
-    return serial_write(data, length);
+    result = serial_write(data, length);
+    if (result != FN_OK && channel_error == 0) channel_error = result;
+    return result;
 }
 
 static uint8_t session_read_byte(void *context, uint8_t *value,
@@ -236,6 +272,9 @@ void backend_close(void)
     read_pos = 0;
     read_len = 0;
     channel_error = 0;
+    serial_failure_detail = FUJINET_NIO_DETAIL_NONE;
+    serial_failure_io_error = 0;
+    serial_failure_status = 0;
     release_timer();
     release_serial();
 }
@@ -316,6 +355,7 @@ uint8_t backend_open(void)
     read_pos = 0;
     read_len = 0;
     channel_error = 0;
+    serial_failure_detail = FUJINET_NIO_DETAIL_NONE;
     return FN_OK;
 }
 
@@ -324,19 +364,46 @@ uint8_t backend_exchange(
     uint16_t request_len,
     uint8_t *response,
     uint16_t response_capacity,
-    uint16_t *response_len)
+    uint16_t *response_len,
+    uint8_t *detail,
+    uint8_t *native_io_error,
+    uint16_t *native_status)
 {
+    uint8_t session_result;
     uint8_t result;
 
     if (response_len != NULL) *response_len = 0;
-    if (!serial_open || !timer_open || !session_initialized) return FN_ERR_IO;
+    if (detail != NULL) *detail = FUJINET_NIO_DETAIL_NONE;
+    if (native_io_error != NULL) *native_io_error = 0;
+    if (native_status != NULL) *native_status = 0;
+    if (!serial_open || !timer_open || !session_initialized) {
+        if (detail != NULL) *detail = FUJINET_NIO_DETAIL_BACKEND_OPEN;
+        return FN_ERR_IO;
+    }
     if (response_len == NULL) return FN_ERR_INVALID;
 
     channel_error = 0;
-    result = fn_stream_session_request(&session, request, request_len, response,
-                                       response_capacity, response_len,
-                                       FN_SERIAL_BACKEND_TIMEOUT_MS);
-    result = fn_serial_channel_map_session_result(result, &channel_error);
+    serial_failure_detail = FUJINET_NIO_DETAIL_NONE;
+    serial_failure_io_error = 0;
+    serial_failure_status = 0;
+    session_result = fn_stream_session_request(
+        &session, request, request_len, response, response_capacity,
+        response_len, FN_SERIAL_BACKEND_TIMEOUT_MS);
+    if (detail != NULL) {
+        if (channel_error != 0)
+            *detail = serial_failure_detail != FUJINET_NIO_DETAIL_NONE
+                          ? serial_failure_detail
+                          : FUJINET_NIO_DETAIL_SERIAL_IO;
+        else if (session_result == FN_ERR_IO)
+            *detail = FUJINET_NIO_DETAIL_SESSION_IO;
+        else if (session_result == FN_ERR_TIMEOUT)
+            *detail = FUJINET_NIO_DETAIL_TIMEOUT;
+    }
+    if (native_io_error != NULL)
+        *native_io_error = serial_failure_io_error;
+    if (native_status != NULL)
+        *native_status = serial_failure_status;
+    result = fn_serial_channel_map_session_result(session_result, &channel_error);
     /*
      * Timeout is not FN_ERR_TRANSPORT, but leftover RX / a late SLIP frame
      * would desynchronize the next exchange. Drain now; the worker then

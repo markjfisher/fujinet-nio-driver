@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "fujinet_nio_device.h"
+#include "fujinet_nio_backend.h"
 #include "fujinet_io_queue.h"
 #include "fujinet-nio.h"
 #include "fn_protocol.h"
@@ -20,7 +21,6 @@
 #include <stdlib.h>
 #define FN_REGISTER(name)
 #else
-#include "fujinet_nio_backend.h"
 #define FN_REGISTER(name) __asm(name)
 #endif
 
@@ -34,7 +34,8 @@ typedef uint8_t (*fujinet_nio_backend_open_fn)(void);
 typedef void (*fujinet_nio_backend_close_fn)(void);
 typedef uint8_t (*fujinet_nio_backend_exchange_fn)(
     const uint8_t *request, uint16_t request_len, uint8_t *response,
-    uint16_t response_capacity, uint16_t *response_len);
+    uint16_t response_capacity, uint16_t *response_len, uint8_t *detail,
+    uint8_t *native_io_error, uint16_t *native_status);
 typedef uint8_t (*fujinet_nio_backend_set_baud_fn)(uint32_t baud);
 typedef uint32_t (*fujinet_nio_backend_get_baud_fn)(void);
 
@@ -129,6 +130,9 @@ static void process_exchange(struct fujinet_nio_device_base *base,
 {
     uint8_t nio_error;
     uint8_t completion_stage = 1;
+    uint8_t detail = FUJINET_NIO_DETAIL_NONE;
+    uint8_t native_io_error = 0;
+    uint16_t native_status = 0;
     uint16_t response_len = 0;
 
     nio_error = ensure_backend_open(base);
@@ -137,12 +141,15 @@ static void process_exchange(struct fujinet_nio_device_base *base,
         if (base->backend_exchange_fn == NULL) {
             nio_error = FN_ERR_IO;
             response_len = 0;
+            detail = FUJINET_NIO_DETAIL_BACKEND_OPEN;
         } else {
             nio_error = base->backend_exchange_fn(
                 req->fn_request_data, req->fn_request_length,
                 req->fn_response_data, req->fn_response_capacity,
-                &response_len);
+                &response_len, &detail, &native_io_error, &native_status);
         }
+    } else {
+        detail = FUJINET_NIO_DETAIL_BACKEND_OPEN;
     }
 
     Disable();
@@ -162,6 +169,9 @@ static void process_exchange(struct fujinet_nio_device_base *base,
          * the resident base or the public request layout. */
         req->fn_pad[0] = completion_stage;
         req->fn_pad[1] = nio_error;
+        req->fn_pad[2] = detail;
+        req->fn_flags = (UWORD)(native_io_error |
+            ((native_status >> 8) << 8));
         if (nio_error == FN_OK) req->fn_response_length = response_len;
         else req->fn_response_length = 0;
     }

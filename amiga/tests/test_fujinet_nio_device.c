@@ -3,6 +3,7 @@
 #include <exec/libraries.h>
 
 #include "fujinet_nio_device.h"
+#include "fujinet_nio_backend.h"
 #include "fujinet-nio.h"
 #include "fn_protocol.h"
 
@@ -14,7 +15,8 @@ typedef uint8_t (*fujinet_nio_backend_open_fn)(void);
 typedef void (*fujinet_nio_backend_close_fn)(void);
 typedef uint8_t (*fujinet_nio_backend_exchange_fn)(
     const uint8_t *request, uint16_t request_len, uint8_t *response,
-    uint16_t response_capacity, uint16_t *response_len);
+    uint16_t response_capacity, uint16_t *response_len, uint8_t *detail,
+    uint8_t *native_io_error, uint16_t *native_status);
 typedef uint8_t (*fujinet_nio_backend_set_baud_fn)(uint32_t baud);
 typedef uint32_t (*fujinet_nio_backend_get_baud_fn)(void);
 
@@ -74,6 +76,7 @@ static unsigned backend_closes;
 static unsigned backend_exchanges;
 static uint8_t backend_fatal;
 static uint8_t backend_timeout;
+static uint8_t backend_failure_detail;
 static uint8_t backend_delay_abort;
 static uint8_t backend_delay_expunge;
 static uint8_t backend_delay_close;
@@ -111,10 +114,16 @@ static uint8_t test_backend_exchange(const uint8_t *request,
                                      uint16_t request_len,
                                      uint8_t *response,
                                      uint16_t response_capacity,
-                                     uint16_t *response_len)
+                                     uint16_t *response_len,
+                                     uint8_t *detail,
+                                     uint8_t *native_io_error,
+                                     uint16_t *native_status)
 {
     ++backend_exchanges;
     *response_len = 0;
+    if (detail != NULL) *detail = FUJINET_NIO_DETAIL_NONE;
+    if (native_io_error != NULL) *native_io_error = 0;
+    if (native_status != NULL) *native_status = 0;
     if (backend_delay_abort && delay_target != NULL) {
         fujinet_nio_native_test_abort_io(&delay_target->fn_io);
     }
@@ -131,10 +140,12 @@ static uint8_t test_backend_exchange(const uint8_t *request,
     }
     if (backend_fatal) {
         backend_fatal = 0;
+        if (detail != NULL) *detail = backend_failure_detail;
         return FN_ERR_TRANSPORT;
     }
     if (backend_timeout) {
         backend_timeout = 0;
+        if (detail != NULL) *detail = backend_failure_detail;
         return FN_ERR_TIMEOUT;
     }
     if (request != NULL && request_len > 0 && response != NULL) {
@@ -160,6 +171,7 @@ static void reset_harness(void)
     backend_exchanges = 0;
     backend_fatal = 0;
     backend_timeout = 0;
+    backend_failure_detail = FUJINET_NIO_DETAIL_NONE;
     backend_delay_abort = 0;
     backend_delay_expunge = 0;
     backend_delay_close = 0;
@@ -234,6 +246,7 @@ static void test_happy_injected(void)
     CHECK("happy fn_nio_error", req.fn_nio_error == FN_OK);
     CHECK("happy response length", req.fn_response_length == 2);
     CHECK("happy response bytes", response[0] == 1 && response[1] == 2);
+    CHECK("happy detail clear", req.fn_pad[2] == FUJINET_NIO_DETAIL_NONE);
     CHECK("one ReplyMsg", replies == 1);
     CHECK("backend opened once", backend_opens == 1);
     CHECK("one exchange", backend_exchanges == 1);
@@ -505,10 +518,12 @@ static void test_fatal_backend(void)
     init_exchange(&req, request_bytes, 1, response, sizeof(response));
     open_unit0(&req);
     backend_fatal = 1;
+    backend_failure_detail = FUJINET_NIO_DETAIL_SERIAL_IO;
     fujinet_nio_native_test_begin_io(&req.fn_io);
     fujinet_nio_native_test_worker_step();
     CHECK("fatal io_Error stays Exec-ok", req.fn_io.io_Error == 0);
     CHECK("fatal FN_ERR_TRANSPORT", req.fn_nio_error == FN_ERR_TRANSPORT);
+    CHECK("fatal serial detail", req.fn_pad[2] == FUJINET_NIO_DETAIL_SERIAL_IO);
     CHECK("fatal length 0", req.fn_response_length == 0);
     CHECK("fatal closed backend", backend_closes == 1);
     CHECK("fatal backend not open", fujinet_nio_native_test_backend_is_open() == 0);
@@ -519,6 +534,27 @@ static void test_fatal_backend(void)
     CHECK("next exchange lazy-reopens", backend_opens == 2);
     CHECK("reopen FN_OK", req.fn_nio_error == FN_OK);
     CHECK("reopen io_Error 0", req.fn_io.io_Error == 0);
+    CHECK("reopen detail clear", req.fn_pad[2] == FUJINET_NIO_DETAIL_NONE);
+}
+
+static void test_session_backend_detail(void)
+{
+    struct FujiNetNIORequest req;
+    UBYTE request_bytes[1] = {7};
+    UBYTE response[8];
+
+    reset_harness();
+    init_exchange(&req, request_bytes, 1, response, sizeof(response));
+    open_unit0(&req);
+    backend_fatal = 1;
+    backend_failure_detail = FUJINET_NIO_DETAIL_SESSION_IO;
+    fujinet_nio_native_test_begin_io(&req.fn_io);
+    fujinet_nio_native_test_worker_step();
+    CHECK("session failure FN_ERR_TRANSPORT",
+          req.fn_nio_error == FN_ERR_TRANSPORT);
+    CHECK("session failure detail",
+          req.fn_pad[2] == FUJINET_NIO_DETAIL_SESSION_IO);
+    CHECK("session failure closed backend", backend_closes == 1);
 }
 
 static void test_timeout_resets_backend(void)
@@ -531,10 +567,12 @@ static void test_timeout_resets_backend(void)
     init_exchange(&req, request_bytes, 1, response, sizeof(response));
     open_unit0(&req);
     backend_timeout = 1;
+    backend_failure_detail = FUJINET_NIO_DETAIL_TIMEOUT;
     fujinet_nio_native_test_begin_io(&req.fn_io);
     fujinet_nio_native_test_worker_step();
     CHECK("timeout io_Error stays Exec-ok", req.fn_io.io_Error == 0);
     CHECK("timeout FN_ERR_TIMEOUT", req.fn_nio_error == FN_ERR_TIMEOUT);
+    CHECK("timeout detail", req.fn_pad[2] == FUJINET_NIO_DETAIL_TIMEOUT);
     CHECK("timeout length 0", req.fn_response_length == 0);
     CHECK("timeout closed backend", backend_closes == 1);
     CHECK("timeout backend not open",
@@ -728,6 +766,7 @@ int main(void)
     test_open_invalid_unit();
     test_opencnt_zero_keeps_backend();
     test_fatal_backend();
+    test_session_backend_detail();
     test_timeout_resets_backend();
     test_expunge_busy();
     test_expunge_idle();
