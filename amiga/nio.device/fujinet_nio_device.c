@@ -142,13 +142,19 @@ static void process_exchange(struct fujinet_nio_device_base *base,
         completion_stage = 2;
         if (base->backend_exchange_fn == NULL) {
             nio_error = FN_ERR_IO;
-            response_len = 0;
             detail = FUJINET_NIO_DETAIL_BACKEND_OPEN;
         } else {
             nio_error = base->backend_exchange_fn(
                 req->fn_request_data, req->fn_request_length,
                 req->fn_response_data, req->fn_response_capacity,
                 &response_len, &detail, &native_io_error, &native_status);
+            if (nio_error == FN_ERR_TRANSPORT) {
+                if (base->backend_recover_fn == NULL ||
+                    !base->backend_recover_fn())
+                    close_backend(base);
+            } else if (nio_error == FN_ERR_TIMEOUT) {
+                close_backend(base);
+            }
         }
     } else {
         detail = FUJINET_NIO_DETAIL_BACKEND_OPEN;
@@ -166,16 +172,9 @@ static void process_exchange(struct fujinet_nio_device_base *base,
         }
         req->fn_io.io_Error = 0;
         req->fn_nio_error = nio_error;
-        /* Temporary, request-local diagnostic. The caller supplied zeroes;
-         * return the completion stage and backend result without changing
-         * the resident base or the public request layout. */
         req->fn_pad[0] = completion_stage;
         req->fn_pad[1] = nio_error;
         req->fn_pad[2] = detail;
-        /* fn_flags: low byte = native serial.device io_Error; high byte =
-         * high byte of io_Status from the failed CMD_READ.  Bit encoding:
-         * 0x01 = IO_STATF_OVERRUN, 0x02 = IO_STATF_FRAMEERROR,
-         * 0x04 = IO_STATF_PARITYERR.  All zero = no line-status error. */
         req->fn_flags = (UWORD)(native_io_error |
             ((native_status >> 8) << 8));
         if (nio_error == FN_OK) req->fn_response_length = response_len;
@@ -185,19 +184,6 @@ static void process_exchange(struct fujinet_nio_device_base *base,
     base->in_progress_aborted = 0;
     base->worker_state = NIO_WORKER_IDLE;
     Enable();
-    /* On transport errors caused by IO_STATF_OVERRUN, do a soft reset
-     * (keep serial/timer open, reinit SLIP session only).  The CIA Level-6
-     * ISR stays warm, so the next exchange skips SDCMD_SETPARAMS and
-     * succeeds — matching the REUSE behaviour we have confirmed works.
-     * For all other transport errors and timeouts, close fully so the next
-     * exchange reopens with a clean serial state. */
-    if (nio_error == FN_ERR_TRANSPORT) {
-        if (base->backend_recover_fn == NULL ||
-            !base->backend_recover_fn())
-            close_backend(base);
-    } else if (nio_error == FN_ERR_TIMEOUT) {
-        close_backend(base);
-    }
     ReplyMsg(&req->fn_io.io_Message);
 }
 

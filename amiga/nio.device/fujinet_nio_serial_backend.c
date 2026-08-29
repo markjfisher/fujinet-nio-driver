@@ -139,18 +139,8 @@ static uint8_t serial_read_byte(uint8_t *byte_out, uint16_t timeout_ms)
     serial_req->IOSer.io_Length = available;
     serial_req->IOSer.io_Actual = 0;
     if (DoIO((struct IORequest *)serial_req) != 0) {
-        /* cause=9 if session_flush already drained IO_STATF_OVERRUN but
-         * CMD_READ still failed; cause=7 if flush drain never triggered.
-         * These two cases tell us whether the flag was visible before
-         * CMD_WRITE (flush path) or only appeared during response receipt. */
-        serial_failure_detail = serial_flush_drained_overrun
-            ? FUJINET_NIO_DETAIL_FLUSH_DRAINED_THEN_READ_FAILED
-            : FUJINET_NIO_DETAIL_SERIAL_READ;
+        serial_failure_detail = FUJINET_NIO_DETAIL_SERIAL_READ;
         serial_failure_io_error = (uint8_t)serial_req->IOSer.io_Error;
-        /* io_Status high byte reveals which SerErr_LineErr sub-flag fired:
-         * IO_STATF_OVERRUN (bit8=0x0100), IO_STATF_FRAMEERROR (bit9=0x0200),
-         * IO_STATF_PARITYERR (bit10=0x0400).  status-hi in the exchange tool
-         * is this high byte (1=overrun, 2=framing, 4=parity). */
         serial_failure_status = serial_req->io_Status;
         return FN_ERR_IO;
     }
@@ -365,7 +355,7 @@ uint8_t backend_open(void)
      * and its own packet integrity; we do not rely on RS-232 line-status bits.
      * Receive overrun detection (IO_STATF_OVERRUN via SerErr_LineErr / CMD_READ
      * io_Error = IOERR_BADLENGTH mapping) is preserved regardless of this flag. */
-    serial_req->io_SerFlags = SERF_XDISABLED | SERF_RAD_BOOGIE | SERF_7WIRE;
+    serial_req->io_SerFlags = SERF_XDISABLED | SERF_RAD_BOOGIE;
     serial_req->IOSer.io_Command = SDCMD_SETPARAMS;
     if (DoIO((struct IORequest *)serial_req) != 0) {
         backend_close();
@@ -375,11 +365,11 @@ uint8_t backend_open(void)
     /* A baud-rate transition in SDCMD_SETPARAMS can latch IO_STATF_OVERRUN
      * in the CIA 8520 hardware status register. There is no Amiga API to
      * clear this flag directly (CMD_CLEAR only discards buffered data).
-     * The only way to consume it is CMD_READ: when the flag is present,
-     * serial.device returns immediately with SerErr_LineErr / io_Actual=0,
-     * and the flag is cleared as a side-effect. Draining it here ensures
-     * the first real CMD_READ of every exchange session sees clean state,
-     * regardless of how many times the backend is closed and reopened. */
+     * NOTE: IO_STATF_OVERRUN is NOT present immediately after SDCMD_SETPARAMS.
+     * It is latched by the CIA hardware during the TX→RX mode transition at
+     * the end of the first CMD_WRITE of each session.  This drain does not
+     * fire on the first exchange; it is retained for any future path that
+     * does set the flag before a CMD_READ. */
     serial_req->IOSer.io_Command = SDCMD_QUERY;
     serial_req->IOSer.io_Data = NULL;
     serial_req->IOSer.io_Length = 0;
@@ -392,7 +382,6 @@ uint8_t backend_open(void)
         serial_req->IOSer.io_Length = 1;
         serial_req->IOSer.io_Actual = 0;
         DoIO((struct IORequest *)serial_req);
-        /* Ignore the error result — the overrun flag is now consumed. */
     }
 
     timer_port = CreatePort(NULL, 0);
