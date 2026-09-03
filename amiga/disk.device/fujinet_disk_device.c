@@ -75,6 +75,7 @@ struct fujinet_disk_device_base {
     char request_uri[768];
     fujinet_io_queue_t io_queue;
     UBYTE io_processing;
+    UBYTE transport_closed;
     struct Task worker_task;
     APTR worker_stack;
     BYTE worker_signal;
@@ -204,6 +205,8 @@ static struct fujinet_disk_device_base *device_init(
     uint8_t i;
     SysBase = sys_base;
     base->segment_list = segment_list;
+    base->worker_signal = -1;  /* -1 = no signal allocated */
+    base->transport_closed = 0;
     fujinet_io_queue_init(&base->io_queue);
     for (i = 0; i < FUJINET_DISK_UNIT_COUNT; ++i) {
         init_list(&base->units[i].change_requests);
@@ -292,8 +295,10 @@ static BPTR device_close(
 static BPTR device_expunge(
     register struct fujinet_disk_device_base *base FN_REGISTER("a6"))
 {
-    /* LIBF_DELEXP is pending explicit teardown. Complete once when safe;
-     * otherwise last CloseDevice or worker idle finishes it. No unload. */
+    /* Defer while open or busy (OpenCnt != 0, io_queue nonempty, or
+     * io_processing != 0). Complete only from Expunge or last CloseDevice on a
+     * non-worker task; the worker must not tear the device down (nowhere to
+     * return the seglist, and OpenDevice could revive a half-torn-down device). */
     base->device.dd_Library.lib_Flags |= LIBF_DELEXP;
     return complete_pending_expunge(base);
 }
@@ -369,8 +374,10 @@ static void discard_change_requests(struct fujinet_disk_device_base *base)
     }
 }
 
+/* Returns stored segment_list on successful idle teardown, or 0 if deferred. */
 static BPTR complete_pending_expunge(struct fujinet_disk_device_base *base)
 {
+    BPTR segment_list;
     uint8_t i;
 
     Disable();
@@ -381,13 +388,43 @@ static BPTR complete_pending_expunge(struct fujinet_disk_device_base *base)
         Enable();
         return 0;
     }
+    /* Snapshot seglist while still under Disable; safe because the gate above
+     * guarantees no concurrent modification. */
+    segment_list = base->segment_list;
     base->device.dd_Library.lib_Flags &= (UBYTE)~LIBF_DELEXP;
     Enable();
+
+#ifndef FUJINET_DISK_NATIVE_TEST
+    if (base->worker_stack != NULL) {
+        RemTask(&base->worker_task);
+        FreeMem(base->worker_stack, WORKER_STACK_SIZE);
+        base->worker_stack = NULL;
+    }
+    if (base->worker_signal != -1) {
+        FreeSignal(base->worker_signal);
+        base->worker_signal = -1;
+    }
+#endif
     discard_change_requests(base);
-    fn_transport_close();
+    Disable();
+    if (!base->transport_closed) {
+        base->transport_closed = 1;
+        Enable();
+        fn_transport_close();
+    } else {
+        Enable();
+    }
     for (i = 0; i < FUJINET_DISK_UNIT_COUNT; ++i)
         base->units[i].driver.client_initialized = 0;
-    return 0;
+#ifndef FUJINET_DISK_NATIVE_TEST
+    Forbid();
+    Remove((struct Node *)base);
+    FreeMem((UBYTE *)base - base->device.dd_Library.lib_NegSize,
+            (ULONG)base->device.dd_Library.lib_NegSize +
+                (ULONG)base->device.dd_Library.lib_PosSize);
+    Permit();
+#endif
+    return segment_list;
 }
 
 static struct IORequest *next_runnable_request(
@@ -765,13 +802,6 @@ static void worker_drain(struct fujinet_disk_device_base *base)
         }
         base->io_processing = 0;
         Enable();
-        (void)complete_pending_expunge(base);
-        Disable();
-        if (base->io_processing) {
-            Enable();
-            continue;
-        }
-        Enable();
         return;
     }
 }
@@ -978,7 +1008,7 @@ void fujinet_disk_native_test_reset(void)
 {
     memset(&native_test_base, 0, sizeof(native_test_base));
     native_drain_after_begin = 1;
-    (void)device_init(&native_test_base, 0, &native_test_sys_base);
+    (void)device_init(&native_test_base, (BPTR)1, &native_test_sys_base);
 }
 
 void fujinet_disk_native_test_commit(uint8_t unit, uint32_t sector_count)

@@ -58,6 +58,12 @@ startup with:
 C:fujinet-load-resident DEVS:fujinet-disk.device fujinet-disk.device
 ```
 
+Idle Expunge of `fujinet-disk.device` (when `OpenCnt` is 0 and no I/O is
+queued or in progress) returns the `InitResident` segment list so Exec can
+unload the binary. Busy Expunge sets `LIBF_DELEXP` and returns 0 until a later
+non-worker Expunge or last `CloseDevice` completes teardown. This tree does
+not ship an unload CLI.
+
 The loader uses the OS 1.3-compatible `LoadSeg()` and `InitResident()` APIs.
 The loader itself has been validated on Workbench 3.1: it registers the
 device, permits `OpenDevice()`, and serves basic trackdisk status commands

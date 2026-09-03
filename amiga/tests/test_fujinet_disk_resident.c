@@ -29,6 +29,8 @@ static unsigned replies;
 static unsigned causes;
 static unsigned transport_close_count;
 
+#define NATIVE_SEGLIST ((BPTR)1)
+
 #define CHECK(name, expression) do {                                      \
     if (!(expression)) {                                                  \
         fprintf(stderr, "FAIL: %s (line %d)\n", name, __LINE__);          \
@@ -267,7 +269,8 @@ static void test_safe_idle_expunge_closes_once(void)
     reset_lifecycle();
     fujinet_disk_native_test_set_client_initialized(0, 1);
     CHECK("safe expunge OpenCnt 0", fujinet_disk_native_test_open_cnt() == 0);
-    CHECK("safe expunge returns 0", fujinet_disk_native_test_expunge() == 0);
+    CHECK("safe expunge returns sentinel",
+          fujinet_disk_native_test_expunge() == NATIVE_SEGLIST);
     CHECK("safe idle expunge closes once", transport_close_count == 1);
     CHECK("safe idle expunge clears client_initialized",
           fujinet_disk_native_test_client_initialized(0) == 0);
@@ -276,7 +279,11 @@ static void test_safe_idle_expunge_closes_once(void)
 
     issue_mount(0, &request, 0);
     fujinet_disk_native_test_drain();
-    CHECK("repeat complete after idle expunge does not close again",
+    CHECK("repeat drain after idle expunge does not close again",
+          transport_close_count == 1);
+    CHECK("repeat expunge after complete returns sentinel",
+          fujinet_disk_native_test_expunge() == NATIVE_SEGLIST);
+    CHECK("repeat expunge after complete does not close again",
           transport_close_count == 1);
 }
 
@@ -307,8 +314,9 @@ static void test_expunge_deferred_until_last_close(void)
     CHECK("live change-int kept until complete",
           fujinet_disk_native_test_change_int_count(0) == 1);
 
-    CHECK("last close returns 0",
-          fujinet_disk_native_test_close(&open_req.iotd_Req.io) == 0);
+    CHECK("last close returns sentinel",
+          fujinet_disk_native_test_close(&open_req.iotd_Req.io) ==
+              NATIVE_SEGLIST);
     CHECK("last close OpenCnt 0", fujinet_disk_native_test_open_cnt() == 0);
     CHECK("last close completes teardown once", transport_close_count == 1);
     CHECK("complete discards change-ints",
@@ -336,10 +344,18 @@ static void test_expunge_in_progress_completes_on_idle(void)
     fujinet_disk_native_test_drain();
     CHECK("queued mount completed before teardown close",
           request.iotd_Req.io.io_Error == TDERR_DiskChanged);
-    CHECK("worker idle completes teardown once", transport_close_count == 1);
-    CHECK("idle complete clears DELEXP",
+    CHECK("worker idle does not close transport", transport_close_count == 0);
+    CHECK("worker idle leaves DELEXP",
+          (fujinet_disk_native_test_lib_flags() & LIBF_DELEXP) != 0);
+    CHECK("worker idle keeps client_initialized",
+          fujinet_disk_native_test_client_initialized(0) == 1);
+
+    CHECK("follow-up expunge returns sentinel",
+          fujinet_disk_native_test_expunge() == NATIVE_SEGLIST);
+    CHECK("follow-up expunge closes once", transport_close_count == 1);
+    CHECK("follow-up expunge clears DELEXP",
           (fujinet_disk_native_test_lib_flags() & LIBF_DELEXP) == 0);
-    CHECK("idle complete clears client_initialized",
+    CHECK("follow-up expunge clears client_initialized",
           fujinet_disk_native_test_client_initialized(0) == 0);
 
     fujinet_disk_native_test_drain();
@@ -368,9 +384,15 @@ static void test_last_close_while_queued_defers_to_idle(void)
     CHECK("still no close after last close", transport_close_count == 0);
 
     fujinet_disk_native_test_drain();
-    CHECK("idle after last-close-busy completes once",
+    CHECK("worker idle after last-close-busy does not close",
+          transport_close_count == 0);
+    CHECK("DELEXP remains after worker idle",
+          (fujinet_disk_native_test_lib_flags() & LIBF_DELEXP) != 0);
+    CHECK("follow-up expunge after last-close-busy returns sentinel",
+          fujinet_disk_native_test_expunge() == NATIVE_SEGLIST);
+    CHECK("follow-up expunge after last-close-busy closes once",
           transport_close_count == 1);
-    CHECK("idle after last-close-busy clears DELEXP",
+    CHECK("follow-up expunge after last-close-busy clears DELEXP",
           (fujinet_disk_native_test_lib_flags() & LIBF_DELEXP) == 0);
 }
 
