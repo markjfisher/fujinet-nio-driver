@@ -140,11 +140,10 @@ static uint8_t load_mappings(struct fujinet_disk_device_base *base,
     result = fn_appstore_read(&io, "config-nio", "mappings", 0,
                               mappings, MAPPINGS_SIZE, &read_result);
     if (result != FN_OK) return result;
-    if (!(read_result.flags & FN_APPSTORE_READ_EXISTS)) {
+    if (!(read_result.flags & FN_APPSTORE_READ_EXISTS) ||
+        read_result.bytes_read != MAPPINGS_SIZE || mappings[0] != 1) {
         memset(mappings, 0, MAPPINGS_SIZE);
         mappings[0] = 1;
-    } else if (read_result.bytes_read != MAPPINGS_SIZE || mappings[0] != 1) {
-        return FN_ERR_IO;
     }
     return FN_OK;
 }
