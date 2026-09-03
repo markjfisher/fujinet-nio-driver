@@ -8,6 +8,7 @@ DEVICE := $(BUILD_DIR)/fujinet-disk.device
 DEVICE_MAP := $(DEVICE).map
 MOUNT_TOOL := $(BUILD_DIR)/fujinet-mount
 RESIDENT_LOADER := $(BUILD_DIR)/fujinet-load-resident
+RESIDENT_UNLOADER := $(BUILD_DIR)/fujinet-unload-resident
 TD_PROBE := $(BUILD_DIR)/fujinet-td-probe
 NIO_DEVICE := $(BUILD_DIR)/fujinet-nio.device
 NIO_DEVICE_MAP := $(NIO_DEVICE).map
@@ -35,7 +36,7 @@ OBJECTS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SOURCES))
 
 all: tests native sdk
 
-native: library $(DEVICE) $(MOUNT_TOOL) $(RESIDENT_LOADER) $(TD_PROBE) \
+native: library $(DEVICE) $(MOUNT_TOOL) $(RESIDENT_LOADER) $(RESIDENT_UNLOADER) $(TD_PROBE) \
 	$(NIO_DEVICE) $(NIO_EXCHANGE) $(NIO_BAUD)
 
 sdk: $(SDK_LIBRARY) $(SDK_INCLUDE)/fujinet-amiga-disk/support.h $(SDK_INCLUDE)/fujinet-amiga-disk/device.h
@@ -89,6 +90,10 @@ $(MOUNT_TOOL): tools/fujinet-mount.c include/fujinet_disk_device.h $(LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 $< $(LIBRARY) -lamiga -o $@
 
 $(RESIDENT_LOADER): tools/fujinet-load-resident.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 $< -lamiga -o $@
+
+$(RESIDENT_UNLOADER): tools/fujinet-unload-resident.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 $< -lamiga -o $@
 

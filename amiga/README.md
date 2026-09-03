@@ -61,8 +61,29 @@ C:fujinet-load-resident DEVS:fujinet-disk.device fujinet-disk.device
 Idle Expunge of `fujinet-disk.device` (when `OpenCnt` is 0 and no I/O is
 queued or in progress) returns the `InitResident` segment list so Exec can
 unload the binary. Busy Expunge sets `LIBF_DELEXP` and returns 0 until a later
-non-worker Expunge or last `CloseDevice` completes teardown. This tree does
-not ship an unload CLI.
+non-worker Expunge or last `CloseDevice` completes teardown.
+
+## Unloading the resident device
+
+`make native` also builds `build/amiga/fujinet-unload-resident`. Install that
+program in `C:` and request unload of a resident device with:
+
+```text
+C:fujinet-unload-resident fujinet-disk.device
+```
+
+The command calls `RemDevice()` on the named device if found, then checks
+whether it actually left the device list. Output:
+
+- `Unloaded: <name>` — device is no longer resident (RETURN_OK)
+- `Still resident: <name>` — unload was deferred due to open count or
+  in-progress I/O; retry after idle (RETURN_FAIL)
+- `Not resident: <name>` — device was not on the device list (RETURN_FAIL)
+
+`Still resident` means the device set `LIBF_DELEXP` and will complete unload
+when its last client calls `CloseDevice()` or when the I/O worker drains and
+performs a deferred Expunge. A second unload attempt after the device becomes
+idle should succeed.
 
 The loader uses the OS 1.3-compatible `LoadSeg()` and `InitResident()` APIs.
 The loader itself has been validated on Workbench 3.1: it registers the
@@ -133,9 +154,9 @@ RDB/HDF media, dynamic DOS nodes, seamless handler coordination, and
 consolidation onto standard tools.
 
 Run the portable contract tests with `make tests` from this directory. Run
-`make native` to build `build/amiga/fujinet-disk.device` and
-`build/amiga/fujinet-load-resident`; this additionally
-requires the Amiga GCC toolchain, readable NDK headers, and
+`make native` to build `build/amiga/fujinet-disk.device`,
+`build/amiga/fujinet-load-resident`, and `build/amiga/fujinet-unload-resident`;
+this additionally requires the Amiga GCC toolchain, readable NDK headers, and
 `fujinet-nio-amiga-driver.a`.
 
 The host `test_fujinet_exec_boundary` test is the first resident-device
