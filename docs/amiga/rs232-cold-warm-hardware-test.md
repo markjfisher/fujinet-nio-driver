@@ -15,6 +15,9 @@ if you want the hardware background.
 
 This pass covers 9600, 19200, and 38400 only. Do not use 57600 yet.
 
+Pacing matrix numbers and the 16/2000 product choice:
+[`rs232-38400-pacing-evidence.md`](rs232-38400-pacing-evidence.md).
+
 ## What you need
 
 - FujiNet ESP already listening at the baud you will test (Amiga `SET_BAUD`
