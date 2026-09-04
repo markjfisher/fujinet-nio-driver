@@ -150,7 +150,11 @@ int fn_nio_exchange_warm_baud_ok(unsigned long want, unsigned long got)
 
 int fn_nio_exchange_step_failure_aborts(int step)
 {
-    return step != FN_NIO_EXCHANGE_STEP_MEASURE;
+    /* GET_BAUD / SET_BAUD failures are setup errors. WARMUP and MEASURE
+     * failures are logged and the remaining trials continue so a warm
+     * overrun does not abort the whole command. */
+    return step == FN_NIO_EXCHANGE_STEP_GET_BAUD ||
+           step == FN_NIO_EXCHANGE_STEP_SET_BAUD;
 }
 
 int fn_nio_exchange_format_elapsed(int timer_ok, unsigned long us,

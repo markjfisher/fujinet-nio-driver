@@ -22,11 +22,6 @@
 
 uint8_t backend_open(void);
 void backend_close(void);
-/* If the last transport error was IO_STATF_OVERRUN, performs a soft reset:
- * keeps serial/timer open (warm backend; Paula RX remains independent) and
- * reinitialises the SLIP session. Returns 1 if recovery applied (do NOT call
- * backend_close); 0 otherwise. */
-uint8_t backend_recover_from_overrun(void);
 uint8_t backend_exchange(
     const uint8_t *request,
     uint16_t request_len,

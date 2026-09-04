@@ -284,8 +284,10 @@ static void test_warm_baud_mismatch_before_warmup(void)
           !fn_nio_exchange_warm_baud_ok(38400UL, 19200UL));
     CHECK("GET_BAUD failure aborts",
           fn_nio_exchange_step_failure_aborts(FN_NIO_EXCHANGE_STEP_GET_BAUD));
-    CHECK("WARMUP failure aborts",
-          fn_nio_exchange_step_failure_aborts(FN_NIO_EXCHANGE_STEP_WARMUP));
+    CHECK("SET_BAUD failure aborts",
+          fn_nio_exchange_step_failure_aborts(FN_NIO_EXCHANGE_STEP_SET_BAUD));
+    CHECK("WARMUP failure does not abort remaining trials",
+          !fn_nio_exchange_step_failure_aborts(FN_NIO_EXCHANGE_STEP_WARMUP));
     CHECK("MEASURE failure does not abort remaining log path",
           !fn_nio_exchange_step_failure_aborts(FN_NIO_EXCHANGE_STEP_MEASURE));
 }

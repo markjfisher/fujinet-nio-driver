@@ -123,6 +123,10 @@ device until it is unloaded or the machine reboots; put the desired command in
 byte-stream backend. Packet-native transports such as Zorro or floppy use
 their own transport configuration and are unaffected.
 
+To separate cold vs warm serial and response size on real hardware, use
+`fujinet-nio-exchange` as described in
+[`docs/amiga/rs232-cold-warm-hardware-test.md`](../docs/amiga/rs232-cold-warm-hardware-test.md).
+
 The native device exposes `FUJINET_DISK_CMD_MOUNT` as its private read-only
 Mount command and `FUJINET_DISK_CMD_MOUNT_WRITABLE` as the writable variant;
 `io_Data` points to a NUL-terminated URI. Both are outside the trackdisk

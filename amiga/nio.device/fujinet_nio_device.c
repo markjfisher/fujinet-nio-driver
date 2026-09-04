@@ -38,7 +38,6 @@ typedef uint8_t (*fujinet_nio_backend_exchange_fn)(
     uint8_t *native_io_error, uint16_t *native_status);
 typedef uint8_t (*fujinet_nio_backend_set_baud_fn)(uint32_t baud);
 typedef uint32_t (*fujinet_nio_backend_get_baud_fn)(void);
-typedef uint8_t (*fujinet_nio_backend_recover_fn)(void);
 
 enum {
     NIO_WORKER_IDLE = 0,
@@ -64,7 +63,6 @@ struct fujinet_nio_device_base {
     fujinet_nio_backend_exchange_fn backend_exchange_fn;
     fujinet_nio_backend_set_baud_fn backend_set_baud_fn;
     fujinet_nio_backend_get_baud_fn backend_get_baud_fn;
-    fujinet_nio_backend_recover_fn backend_recover_fn;
 };
 
 struct ExecBase *SysBase;
@@ -149,13 +147,13 @@ static void process_exchange(struct fujinet_nio_device_base *base,
                 req->fn_request_data, req->fn_request_length,
                 req->fn_response_data, req->fn_response_capacity,
                 &response_len, &detail, &native_io_error, &native_status);
-            if (nio_error == FN_ERR_TRANSPORT) {
-                if (base->backend_recover_fn == NULL ||
-                    !base->backend_recover_fn())
-                    close_backend(base);
-            } else if (nio_error == FN_ERR_TIMEOUT) {
+            /* TRANSPORT (including Paula overrun) and TIMEOUT both close.
+             * Keeping serial.device open after overrun left leftover RX and a
+             * latched LineErr on the warm path; the next exchange then failed
+             * WARMUP or blocked in CMD_READ. Lazy-reopen on the next EXCHANGE
+             * matches SET_BAUD / timeout recovery. */
+            if (nio_error == FN_ERR_TRANSPORT || nio_error == FN_ERR_TIMEOUT)
                 close_backend(base);
-            }
         }
     } else {
         detail = FUJINET_NIO_DETAIL_BACKEND_OPEN;
@@ -289,7 +287,6 @@ static struct fujinet_nio_device_base *device_init(
     base->backend_exchange_fn = backend_exchange;
     base->backend_set_baud_fn = backend_set_baud;
     base->backend_get_baud_fn = backend_get_baud;
-    base->backend_recover_fn = backend_recover_from_overrun;
     base->worker_signal = AllocSignal(-1);
     if (base->worker_signal == -1) return NULL;
     base->worker_stack = AllocMem(WORKER_STACK_SIZE, MEMF_PUBLIC | MEMF_CLEAR);

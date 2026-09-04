@@ -536,6 +536,8 @@ static void test_fatal_backend(void)
     CHECK("fatal closed backend", backend_closes == 1);
     CHECK("fatal backend not open", fujinet_nio_native_test_backend_is_open() == 0);
 
+    /* Overrun used to keep serial.device open (soft session reset). TRANSPORT
+     * now always closes so the next EXCHANGE lazy-reopens, matching timeout. */
     init_exchange(&req, request_bytes, 1, response, sizeof(response));
     fujinet_nio_native_test_begin_io(&req.fn_io);
     fujinet_nio_native_test_worker_step();

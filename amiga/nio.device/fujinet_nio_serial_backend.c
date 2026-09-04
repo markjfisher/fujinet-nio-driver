@@ -57,12 +57,12 @@ static uint32_t serial_baud = FN_SERIAL_BACKEND_BAUD;
 /*
  * Writes use synchronous DoIO(CMD_WRITE). timeout_ms is unused on purpose:
  * aborting an outstanding serial CMD_WRITE is not reliable on Amiga
- * serial.device (including Amiberry), the same reason the read path polls
- * SDCMD_QUERY instead of parking a CMD_READ. Each write is one SLIP byte
- * into a finite TX buffer; completion is bounded by the serial driver
- * accepting that byte, not by an application timer. A hung serial.device
- * is a host/emulator defect; treating it as FN_ERR_TIMEOUT would require
- * AbortIO that this backend must not rely on.
+ * serial.device (including Amiberry). Each write is one SLIP byte into a
+ * finite TX buffer; completion is bounded by the serial driver accepting
+ * that byte. Reads poll SDCMD_QUERY until bytes are advertised, then
+ * CMD_READ that length. QUERY can over-report after an overrun; unbounded
+ * DoIO(CMD_READ) then waits forever. Those reads use SendIO plus a timer
+ * AbortIO so the worker can return FN_ERR_TIMEOUT instead of hanging.
  */
 static uint8_t serial_write(const uint8_t *buf, uint16_t len)
 {
@@ -71,6 +71,58 @@ static uint8_t serial_write(const uint8_t *buf, uint16_t len)
     serial_req->IOSer.io_Length = len;
     if (DoIO((struct IORequest *)serial_req) != 0) {
         serial_failure_detail = FUJINET_NIO_DETAIL_SERIAL_WRITE;
+        serial_failure_io_error = (uint8_t)serial_req->IOSer.io_Error;
+        serial_failure_status = serial_req->io_Status;
+        return FN_ERR_IO;
+    }
+    return FN_OK;
+}
+
+static uint8_t serial_cmd_read(APTR buf, ULONG length, uint16_t timeout_ms)
+{
+    ULONG serial_mask;
+    ULONG timer_mask;
+
+    if (buf == NULL || length == 0 || serial_req == NULL || !serial_open ||
+        timer_req == NULL || !timer_open || timeout_ms == 0) {
+        return FN_ERR_IO;
+    }
+
+    serial_req->IOSer.io_Command = CMD_READ;
+    serial_req->IOSer.io_Data = buf;
+    serial_req->IOSer.io_Length = length;
+    serial_req->IOSer.io_Actual = 0;
+    SendIO((struct IORequest *)serial_req);
+
+    timer_req->tr_node.io_Command = TR_ADDREQUEST;
+    timer_req->tr_time.tv_secs = (ULONG)(timeout_ms / 1000U);
+    timer_req->tr_time.tv_micro = (ULONG)(timeout_ms % 1000U) * 1000UL;
+    SendIO((struct IORequest *)timer_req);
+
+    serial_mask = 1UL << serial_port->mp_SigBit;
+    timer_mask = 1UL << timer_port->mp_SigBit;
+    Wait(serial_mask | timer_mask);
+
+    if (CheckIO((struct IORequest *)serial_req) == NULL) {
+        AbortIO((struct IORequest *)serial_req);
+        WaitIO((struct IORequest *)serial_req);
+        WaitIO((struct IORequest *)timer_req);
+        serial_failure_detail = FUJINET_NIO_DETAIL_SERIAL_READ;
+        serial_failure_io_error = 0;
+        serial_failure_status = 0;
+        return FN_ERR_TIMEOUT;
+    }
+
+    WaitIO((struct IORequest *)serial_req);
+    if (CheckIO((struct IORequest *)timer_req) == NULL) {
+        AbortIO((struct IORequest *)timer_req);
+        WaitIO((struct IORequest *)timer_req);
+    } else {
+        WaitIO((struct IORequest *)timer_req);
+    }
+
+    if (serial_req->IOSer.io_Error != 0) {
+        serial_failure_detail = FUJINET_NIO_DETAIL_SERIAL_READ;
         serial_failure_io_error = (uint8_t)serial_req->IOSer.io_Error;
         serial_failure_status = serial_req->io_Status;
         return FN_ERR_IO;
@@ -134,15 +186,9 @@ static uint8_t serial_read_byte(uint8_t *byte_out, uint16_t timeout_ms)
     }
     if (available > sizeof(read_buf)) available = sizeof(read_buf);
 
-    serial_req->IOSer.io_Command = CMD_READ;
-    serial_req->IOSer.io_Data = (APTR)read_buf;
-    serial_req->IOSer.io_Length = available;
-    serial_req->IOSer.io_Actual = 0;
-    if (DoIO((struct IORequest *)serial_req) != 0) {
-        serial_failure_detail = FUJINET_NIO_DETAIL_SERIAL_READ;
-        serial_failure_io_error = (uint8_t)serial_req->IOSer.io_Error;
-        serial_failure_status = serial_req->io_Status;
-        return FN_ERR_IO;
+    {
+        uint8_t read_rc = serial_cmd_read(read_buf, available, timeout_ms);
+        if (read_rc != FN_OK) return read_rc;
     }
     read_pos = 1;
     read_len = (uint16_t)serial_req->IOSer.io_Actual;
@@ -224,25 +270,26 @@ static void session_flush(void *context)
          * Drain it here before CMD_WRITE so the first real CMD_READ sees
          * clean state, whether SETPARAMS or a previous failed exchange left it. */
         if (serial_req->io_Status & IO_STATF_OVERRUN) {
-            serial_req->IOSer.io_Command = CMD_READ;
-            serial_req->IOSer.io_Data = (APTR)&drain_byte;
-            serial_req->IOSer.io_Length = 1;
-            serial_req->IOSer.io_Actual = 0;
-            DoIO((struct IORequest *)serial_req);
-            /* Ignore result — flag consumed; loop to verify clean state. */
+            uint8_t drain_rc = serial_cmd_read(&drain_byte, 1,
+                                              FN_SERIAL_BACKEND_TIMEOUT_MS);
+            if (drain_rc != FN_OK) {
+                if (channel_error == 0) channel_error = drain_rc;
+                return;
+            }
+            /* Flag consumed; loop to verify clean state. */
             serial_flush_drained_overrun = 1;
             continue;
         }
 
         if (available == 0) return;
         if (available > sizeof(read_buf)) available = sizeof(read_buf);
-        serial_req->IOSer.io_Command = CMD_READ;
-        serial_req->IOSer.io_Data = (APTR)read_buf;
-        serial_req->IOSer.io_Length = available;
-        serial_req->IOSer.io_Actual = 0;
-        if (DoIO((struct IORequest *)serial_req) != 0) {
-            if (channel_error == 0) channel_error = FN_ERR_IO;
-            return;
+        {
+            uint8_t drain_rc = serial_cmd_read(read_buf, available,
+                                              FN_SERIAL_BACKEND_TIMEOUT_MS);
+            if (drain_rc != FN_OK) {
+                if (channel_error == 0) channel_error = drain_rc;
+                return;
+            }
         }
     }
 }
@@ -360,25 +407,6 @@ uint8_t backend_open(void)
         return FN_ERR_IO;
     }
 
-    /* SDCMD_SETPARAMS can leave IO_STATF_OVERRUN latched. There is no Amiga
-     * API to clear it directly (CMD_CLEAR only discards buffered data). This
-     * is a Paula receive-overrun latch, not a CIA UART or TX→RX mode switch —
-     * Paula RX and TX are independent. Drain if the flag is already visible
-     * so the first CMD_READ sees clean state. */
-    serial_req->IOSer.io_Command = SDCMD_QUERY;
-    serial_req->IOSer.io_Data = NULL;
-    serial_req->IOSer.io_Length = 0;
-    serial_req->IOSer.io_Actual = 0;
-    DoIO((struct IORequest *)serial_req);
-    if (serial_req->io_Status & IO_STATF_OVERRUN) {
-        UBYTE drain_byte;
-        serial_req->IOSer.io_Command = CMD_READ;
-        serial_req->IOSer.io_Data = (APTR)&drain_byte;
-        serial_req->IOSer.io_Length = 1;
-        serial_req->IOSer.io_Actual = 0;
-        DoIO((struct IORequest *)serial_req);
-    }
-
     timer_port = CreatePort(NULL, 0);
     if (timer_port == NULL) {
         backend_close();
@@ -397,6 +425,26 @@ uint8_t backend_open(void)
     }
     timer_open = 1;
 
+    /* SDCMD_SETPARAMS can leave IO_STATF_OVERRUN latched. There is no Amiga
+     * API to clear it directly (CMD_CLEAR only discards buffered data). This
+     * is a Paula receive-overrun latch, not a CIA UART or TX→RX mode switch —
+     * Paula RX and TX are independent. Drain if the flag is already visible
+     * so the first CMD_READ sees clean state. Timer is already open so the
+     * sacrificial CMD_READ cannot hang. */
+    serial_req->IOSer.io_Command = SDCMD_QUERY;
+    serial_req->IOSer.io_Data = NULL;
+    serial_req->IOSer.io_Length = 0;
+    serial_req->IOSer.io_Actual = 0;
+    DoIO((struct IORequest *)serial_req);
+    if (serial_req->io_Status & IO_STATF_OVERRUN) {
+        UBYTE drain_byte;
+        if (serial_cmd_read(&drain_byte, 1, FN_SERIAL_BACKEND_TIMEOUT_MS) !=
+            FN_OK) {
+            backend_close();
+            return FN_ERR_IO;
+        }
+    }
+
     if (fn_stream_session_init(&session, &session_ops, 0, wire_buf,
                                sizeof(wire_buf)) != FN_OK ||
         fn_stream_session_open(&session) != FN_OK) {
@@ -409,42 +457,6 @@ uint8_t backend_open(void)
     channel_error = 0;
     serial_failure_detail = FUJINET_NIO_DETAIL_NONE;
     return FN_OK;
-}
-
-uint8_t backend_recover_from_overrun(void)
-{
-    /* If the last transport error was specifically IO_STATF_OVERRUN, keep
-     * serial.device and timer.device open (warm serial backend; Paula RX
-     * remains independent of TX) and reset only the SLIP session layer. The
-     * next exchange skips SDCMD_SETPARAMS, matching REUSE. Returns 1 if
-     * recovery was applied (caller must NOT call backend_close), 0 if it was
-     * a different error (caller must close normally). */
-    if (serial_failure_io_error != SerErr_LineErr ||
-        !(serial_failure_status & IO_STATF_OVERRUN) ||
-        !serial_open || !timer_open)
-        return 0;
-
-    if (session_initialized) {
-        fn_stream_session_close(&session);
-        session_initialized = 0;
-    }
-    memset(&session, 0, sizeof(session));
-    read_pos = 0;
-    read_len = 0;
-    channel_error = 0;
-    serial_failure_detail = FUJINET_NIO_DETAIL_NONE;
-    serial_failure_io_error = 0;
-    serial_failure_status = 0;
-    serial_flush_drained_overrun = 0;
-
-    if (fn_stream_session_init(&session, &session_ops, 0, wire_buf,
-                               sizeof(wire_buf)) != FN_OK ||
-        fn_stream_session_open(&session) != FN_OK) {
-        backend_close();
-        return 0;
-    }
-    session_initialized = 1;
-    return 1;
 }
 
 uint8_t backend_exchange(

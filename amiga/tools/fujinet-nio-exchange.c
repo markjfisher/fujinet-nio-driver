@@ -9,7 +9,6 @@
 #include <clib/alib_protos.h>
 #include <proto/dos.h>
 #include <proto/exec.h>
-#include <proto/timer.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -20,8 +19,6 @@
 #include "fn_protocol.h"
 
 #define MATRIX_PACKET_CAP 1024
-
-struct Device *TimerBase;
 
 #define COMPLETION_URI "host:/amiga-e2e-complete/nio-broker-isolated"
 #define FILE_CMD_LIST 0x02
@@ -101,7 +98,12 @@ static void fill_exchange(struct FujiNetNIORequest *req, struct MsgPort *port,
                           const uint8_t *request, UWORD request_len,
                           uint8_t *response, UWORD response_cap)
 {
+    struct Device *device = req->fn_io.io_Device;
+    struct Unit *unit = req->fn_io.io_Unit;
+
     memset(req, 0, sizeof(*req));
+    req->fn_io.io_Device = device;
+    req->fn_io.io_Unit = unit;
     req->fn_io.io_Message.mn_Node.ln_Type = NT_MESSAGE;
     req->fn_io.io_Message.mn_ReplyPort = port;
     req->fn_io.io_Message.mn_Length = sizeof(*req);
@@ -235,6 +237,21 @@ static void wait_spawned_jobs(void)
     }
 }
 
+/* CreateNewProc children share this binary's seglist. Returning from main
+ * while they still exist unloads their code; wait until Exec has RemTask'd
+ * them. done flags are not enough. */
+static void wait_spawned_tasks_gone(void)
+{
+    ULONG spins;
+
+    for (spins = 0; spins < 200; ++spins) {
+        if (FindTask((CONST_STRPTR)"nio-exch-a") == NULL &&
+            FindTask((CONST_STRPTR)"nio-exch-b") == NULL)
+            return;
+        Delay(1);
+    }
+}
+
 static int isolation_ok(void)
 {
     int disk_present =
@@ -277,7 +294,6 @@ static void close_elapsed_timer(void)
         elapsed_req = NULL;
     }
     elapsed_ready = 0;
-    TimerBase = NULL;
     if (elapsed_port != NULL) {
         DeletePort(elapsed_port);
         elapsed_port = NULL;
@@ -295,14 +311,15 @@ static void open_elapsed_timer(void)
         elapsed_port = NULL;
         return;
     }
-    if (OpenDevice((CONST_STRPTR)TIMERNAME, UNIT_ECLOCK,
+    /* MICROHZ/VBLANK + TR_GETSYSTIME. Do not declare a global TimerBase or
+     * call proto/timer.h ReadEClock: clib2 uses that symbol as its C clock. */
+    if (OpenDevice((CONST_STRPTR)TIMERNAME, UNIT_MICROHZ,
                    (struct IORequest *)elapsed_req, 0) != 0 &&
-        OpenDevice((CONST_STRPTR)TIMERNAME, UNIT_MICROHZ,
+        OpenDevice((CONST_STRPTR)TIMERNAME, UNIT_VBLANK,
                    (struct IORequest *)elapsed_req, 0) != 0) {
         close_elapsed_timer();
         return;
     }
-    TimerBase = elapsed_req->tr_node.io_Device;
     elapsed_ready = 1;
 }
 
@@ -341,37 +358,52 @@ static LONG do_control(struct FujiNetNIORequest *req, struct MsgPort *port,
     return DoIO(&req->fn_io);
 }
 
+static int snapshot_time(struct timeval *tv)
+{
+    if (!elapsed_ready || elapsed_req == NULL) return -1;
+    elapsed_req->tr_node.io_Command = TR_GETSYSTIME;
+    elapsed_req->tr_node.io_Flags = 0;
+    elapsed_req->tr_node.io_Error = 0;
+    elapsed_req->tr_time.tv_secs = 0;
+    elapsed_req->tr_time.tv_micro = 0;
+    if (DoIO((struct IORequest *)elapsed_req) != 0) return -1;
+    *tv = elapsed_req->tr_time;
+    return 0;
+}
+
 static LONG do_measured_exchange(struct FujiNetNIORequest *req,
                                  char *elapsed_buf)
 {
-    struct EClockVal start;
-    struct EClockVal end;
-    ULONG freq;
+    struct timeval start;
+    struct timeval end;
     LONG rc;
+    int have_start;
 
-    if (!elapsed_ready || TimerBase == NULL) {
-        fn_nio_exchange_format_elapsed(0, 0, elapsed_buf, 32);
-        return DoIO(&req->fn_io);
-    }
-    freq = ReadEClock(&start);
+    have_start = snapshot_time(&start) == 0;
     rc = DoIO(&req->fn_io);
-    ReadEClock(&end);
-    if (freq == 0) {
+    if (!have_start || snapshot_time(&end) != 0) {
         fn_nio_exchange_format_elapsed(0, 0, elapsed_buf, 32);
         return rc;
     }
     {
-        unsigned long long ticks;
-        unsigned long long us;
+        unsigned long us;
+        long sec = (long)end.tv_secs - (long)start.tv_secs;
+        long micro = (long)end.tv_micro - (long)start.tv_micro;
 
-        ticks = (((unsigned long long)end.ev_hi << 32) | end.ev_lo) -
-                (((unsigned long long)start.ev_hi << 32) | start.ev_lo);
-        us = (ticks * 1000000ULL) / (unsigned long long)freq;
-        if (us > 0xFFFFFFFFULL) us = 0xFFFFFFFFULL;
-        if (fn_nio_exchange_format_elapsed(1, (unsigned long)us, elapsed_buf,
-                                           32) != 0) {
-            fn_nio_exchange_format_elapsed(0, 0, elapsed_buf, 32);
+        if (micro < 0) {
+            micro += 1000000L;
+            sec -= 1;
         }
+        if (sec < 0) {
+            fn_nio_exchange_format_elapsed(0, 0, elapsed_buf, 32);
+            return rc;
+        }
+        if (sec > 4294L)
+            us = 0xFFFFFFFFUL;
+        else
+            us = (unsigned long)sec * 1000000UL + (unsigned long)micro;
+        if (fn_nio_exchange_format_elapsed(1, us, elapsed_buf, 32) != 0)
+            fn_nio_exchange_format_elapsed(0, 0, elapsed_buf, 32);
     }
     return rc;
 }
@@ -455,7 +487,12 @@ static int run_warmup(struct FujiNetNIORequest *req, struct MsgPort *port,
                   (UWORD)response_cap);
     attach_open(req, open_request);
     if (DoIO(&req->fn_io) != 0 || !clock_response_ok(req, response)) {
-        fprintf(stderr, "WARMUP failed\n");
+        printf("WARMUP io=%d nio=%u len=%u result=%u cause=%u native=%u "
+               "status=%u\n",
+               (int)req->fn_io.io_Error, (unsigned)req->fn_nio_error,
+               (unsigned)req->fn_response_length, (unsigned)req->fn_pad[1],
+               (unsigned)req->fn_pad[2], (unsigned)(req->fn_flags & 0xFF),
+               (unsigned)(req->fn_flags >> 8));
         return -1;
     }
     return 0;
@@ -547,6 +584,9 @@ static int run_matrix(int argc, char **argv)
                     abort_trials = 1;
                     break;
                 }
+                /* Skip MEASURE this trial; the next trial WARMUPs again on a
+                 * backend that TRANSPORT/TIMEOUT closed. */
+                if (step == FN_NIO_EXCHANGE_STEP_WARMUP) break;
             }
         }
         if (abort_trials) break;
@@ -573,6 +613,9 @@ int main(int argc, char **argv)
     struct Process *proc_a;
     struct Process *proc_b;
     int failures = 0;
+
+    /* Redirected logs must not sit in a full stdio buffer across a crash. */
+    setvbuf(stdout, NULL, _IONBF, 0);
 
     if (argc >= 2) return run_matrix(argc, argv);
 
@@ -707,6 +750,8 @@ int main(int argc, char **argv)
         if (serial_after == 0) failures = 1;
     }
 
+    wait_spawned_tasks_gone();
+
     port = CreatePort(NULL, 0);
     if (port == NULL) return RETURN_FAIL;
     list_len = build_file_list(list_req, COMPLETION_URI);
@@ -725,6 +770,7 @@ int main(int argc, char **argv)
     CloseDevice(&req.fn_io);
     DeletePort(port);
 
+    wait_spawned_tasks_gone();
     if (failures) return RETURN_FAIL;
     printf("PASS isolated-exchange\n");
     return RETURN_OK;
