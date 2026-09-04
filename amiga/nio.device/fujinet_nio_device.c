@@ -148,10 +148,9 @@ static void process_exchange(struct fujinet_nio_device_base *base,
                 req->fn_response_data, req->fn_response_capacity,
                 &response_len, &detail, &native_io_error, &native_status);
             /* TRANSPORT (including Paula overrun) and TIMEOUT both close.
-             * Keeping serial.device open after overrun left leftover RX and a
-             * latched LineErr on the warm path; the next exchange then failed
-             * WARMUP or blocked in CMD_READ. Lazy-reopen on the next EXCHANGE
-             * matches SET_BAUD / timeout recovery. */
+             * backend_exchange drains RX until idle first so leftover ESP
+             * paced chunks cannot become SESSION_IO (cause=3) on reopen.
+             * Lazy-reopen on the next EXCHANGE matches SET_BAUD. */
             if (nio_error == FN_ERR_TRANSPORT || nio_error == FN_ERR_TIMEOUT)
                 close_backend(base);
         }

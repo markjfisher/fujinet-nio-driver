@@ -241,56 +241,96 @@ static uint8_t session_read_byte(void *context, uint8_t *value,
         serial_read_byte(value, timeout_ms), &channel_error);
 }
 
-static void session_flush(void *context)
+static uint8_t drain_query_and_read(uint8_t *saw_rx)
 {
     ULONG available;
     UBYTE drain_byte;
 
+    *saw_rx = 0;
+    if (!serial_open) return FN_OK;
+
+    serial_req->IOSer.io_Command = SDCMD_QUERY;
+    serial_req->IOSer.io_Data = NULL;
+    serial_req->IOSer.io_Length = 0;
+    serial_req->IOSer.io_Actual = 0;
+    if (DoIO((struct IORequest *)serial_req) != 0) {
+        if (channel_error == 0) channel_error = FN_ERR_IO;
+        serial_failure_detail = FUJINET_NIO_DETAIL_SERIAL_QUERY;
+        serial_failure_io_error = (uint8_t)serial_req->IOSer.io_Error;
+        serial_failure_status = serial_req->io_Status;
+        return FN_ERR_IO;
+    }
+    available = serial_req->IOSer.io_Actual;
+
+    /* IO_STATF_OVERRUN is a Paula RBF miss. serial.device can report it via
+     * SDCMD_QUERY even when the software ring is empty. CMD_READ consumes it. */
+    if (serial_req->io_Status & IO_STATF_OVERRUN) {
+        uint8_t drain_rc = serial_cmd_read(&drain_byte, 1,
+                                          FN_SERIAL_BACKEND_TIMEOUT_MS);
+        if (drain_rc != FN_OK) {
+            if (channel_error == 0) channel_error = drain_rc;
+            return drain_rc;
+        }
+        serial_flush_drained_overrun = 1;
+        *saw_rx = 1;
+        return FN_OK;
+    }
+
+    if (available == 0) return FN_OK;
+    if (available > sizeof(read_buf)) available = sizeof(read_buf);
+    {
+        uint8_t drain_rc = serial_cmd_read(read_buf, available,
+                                          FN_SERIAL_BACKEND_TIMEOUT_MS);
+        if (drain_rc != FN_OK) {
+            if (channel_error == 0) channel_error = drain_rc;
+            return drain_rc;
+        }
+    }
+    *saw_rx = 1;
+    return FN_OK;
+}
+
+static void session_flush(void *context)
+{
     (void)context;
     read_pos = 0;
     read_len = 0;
     if (!serial_open) return;
 
     for (;;) {
-        serial_req->IOSer.io_Command = SDCMD_QUERY;
-        serial_req->IOSer.io_Data = NULL;
-        serial_req->IOSer.io_Length = 0;
-        serial_req->IOSer.io_Actual = 0;
-        if (DoIO((struct IORequest *)serial_req) != 0) {
-            if (channel_error == 0) channel_error = FN_ERR_IO;
-            return;
-        }
-        available = serial_req->IOSer.io_Actual;
+        uint8_t saw_rx = 0;
+        if (drain_query_and_read(&saw_rx) != FN_OK) return;
+        if (!saw_rx) return;
+    }
+}
 
-        /* IO_STATF_OVERRUN is a Paula UART receive overrun: the prior RX
-         * character was not picked up from SERDATR / INTF_RBF before the next
-         * character completed. serial.device can report that flag via
-         * SDCMD_QUERY even when the software ring is empty (available == 0).
-         * CMD_READ returns immediately when the flag is set, consuming it.
-         * Drain it here before CMD_WRITE so the first real CMD_READ sees
-         * clean state, whether SETPARAMS or a previous failed exchange left it. */
-        if (serial_req->io_Status & IO_STATF_OVERRUN) {
-            uint8_t drain_rc = serial_cmd_read(&drain_byte, 1,
-                                              FN_SERIAL_BACKEND_TIMEOUT_MS);
-            if (drain_rc != FN_OK) {
-                if (channel_error == 0) channel_error = drain_rc;
-                return;
-            }
-            /* Flag consumed; loop to verify clean state. */
-            serial_flush_drained_overrun = 1;
+static void session_flush_until_idle(void)
+{
+    uint16_t empty_ms = 0;
+    uint16_t waited_ms = 0;
+    uint16_t steps = 0;
+
+    read_pos = 0;
+    read_len = 0;
+    if (!serial_open || !timer_open) {
+        session_flush(NULL);
+        return;
+    }
+
+    for (;;) {
+        uint8_t saw_rx = 0;
+        if (drain_query_and_read(&saw_rx) != FN_OK) return;
+        if (fn_serial_drain_after_fault_step(saw_rx, &empty_ms, &waited_ms) ==
+            FN_SERIAL_DRAIN_DONE)
+            return;
+        if (saw_rx) {
+            if (++steps >= 1024) return;
             continue;
         }
-
-        if (available == 0) return;
-        if (available > sizeof(read_buf)) available = sizeof(read_buf);
-        {
-            uint8_t drain_rc = serial_cmd_read(read_buf, available,
-                                              FN_SERIAL_BACKEND_TIMEOUT_MS);
-            if (drain_rc != FN_OK) {
-                if (channel_error == 0) channel_error = drain_rc;
-                return;
-            }
-        }
+        timer_req->tr_node.io_Command = TR_ADDREQUEST;
+        timer_req->tr_time.tv_secs = 0;
+        timer_req->tr_time.tv_micro = FN_SERIAL_DRAIN_SLICE_MS * 1000UL;
+        if (DoIO((struct IORequest *)timer_req) != 0) return;
     }
 }
 
@@ -505,10 +545,11 @@ uint8_t backend_exchange(
         *native_status = serial_failure_status;
     result = fn_serial_channel_map_session_result(session_result, &channel_error);
     /*
-     * Timeout is not FN_ERR_TRANSPORT, but leftover RX / a late SLIP frame
-     * would desynchronize the next exchange. Drain now; the worker then
-     * backend_close()s so the next exchange lazy-reopens a clean session.
+     * Timeout, Paula overrun (cause=7), and leftover SLIP (cause=3) all leave
+     * bytes on the wire. ESP chunk pacing can still be transmitting (2 ms
+     * gaps), so drain until RX is idle before the worker CloseDevice. The
+     * next EXCHANGE lazy-reopens a clean session.
      */
-    if (result == FN_ERR_TIMEOUT) session_flush(NULL);
+    if (result != FN_OK) session_flush_until_idle();
     return result;
 }

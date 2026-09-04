@@ -51,52 +51,32 @@ rebooted the machine (power LED flash, no Guru). Isolation is already
 
 ## ESP response pacing (rank 2)
 
-`tx_gap_us` only delays the start of a UART write, then the ESP dumps the
-whole burst. Paula overruns when the next character completes before `RBF`
-is serviced; inter-byte and chunk pacing insert idle time **after** each
-slice has left the ESP UART.
+Product default on ESP `UartGpio` is **16-byte chunks, 2000 µs between
+chunks, no inter-byte gap** (`tx_chunk_size=16`, `tx_chunk_gap_us=2000`,
+`tx_byte_gap_us=0`). Requests stay 38400; ESP→Amiga long replies average
+about **26 kbaud** (16 × ~262 µs + 2 ms idle). Atari SIO clears pacing.
 
-Defaults are off (`0`). For the first 38400 experiment, use **750 µs
-inter-byte**. That gap plus one 8N1 character time (~262 µs) is about the
-spacing of 9600 baud. Flash firmware that includes these keys, then set
-them on the ESP console (host UART, not the log UART):
-
-```text
-uart.set tx_byte_gap_us 750
-uart.status
-```
-
-`uart.status` should show `tx_byte_gap_us: 750`. Optional persist:
-
-```text
-uart.save
-```
-
-Or in `fujinet.yaml`:
-
-```yaml
-channel:
-  uart:
-    tx_byte_gap_us: 750
-```
-
-Byte pacing waits until each byte has shifted out, then idles 750 µs, then
-writes the next byte. Chunk pacing (only if `tx_byte_gap_us` is 0) bursts
-`tx_chunk_size` bytes at full baud and idles `tx_chunk_gap_us` between
-chunks:
+If `fujinet.yaml` already has explicit `tx_chunk_size: 0` from an earlier
+save, set and persist:
 
 ```text
 uart.set tx_byte_gap_us 0
 uart.set tx_chunk_size 16
-uart.set tx_chunk_gap_us 1000
+uart.set tx_chunk_gap_us 2000
+uart.save
+uart.status
 ```
 
-First hardware cells after enabling 750 µs: warm host-get ×100 and cold
-file-list `--size 256` at 38400. If those are clean, reduce the gap (500,
-250, 125, 0) until Paula overrun returns.
+`tx_gap_us` only delays the start of a UART write. Byte pacing waits until
+each byte has shifted out, then idles. Chunk pacing (only if
+`tx_byte_gap_us` is 0) bursts `tx_chunk_size` at full baud and idles
+`tx_chunk_gap_us` between chunks.
 
-Do **not** treat CIA TX→RX as the mechanism. Do not use 57600, seven-wire,
-READY/GO, or a custom `serial.device` in this pass.
+After a Paula overrun (`status=1`, `cause=7`), the broker drains RX until
+30 ms of idle (longer than the 2 ms chunk gap) then closes `serial.device`.
+That stops leftover ESP chunks from turning the next trial into `cause=3`
+(SESSION_IO). Do not treat CIA TX→RX as the mechanism. This pass is 38400
+only: no 57600, seven-wire, READY/GO, or a custom `serial.device`.
 
 ## Cold vs warm (what the flags actually do)
 
