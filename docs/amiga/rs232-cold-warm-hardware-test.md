@@ -49,6 +49,55 @@ clock commands. On PiStorm that sequence has completed with `PASS` and then
 rebooted the machine (power LED flash, no Guru). Isolation is already
 `disk.device` unloaded and no `FLS`/`FHOST`/`FIN` in another shell.
 
+## ESP response pacing (rank 2)
+
+`tx_gap_us` only delays the start of a UART write, then the ESP dumps the
+whole burst. Paula overruns when the next character completes before `RBF`
+is serviced; inter-byte and chunk pacing insert idle time **after** each
+slice has left the ESP UART.
+
+Defaults are off (`0`). For the first 38400 experiment, use **750 µs
+inter-byte**. That gap plus one 8N1 character time (~262 µs) is about the
+spacing of 9600 baud. Flash firmware that includes these keys, then set
+them on the ESP console (host UART, not the log UART):
+
+```text
+uart.set tx_byte_gap_us 750
+uart.status
+```
+
+`uart.status` should show `tx_byte_gap_us: 750`. Optional persist:
+
+```text
+uart.save
+```
+
+Or in `fujinet.yaml`:
+
+```yaml
+channel:
+  uart:
+    tx_byte_gap_us: 750
+```
+
+Byte pacing waits until each byte has shifted out, then idles 750 µs, then
+writes the next byte. Chunk pacing (only if `tx_byte_gap_us` is 0) bursts
+`tx_chunk_size` bytes at full baud and idles `tx_chunk_gap_us` between
+chunks:
+
+```text
+uart.set tx_byte_gap_us 0
+uart.set tx_chunk_size 16
+uart.set tx_chunk_gap_us 1000
+```
+
+First hardware cells after enabling 750 µs: warm host-get ×100 and cold
+file-list `--size 256` at 38400. If those are clean, reduce the gap (500,
+250, 125, 0) until Paula overrun returns.
+
+Do **not** treat CIA TX→RX as the mechanism. Do not use 57600, seven-wire,
+READY/GO, or a custom `serial.device` in this pass.
+
 ## Cold vs warm (what the flags actually do)
 
 | `--backend` | What happens before the measured request |
