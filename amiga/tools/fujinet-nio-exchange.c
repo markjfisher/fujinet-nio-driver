@@ -1,4 +1,5 @@
 #include <devices/serial.h>
+#include <devices/timer.h>
 #include <dos/dos.h>
 #include <dos/dostags.h>
 #include <exec/errors.h>
@@ -8,13 +9,19 @@
 #include <clib/alib_protos.h>
 #include <proto/dos.h>
 #include <proto/exec.h>
+#include <proto/timer.h>
 
 #include <stdio.h>
 #include <string.h>
 
 #include "fujinet_nio_device.h"
+#include "fujinet_nio_exchange_opts.h"
 #include "fujinet-nio.h"
 #include "fn_protocol.h"
+
+#define MATRIX_PACKET_CAP 1024
+
+struct Device *TimerBase;
 
 #define COMPLETION_URI "host:/amiga-e2e-complete/nio-broker-isolated"
 #define FILE_CMD_LIST 0x02
@@ -94,6 +101,7 @@ static void fill_exchange(struct FujiNetNIORequest *req, struct MsgPort *port,
                           const uint8_t *request, UWORD request_len,
                           uint8_t *response, UWORD response_cap)
 {
+    memset(req, 0, sizeof(*req));
     req->fn_io.io_Message.mn_Node.ln_Type = NT_MESSAGE;
     req->fn_io.io_Message.mn_ReplyPort = port;
     req->fn_io.io_Message.mn_Length = sizeof(*req);
@@ -233,19 +241,324 @@ static int isolation_ok(void)
         FindName(&SysBase->DeviceList,
                  (CONST_STRPTR) "fujinet-disk.device") != NULL;
     int fls_present = FindTask((CONST_STRPTR) "FLS") != NULL;
-    LONG serial_before = try_open_serial();
-    printf("ISOLATED disk.device=%s FLS=%s serial-free-before=%d\n",
+    printf("ISOLATED disk.device=%s FLS=%s\n",
            disk_present ? "present" : "absent",
-           fls_present ? "present" : "absent",
-           serial_before == 0);
-    /* The tool is also the field diagnostic for a normal Workbench session,
-     * where DiskDevice may legitimately already be resident.  FLS remains a
-     * useful warning because it can own the legacy serial transport, but it
-     * must not prevent direct broker diagnostics. */
-    return serial_before == 0;
+           fls_present ? "present" : "absent");
+    /* Isolation is FindName/FindTask only. Do not open serial.device before
+     * the first measured EXCHANGE. DiskDevice may already be resident on a
+     * normal Workbench session. FLS remains a useful warning because it can
+     * own the legacy serial transport, but it must not prevent diagnostics. */
+    return 1;
 }
 
-int main(void)
+static void write_le32(UBYTE *data, ULONG value)
+{
+    data[0] = (UBYTE)value;
+    data[1] = (UBYTE)(value >> 8);
+    data[2] = (UBYTE)(value >> 16);
+    data[3] = (UBYTE)(value >> 24);
+}
+
+static ULONG read_le32(const UBYTE *data)
+{
+    return (ULONG)data[0] | ((ULONG)data[1] << 8) |
+           ((ULONG)data[2] << 16) | ((ULONG)data[3] << 24);
+}
+
+static struct MsgPort *elapsed_port;
+static struct timerequest *elapsed_req;
+static uint8_t elapsed_ready;
+
+static void close_elapsed_timer(void)
+{
+    if (elapsed_req != NULL) {
+        if (elapsed_ready) CloseDevice((struct IORequest *)elapsed_req);
+        DeleteExtIO((struct IORequest *)elapsed_req);
+        elapsed_req = NULL;
+    }
+    elapsed_ready = 0;
+    TimerBase = NULL;
+    if (elapsed_port != NULL) {
+        DeletePort(elapsed_port);
+        elapsed_port = NULL;
+    }
+}
+
+static void open_elapsed_timer(void)
+{
+    elapsed_port = CreatePort(NULL, 0);
+    if (elapsed_port == NULL) return;
+    elapsed_req = (struct timerequest *)CreateExtIO(
+        elapsed_port, sizeof(*elapsed_req));
+    if (elapsed_req == NULL) {
+        DeletePort(elapsed_port);
+        elapsed_port = NULL;
+        return;
+    }
+    if (OpenDevice((CONST_STRPTR)TIMERNAME, UNIT_ECLOCK,
+                   (struct IORequest *)elapsed_req, 0) != 0 &&
+        OpenDevice((CONST_STRPTR)TIMERNAME, UNIT_MICROHZ,
+                   (struct IORequest *)elapsed_req, 0) != 0) {
+        close_elapsed_timer();
+        return;
+    }
+    TimerBase = elapsed_req->tr_node.io_Device;
+    elapsed_ready = 1;
+}
+
+static void attach_open(struct FujiNetNIORequest *req,
+                        const struct IORequest *open_request)
+{
+    req->fn_io.io_Device = open_request->io_Device;
+    req->fn_io.io_Unit = open_request->io_Unit;
+}
+
+static void fill_control(struct FujiNetNIORequest *req, struct MsgPort *port,
+                         UWORD command, const uint8_t *request,
+                         UWORD request_len, uint8_t *response,
+                         UWORD response_cap)
+{
+    memset(req, 0, sizeof(*req));
+    req->fn_io.io_Message.mn_Node.ln_Type = NT_MESSAGE;
+    req->fn_io.io_Message.mn_ReplyPort = port;
+    req->fn_io.io_Message.mn_Length = sizeof(*req);
+    req->fn_io.io_Command = command;
+    req->fn_struct_size = FUJINET_NIO_REQUEST_SIZE;
+    req->fn_request_data = request;
+    req->fn_request_length = request_len;
+    req->fn_response_data = response;
+    req->fn_response_capacity = response_cap;
+}
+
+static LONG do_control(struct FujiNetNIORequest *req, struct MsgPort *port,
+                       const struct IORequest *open_request, UWORD command,
+                       const uint8_t *request, UWORD request_len,
+                       uint8_t *response, UWORD response_cap)
+{
+    fill_control(req, port, command, request, request_len, response,
+                 response_cap);
+    attach_open(req, open_request);
+    return DoIO(&req->fn_io);
+}
+
+static LONG do_measured_exchange(struct FujiNetNIORequest *req,
+                                 char *elapsed_buf)
+{
+    struct EClockVal start;
+    struct EClockVal end;
+    ULONG freq;
+    LONG rc;
+
+    if (!elapsed_ready || TimerBase == NULL) {
+        fn_nio_exchange_format_elapsed(0, 0, elapsed_buf, 32);
+        return DoIO(&req->fn_io);
+    }
+    freq = ReadEClock(&start);
+    rc = DoIO(&req->fn_io);
+    ReadEClock(&end);
+    if (freq == 0) {
+        fn_nio_exchange_format_elapsed(0, 0, elapsed_buf, 32);
+        return rc;
+    }
+    {
+        unsigned long long ticks;
+        unsigned long long us;
+
+        ticks = (((unsigned long long)end.ev_hi << 32) | end.ev_lo) -
+                (((unsigned long long)start.ev_hi << 32) | start.ev_lo);
+        us = (ticks * 1000000ULL) / (unsigned long long)freq;
+        if (us > 0xFFFFFFFFULL) us = 0xFFFFFFFFULL;
+        if (fn_nio_exchange_format_elapsed(1, (unsigned long)us, elapsed_buf,
+                                           32) != 0) {
+            fn_nio_exchange_format_elapsed(0, 0, elapsed_buf, 32);
+        }
+    }
+    return rc;
+}
+
+static void print_trial_log(const struct FujiNetNIORequest *req,
+                            int backend, const char *elapsed)
+{
+    char line[192];
+
+    if (fn_nio_exchange_format_trial_log(
+            line, sizeof(line), (unsigned)req->fn_request_length,
+            (unsigned)req->fn_response_length, elapsed,
+            (unsigned)req->fn_pad[1], (unsigned)req->fn_pad[2],
+            (unsigned)(req->fn_flags & 0xFF),
+            (unsigned)(req->fn_flags >> 8), backend) != 0) {
+        return;
+    }
+    printf("%s\n", line);
+}
+
+static void print_matrix_usage(void)
+{
+    fprintf(stderr,
+            "Usage: fujinet-nio-exchange --type clock|host-get|file-list "
+            "--backend cold|warm [--baud 9600|19200|38400] "
+            "[--size 8|16|32|64|128|256|420|512 --uri URI] [--trials N]\n");
+}
+
+static int run_set_baud(struct FujiNetNIORequest *req, struct MsgPort *port,
+                        const struct IORequest *open_request,
+                        unsigned long baud, uint8_t *baud_bytes)
+{
+    unsigned long set_baud = baud;
+
+    if (set_baud == 0UL) {
+        if (do_control(req, port, open_request, FUJINET_NIO_CMD_GET_BAUD, NULL,
+                       0, baud_bytes, 4) != 0 ||
+            req->fn_nio_error != 0 || req->fn_response_length != 4) {
+            fprintf(stderr, "GET_BAUD failed\n");
+            return -1;
+        }
+        set_baud = read_le32(baud_bytes);
+    }
+    write_le32(baud_bytes, set_baud);
+    if (do_control(req, port, open_request, FUJINET_NIO_CMD_SET_BAUD,
+                   baud_bytes, 4, NULL, 0) != 0 ||
+        req->fn_nio_error != 0) {
+        fprintf(stderr, "SET_BAUD failed\n");
+        return -1;
+    }
+    return 0;
+}
+
+static int run_get_baud_match(struct FujiNetNIORequest *req,
+                              struct MsgPort *port,
+                              const struct IORequest *open_request,
+                              unsigned long want, uint8_t *baud_bytes)
+{
+    unsigned long got;
+
+    if (do_control(req, port, open_request, FUJINET_NIO_CMD_GET_BAUD, NULL, 0,
+                   baud_bytes, 4) != 0 ||
+        req->fn_nio_error != 0 || req->fn_response_length != 4) {
+        fprintf(stderr, "GET_BAUD failed\n");
+        return -1;
+    }
+    got = read_le32(baud_bytes);
+    if (!fn_nio_exchange_warm_baud_ok(want, got)) {
+        fprintf(stderr, "WARM baud mismatch got=%lu want=%lu\n", got, want);
+        return -1;
+    }
+    return 0;
+}
+
+static int run_warmup(struct FujiNetNIORequest *req, struct MsgPort *port,
+                      const struct IORequest *open_request,
+                      const uint8_t *clock_req, int clock_len,
+                      uint8_t *response, unsigned response_cap)
+{
+    fill_exchange(req, port, clock_req, (UWORD)clock_len, response,
+                  (UWORD)response_cap);
+    attach_open(req, open_request);
+    if (DoIO(&req->fn_io) != 0 || !clock_response_ok(req, response)) {
+        fprintf(stderr, "WARMUP failed\n");
+        return -1;
+    }
+    return 0;
+}
+
+static int run_matrix(int argc, char **argv)
+{
+    struct fn_nio_exchange_opts opts;
+    struct MsgPort *port;
+    struct IORequest open_request;
+    struct FujiNetNIORequest req;
+    uint8_t request[MATRIX_PACKET_CAP];
+    uint8_t response[MATRIX_PACKET_CAP];
+    uint8_t clock_req[FN_HEADER_SIZE];
+    uint8_t baud_bytes[4];
+    int steps[4];
+    int nsteps;
+    int request_len;
+    int clock_len;
+    unsigned trial;
+    int status = RETURN_OK;
+
+    if (fn_nio_exchange_opts_parse(argc, argv, &opts) != 0) {
+        print_matrix_usage();
+        return RETURN_ERROR;
+    }
+
+    nsteps = fn_nio_exchange_opts_plan(&opts, steps, 4);
+    if (nsteps < 0) return RETURN_FAIL;
+
+    clock_len = fn_nio_exchange_build_clock_get(clock_req, sizeof(clock_req));
+    if (clock_len < 0) return RETURN_FAIL;
+    if (opts.type == FN_NIO_EXCHANGE_TYPE_CLOCK) {
+        request_len = fn_nio_exchange_build_clock_get(request, sizeof(request));
+    } else if (opts.type == FN_NIO_EXCHANGE_TYPE_HOST_GET) {
+        request_len = fn_nio_exchange_build_host_get(request, sizeof(request));
+    } else {
+        request_len = fn_nio_exchange_build_file_list(
+            request, sizeof(request), opts.uri, opts.size);
+    }
+    if (request_len < 0) return RETURN_FAIL;
+
+    port = CreatePort(NULL, 0);
+    if (port == NULL) return RETURN_FAIL;
+    memset(&open_request, 0, sizeof(open_request));
+    if (OpenDevice((CONST_STRPTR)FUJINET_NIO_DEVICE_NAME,
+                   FUJINET_NIO_DEVICE_UNIT, &open_request, 0) != 0) {
+        DeletePort(port);
+        fprintf(stderr, "Cannot open %s\n", FUJINET_NIO_DEVICE_NAME);
+        return RETURN_FAIL;
+    }
+
+    open_elapsed_timer();
+
+    for (trial = 0; trial < opts.trials; ++trial) {
+        char elapsed[32];
+        int si;
+        int abort_trials = 0;
+
+        for (si = 0; si < nsteps; ++si) {
+            int step = steps[si];
+            int step_failed = 0;
+
+            if (step == FN_NIO_EXCHANGE_STEP_SET_BAUD) {
+                step_failed = run_set_baud(&req, port, &open_request, opts.baud,
+                                           baud_bytes);
+            } else if (step == FN_NIO_EXCHANGE_STEP_GET_BAUD) {
+                step_failed = run_get_baud_match(&req, port, &open_request,
+                                                 opts.baud, baud_bytes);
+            } else if (step == FN_NIO_EXCHANGE_STEP_WARMUP) {
+                step_failed = run_warmup(&req, port, &open_request, clock_req,
+                                         clock_len, response,
+                                         sizeof(response));
+            } else if (step == FN_NIO_EXCHANGE_STEP_MEASURE) {
+                fill_exchange(&req, port, request, (UWORD)request_len,
+                              response, sizeof(response));
+                attach_open(&req, &open_request);
+                do_measured_exchange(&req, elapsed);
+                print_trial_log(&req, opts.backend, elapsed);
+                if (req.fn_io.io_Error != 0 || req.fn_nio_error != FN_OK)
+                    step_failed = -1;
+            } else {
+                step_failed = -1;
+            }
+
+            if (step_failed != 0) {
+                status = RETURN_FAIL;
+                if (fn_nio_exchange_step_failure_aborts(step)) {
+                    abort_trials = 1;
+                    break;
+                }
+            }
+        }
+        if (abort_trials) break;
+    }
+
+    close_elapsed_timer();
+    CloseDevice(&open_request);
+    DeletePort(port);
+    return status;
+}
+
+int main(int argc, char **argv)
 {
     struct MsgPort *port;
     struct FujiNetNIORequest req;
@@ -260,6 +573,8 @@ int main(void)
     struct Process *proc_a;
     struct Process *proc_b;
     int failures = 0;
+
+    if (argc >= 2) return run_matrix(argc, argv);
 
     if (!isolation_ok()) return RETURN_FAIL;
 

@@ -10,12 +10,13 @@ EXEC_BOUNDARY_TEST := $(BUILD_DIR)/test_fujinet_exec_boundary
 RESIDENT_TEST := $(BUILD_DIR)/test_fujinet_disk_resident
 NIO_DEVICE_TEST := $(BUILD_DIR)/test_fujinet_nio_device
 SERIAL_CHANNEL_TEST := $(BUILD_DIR)/test_fujinet_nio_serial_channel
+EXCHANGE_OPTS_TEST := $(BUILD_DIR)/test_fujinet_nio_exchange_opts
 LIBRARY := $(LIB_ROOT)/build/fujinet-nio-linux.a
 
 .PHONY: all test library clean
 
 all: $(TEST) $(LINK_TEST) $(QUEUE_TEST) $(EXEC_BOUNDARY_TEST) $(RESIDENT_TEST) \
-	$(NIO_DEVICE_TEST) $(SERIAL_CHANNEL_TEST)
+	$(NIO_DEVICE_TEST) $(SERIAL_CHANNEL_TEST) $(EXCHANGE_OPTS_TEST)
 
 $(TEST): test_fujinet_disk_driver.c \
 		$(DRIVER_ROOT)/common/fujinet_disk_driver.c \
@@ -66,8 +67,13 @@ $(SERIAL_CHANNEL_TEST): test_fujinet_nio_serial_channel.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/include -I$(LIB_ROOT)/include $^ -o $@
 
+$(EXCHANGE_OPTS_TEST): test_fujinet_nio_exchange_opts.c \
+		$(DRIVER_ROOT)/tools/fujinet_nio_exchange_opts.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/tools -I$(DRIVER_ROOT)/include -I$(LIB_ROOT)/include $^ -o $@
+
 test: $(TEST) $(LINK_TEST) $(QUEUE_TEST) $(EXEC_BOUNDARY_TEST) $(RESIDENT_TEST) \
-		$(NIO_DEVICE_TEST) $(SERIAL_CHANNEL_TEST)
+		$(NIO_DEVICE_TEST) $(SERIAL_CHANNEL_TEST) $(EXCHANGE_OPTS_TEST)
 	./$(TEST)
 	./$(LINK_TEST)
 	./$(QUEUE_TEST)
@@ -75,6 +81,7 @@ test: $(TEST) $(LINK_TEST) $(QUEUE_TEST) $(EXEC_BOUNDARY_TEST) $(RESIDENT_TEST) 
 	./$(RESIDENT_TEST)
 	./$(NIO_DEVICE_TEST)
 	./$(SERIAL_CHANNEL_TEST)
+	./$(EXCHANGE_OPTS_TEST)
 
 clean:
 	rm -rf $(BUILD_DIR)

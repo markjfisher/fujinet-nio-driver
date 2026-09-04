@@ -289,6 +289,14 @@ static void test_baud_controls(void)
     CHECK("baud get FN_OK", get.fn_nio_error == FN_OK);
     CHECK("baud get length", get.fn_response_length == 4);
     CHECK("baud get value", read_le32(baud_bytes) == 115200);
+
+    replies = 0;
+    init_exchange(&exchange, request, sizeof(request), response, sizeof(response));
+    fujinet_nio_native_test_open(&exchange.fn_io, FUJINET_NIO_DEVICE_UNIT);
+    fujinet_nio_native_test_begin_io(&exchange.fn_io);
+    fujinet_nio_native_test_worker_step();
+    CHECK("SET_BAUD next EXCHANGE reopens backend", backend_opens == 2);
+    CHECK("SET_BAUD next EXCHANGE ran", backend_exchanges == 2);
 }
 
 static void test_empty_request(void)

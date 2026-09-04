@@ -216,12 +216,13 @@ static void session_flush(void *context)
         }
         available = serial_req->IOSer.io_Actual;
 
-        /* IO_STATF_OVERRUN can be latched in CIA hardware status even when
-         * the ring buffer is empty (available == 0).  CMD_READ returns
-         * immediately when the flag is set, consuming it.  Drain it here
-         * before CMD_WRITE so the first real CMD_READ sees clean state.
-         * This catches the flag whether it was left by SDCMD_SETPARAMS or
-         * by a previous failed exchange. */
+        /* IO_STATF_OVERRUN is a Paula UART receive overrun: the prior RX
+         * character was not picked up from SERDATR / INTF_RBF before the next
+         * character completed. serial.device can report that flag via
+         * SDCMD_QUERY even when the software ring is empty (available == 0).
+         * CMD_READ returns immediately when the flag is set, consuming it.
+         * Drain it here before CMD_WRITE so the first real CMD_READ sees
+         * clean state, whether SETPARAMS or a previous failed exchange left it. */
         if (serial_req->io_Status & IO_STATF_OVERRUN) {
             serial_req->IOSer.io_Command = CMD_READ;
             serial_req->IOSer.io_Data = (APTR)&drain_byte;
@@ -346,15 +347,12 @@ uint8_t backend_open(void)
     serial_req->io_WriteLen = 8;
     serial_req->io_StopBits = 1;
     serial_req->io_RBufLen = FN_SERIAL_BACKEND_RBUF_SIZE;
-    /* SERF_RAD_BOOGIE raises the serial receive ISR to Level 6 (the highest
-     * maskable priority on the Amiga). Without it, at 57,600 baud a new byte
-     * can arrive at the CIA UART hardware shift register before the standard
-     * Level-5 ISR has moved the previous byte to the software buffer, producing
-     * the IO_STATF_OVERRUN seen on the first CMD_READ. SERF_RAD_BOOGIE skips
-     * break/parity checking, which is acceptable: FujiBus uses SLIP framing
-     * and its own packet integrity; we do not rely on RS-232 line-status bits.
-     * Receive overrun detection (IO_STATF_OVERRUN via SerErr_LineErr / CMD_READ
-     * io_Error = IOERR_BADLENGTH mapping) is preserved regardless of this flag. */
+    /* SERF_RAD_BOOGIE skips extra serial.device checks under 8-bit, no-parity,
+     * no-XON/XOFF. It does not change Paula TX/RX direction, SERPER, or create
+     * a FIFO. Overrun remains a Paula RBF miss: the prior received character
+     * was not cleared before the next one completed. Detection via
+     * IO_STATF_OVERRUN / SerErr_LineErr is preserved. FujiBus uses SLIP
+     * framing and its own packet integrity rather than RS-232 line-status bits. */
     serial_req->io_SerFlags = SERF_XDISABLED | SERF_RAD_BOOGIE;
     serial_req->IOSer.io_Command = SDCMD_SETPARAMS;
     if (DoIO((struct IORequest *)serial_req) != 0) {
@@ -362,14 +360,11 @@ uint8_t backend_open(void)
         return FN_ERR_IO;
     }
 
-    /* A baud-rate transition in SDCMD_SETPARAMS can latch IO_STATF_OVERRUN
-     * in the CIA 8520 hardware status register. There is no Amiga API to
-     * clear this flag directly (CMD_CLEAR only discards buffered data).
-     * NOTE: IO_STATF_OVERRUN is NOT present immediately after SDCMD_SETPARAMS.
-     * It is latched by the CIA hardware during the TX→RX mode transition at
-     * the end of the first CMD_WRITE of each session.  This drain does not
-     * fire on the first exchange; it is retained for any future path that
-     * does set the flag before a CMD_READ. */
+    /* SDCMD_SETPARAMS can leave IO_STATF_OVERRUN latched. There is no Amiga
+     * API to clear it directly (CMD_CLEAR only discards buffered data). This
+     * is a Paula receive-overrun latch, not a CIA UART or TX→RX mode switch —
+     * Paula RX and TX are independent. Drain if the flag is already visible
+     * so the first CMD_READ sees clean state. */
     serial_req->IOSer.io_Command = SDCMD_QUERY;
     serial_req->IOSer.io_Data = NULL;
     serial_req->IOSer.io_Length = 0;
@@ -419,12 +414,11 @@ uint8_t backend_open(void)
 uint8_t backend_recover_from_overrun(void)
 {
     /* If the last transport error was specifically IO_STATF_OVERRUN, keep
-     * serial.device and timer.device open (preserving CIA Level-6 ISR warm
-     * state) and reset only the SLIP session layer.  The next exchange will
-     * skip SDCMD_SETPARAMS entirely, matching the REUSE behaviour that
-     * reliably works.  Returns 1 if recovery was applied (caller must NOT
-     * call backend_close), 0 if it was a different error (caller must close
-     * normally). */
+     * serial.device and timer.device open (warm serial backend; Paula RX
+     * remains independent of TX) and reset only the SLIP session layer. The
+     * next exchange skips SDCMD_SETPARAMS, matching REUSE. Returns 1 if
+     * recovery was applied (caller must NOT call backend_close), 0 if it was
+     * a different error (caller must close normally). */
     if (serial_failure_io_error != SerErr_LineErr ||
         !(serial_failure_status & IO_STATF_OVERRUN) ||
         !serial_open || !timer_open)
