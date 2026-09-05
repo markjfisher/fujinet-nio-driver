@@ -1,5 +1,4 @@
 #include "fujinet_disk_driver.h"
-#include "fujinet_nio_checksum.h"
 #include "fujinet_nio_endian.h"
 #include "fn_platform.h"
 #include "fn_protocol.h"
@@ -38,7 +37,8 @@ static uint8_t is_retryable_sector_request(const uint8_t *request,
 
     return request[0] == FN_DEVICE_DISK &&
            encoded_length == request_length &&
-           request[4] == packet_checksum(request, request_length, true) &&
+           request[FN_CHECKSUM_OFFSET] ==
+               fn_calc_packet_checksum(request, request_length) &&
            request[5] == 0 &&
            request[6] == FN_DISK_PROTOCOL_VERSION &&
            slot >= FUJINET_DISK_FIRST_SLOT &&

@@ -35,7 +35,6 @@ $(LIBRARY): library
 
 $(LINK_TEST): library test_fujinet_nio_client_link.c \
 		$(DRIVER_ROOT)/channels/rs232/fujinet_nio_client.c \
-		$(DRIVER_ROOT)/include/fujinet_nio_checksum.h \
 		$(DRIVER_ROOT)/include/fujinet_nio_endian.h $(LIBRARY)
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/include -I$(DRIVER_ROOT)/public/include -I$(LIB_ROOT)/include \
@@ -45,7 +44,6 @@ $(LINK_TEST): library test_fujinet_nio_client_link.c \
 
 $(RETRY_TEST): library test_fujinet_nio_client_retry.c \
 		$(DRIVER_ROOT)/channels/rs232/fujinet_nio_client.c \
-		$(DRIVER_ROOT)/include/fujinet_nio_checksum.h \
 		$(DRIVER_ROOT)/include/fujinet_nio_endian.h $(LIBRARY)
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/include -I$(DRIVER_ROOT)/public/include -I$(LIB_ROOT)/include \
@@ -71,7 +69,6 @@ $(RESIDENT_TEST): test_fujinet_disk_resident.c \
 $(NIO_DEVICE_TEST): test_fujinet_nio_device.c \
 		$(DRIVER_ROOT)/nio.device/fujinet_nio_device.c \
 		$(DRIVER_ROOT)/common/fujinet_io_queue.c \
-		$(DRIVER_ROOT)/include/fujinet_nio_checksum.h \
 		$(DRIVER_ROOT)/include/fujinet_nio_endian.h
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -Wno-unused-function -DFUJINET_NIO_NATIVE_TEST -Istubs \
@@ -84,14 +81,13 @@ $(SERIAL_CHANNEL_TEST): test_fujinet_nio_serial_channel.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/include -I$(LIB_ROOT)/include $^ -o $@
 
-$(EXCHANGE_OPTS_TEST): test_fujinet_nio_exchange_opts.c \
+$(EXCHANGE_OPTS_TEST): library test_fujinet_nio_exchange_opts.c \
 		$(DRIVER_ROOT)/tools/fujinet_nio_exchange_opts.c \
-		$(DRIVER_ROOT)/include/fujinet_nio_checksum.h \
-		$(DRIVER_ROOT)/include/fujinet_nio_endian.h
+		$(DRIVER_ROOT)/include/fujinet_nio_endian.h $(LIBRARY)
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/tools -I$(DRIVER_ROOT)/include -I$(LIB_ROOT)/include \
 		test_fujinet_nio_exchange_opts.c \
-		$(DRIVER_ROOT)/tools/fujinet_nio_exchange_opts.c -o $@
+		$(DRIVER_ROOT)/tools/fujinet_nio_exchange_opts.c $(LIBRARY) -o $@
 
 test: $(TEST) $(LINK_TEST) $(RETRY_TEST) $(QUEUE_TEST) $(EXEC_BOUNDARY_TEST) $(RESIDENT_TEST) \
 		$(NIO_DEVICE_TEST) $(SERIAL_CHANNEL_TEST) $(EXCHANGE_OPTS_TEST)

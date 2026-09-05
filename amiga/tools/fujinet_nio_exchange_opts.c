@@ -4,7 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "fujinet_nio_checksum.h"
 #include "fujinet_nio_endian.h"
 #include "fn_protocol.h"
 
@@ -191,7 +190,7 @@ static int build_clock_command(uint8_t *buf, unsigned cap, uint8_t command)
     buf[1] = command;
     fujinet_nio_put_le16(buf + 2, FN_HEADER_SIZE);
     buf[5] = 0;
-    buf[4] = packet_checksum(buf, FN_HEADER_SIZE, true);
+    buf[FN_CHECKSUM_OFFSET] = fn_calc_packet_checksum(buf, FN_HEADER_SIZE);
     return FN_HEADER_SIZE;
 }
 
@@ -215,7 +214,7 @@ int fn_nio_exchange_build_host_get(uint8_t *buf, unsigned cap)
     fujinet_nio_put_le16(buf + 2, total);
     buf[5] = 0;
     buf[6] = FN_NIO_EXCH_HOST_VERSION;
-    buf[4] = packet_checksum(buf, total, true);
+    buf[FN_CHECKSUM_OFFSET] = fn_calc_packet_checksum(buf, total);
     return (int)total;
 }
 
@@ -253,6 +252,6 @@ int fn_nio_exchange_build_file_list(uint8_t *buf, unsigned cap,
     offset += 2;
     fujinet_nio_put_le16(buf + offset, (uint16_t)max_payload_bytes);
     offset += 2;
-    buf[4] = packet_checksum(buf, offset, true);
+    buf[FN_CHECKSUM_OFFSET] = fn_calc_packet_checksum(buf, offset);
     return (int)offset;
 }

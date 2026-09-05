@@ -88,8 +88,7 @@ static void reset_harness(void)
 static void finish_packet(uint8_t *packet, uint16_t length)
 {
     put_u16le(packet + 2, length);
-    packet[4] = 0;
-    packet[4] = packet_checksum(packet, length, true);
+    packet[FN_CHECKSUM_OFFSET] = fn_calc_packet_checksum(packet, length);
 }
 
 static void build_read_request(uint8_t *packet, uint8_t slot, uint32_t lba,
@@ -354,8 +353,8 @@ static void test_malformed_sector_packets(void)
 
     build_read_request(request, 1, 0, FUJINET_DISK_BLOCK_SIZE);
     put_u16le(request + 2, NIO_DISK_READ_REQUEST_SIZE - 1);
-    request[4] = 0;
-    request[4] = packet_checksum(request, NIO_DISK_READ_REQUEST_SIZE, true);
+    request[FN_CHECKSUM_OFFSET] =
+        fn_calc_packet_checksum(request, NIO_DISK_READ_REQUEST_SIZE);
     expect_invalid_single_attempt("encoded length mismatch", request,
                                   NIO_DISK_READ_REQUEST_SIZE);
 
