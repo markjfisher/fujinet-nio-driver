@@ -5,6 +5,7 @@ LIB_ROOT ?= ../../../fujinet-nio-lib
 BUILD_DIR := build
 TEST := $(BUILD_DIR)/test_fujinet_disk_driver
 LINK_TEST := $(BUILD_DIR)/test_fujinet_nio_client_link
+RETRY_TEST := $(BUILD_DIR)/test_fujinet_nio_client_retry
 QUEUE_TEST := $(BUILD_DIR)/test_fujinet_io_queue
 EXEC_BOUNDARY_TEST := $(BUILD_DIR)/test_fujinet_exec_boundary
 RESIDENT_TEST := $(BUILD_DIR)/test_fujinet_disk_resident
@@ -15,7 +16,7 @@ LIBRARY := $(LIB_ROOT)/build/fujinet-nio-linux.a
 
 .PHONY: all test library clean
 
-all: $(TEST) $(LINK_TEST) $(QUEUE_TEST) $(EXEC_BOUNDARY_TEST) $(RESIDENT_TEST) \
+all: $(TEST) $(LINK_TEST) $(RETRY_TEST) $(QUEUE_TEST) $(EXEC_BOUNDARY_TEST) $(RESIDENT_TEST) \
 	$(NIO_DEVICE_TEST) $(SERIAL_CHANNEL_TEST) $(EXCHANGE_OPTS_TEST)
 
 $(TEST): test_fujinet_disk_driver.c \
@@ -39,6 +40,13 @@ $(LINK_TEST): library test_fujinet_nio_client_link.c \
 		test_fujinet_nio_client_link.c \
 		$(DRIVER_ROOT)/channels/rs232/fujinet_nio_client.c \
 		$(LIBRARY) -o $@
+
+$(RETRY_TEST): library test_fujinet_nio_client_retry.c \
+		$(DRIVER_ROOT)/channels/rs232/fujinet_nio_client.c $(LIBRARY)
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/include -I$(DRIVER_ROOT)/public/include -I$(LIB_ROOT)/include \
+		test_fujinet_nio_client_retry.c $(LIBRARY) \
+		-Wl,--wrap=fn_transport_exchange_buffers -o $@
 
 $(QUEUE_TEST): test_fujinet_io_queue.c $(DRIVER_ROOT)/common/fujinet_io_queue.c
 	@mkdir -p $(BUILD_DIR)
@@ -72,10 +80,11 @@ $(EXCHANGE_OPTS_TEST): test_fujinet_nio_exchange_opts.c \
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/tools -I$(DRIVER_ROOT)/include -I$(LIB_ROOT)/include $^ -o $@
 
-test: $(TEST) $(LINK_TEST) $(QUEUE_TEST) $(EXEC_BOUNDARY_TEST) $(RESIDENT_TEST) \
+test: $(TEST) $(LINK_TEST) $(RETRY_TEST) $(QUEUE_TEST) $(EXEC_BOUNDARY_TEST) $(RESIDENT_TEST) \
 		$(NIO_DEVICE_TEST) $(SERIAL_CHANNEL_TEST) $(EXCHANGE_OPTS_TEST)
 	./$(TEST)
 	./$(LINK_TEST)
+	./$(RETRY_TEST)
 	./$(QUEUE_TEST)
 	./$(EXEC_BOUNDARY_TEST)
 	./$(RESIDENT_TEST)
