@@ -45,6 +45,7 @@ int fn_nio_exchange_format_trial_log(char *buf, unsigned cap,
                                      unsigned cause, unsigned native,
                                      unsigned status, int backend);
 int fn_nio_exchange_build_clock_get(uint8_t *buf, unsigned cap);
+int fn_nio_exchange_build_clock_get_tz(uint8_t *buf, unsigned cap);
 int fn_nio_exchange_build_host_get(uint8_t *buf, unsigned cap);
 int fn_nio_exchange_build_file_list(uint8_t *buf, unsigned cap,
                                     const char *uri, unsigned max_payload_bytes);

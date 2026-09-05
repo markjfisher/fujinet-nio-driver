@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "fujinet_nio_device.h"
+#include "fujinet_nio_endian.h"
 #include "fujinet_nio_exchange_opts.h"
 #include "fujinet-nio.h"
 #include "fn_protocol.h"
@@ -21,7 +22,6 @@
 #define MATRIX_PACKET_CAP 1024
 
 #define COMPLETION_URI "host:/amiga-e2e-complete/nio-broker-isolated"
-#define FILE_CMD_LIST 0x02
 
 struct exchange_job {
     volatile ULONG started;
@@ -39,60 +39,6 @@ struct exchange_job {
 
 static struct exchange_job job_a;
 static struct exchange_job job_b;
-
-static uint8_t packet_checksum(const uint8_t *data, uint16_t len)
-{
-    uint16_t chk = 0;
-    uint16_t i;
-    for (i = 0; i < len; ++i) {
-        chk = (uint16_t)(chk + data[i]);
-        chk = (uint16_t)(((chk >> 8) + (chk & 0xFF)) & 0xFFFF);
-    }
-    return (uint8_t)(chk & 0xFF);
-}
-
-static uint16_t build_clock_cmd(uint8_t *buf, uint8_t cmd)
-{
-    buf[0] = FN_DEVICE_CLOCK;
-    buf[1] = cmd;
-    buf[2] = FN_HEADER_SIZE;
-    buf[3] = 0;
-    buf[4] = 0;
-    buf[5] = 0;
-    buf[4] = packet_checksum(buf, FN_HEADER_SIZE);
-    return FN_HEADER_SIZE;
-}
-
-static uint16_t build_clock_get(uint8_t *buf)
-{
-    return build_clock_cmd(buf, FN_CMD_CLOCK_GET);
-}
-
-static uint16_t build_file_list(uint8_t *buf, const char *uri)
-{
-    uint16_t uri_len = (uint16_t)strlen(uri);
-    uint16_t payload = (uint16_t)(1 + 2 + uri_len + 2 + 2);
-    uint16_t total = (uint16_t)(FN_HEADER_SIZE + payload);
-    uint16_t offset = 0;
-
-    buf[offset++] = FN_DEVICE_FILE;
-    buf[offset++] = FILE_CMD_LIST;
-    buf[offset++] = (uint8_t)(total & 0xFF);
-    buf[offset++] = (uint8_t)(total >> 8);
-    buf[offset++] = 0;
-    buf[offset++] = 0;
-    buf[offset++] = 1;
-    buf[offset++] = (uint8_t)(uri_len & 0xFF);
-    buf[offset++] = (uint8_t)(uri_len >> 8);
-    memcpy(buf + offset, uri, uri_len);
-    offset = (uint16_t)(offset + uri_len);
-    buf[offset++] = 0;
-    buf[offset++] = 0;
-    buf[offset++] = 0;
-    buf[offset++] = 1;
-    buf[4] = packet_checksum(buf, offset);
-    return offset;
-}
 
 static void fill_exchange(struct FujiNetNIORequest *req, struct MsgPort *port,
                           const uint8_t *request, UWORD request_len,
@@ -268,20 +214,6 @@ static int isolation_ok(void)
     return 1;
 }
 
-static void write_le32(UBYTE *data, ULONG value)
-{
-    data[0] = (UBYTE)value;
-    data[1] = (UBYTE)(value >> 8);
-    data[2] = (UBYTE)(value >> 16);
-    data[3] = (UBYTE)(value >> 24);
-}
-
-static ULONG read_le32(const UBYTE *data)
-{
-    return (ULONG)data[0] | ((ULONG)data[1] << 8) |
-           ((ULONG)data[2] << 16) | ((ULONG)data[3] << 24);
-}
-
 static struct MsgPort *elapsed_port;
 static struct timerequest *elapsed_req;
 static uint8_t elapsed_ready;
@@ -445,9 +377,9 @@ static int run_set_baud(struct FujiNetNIORequest *req, struct MsgPort *port,
             fprintf(stderr, "GET_BAUD failed\n");
             return -1;
         }
-        set_baud = read_le32(baud_bytes);
+        set_baud = fujinet_nio_get_le32(baud_bytes);
     }
-    write_le32(baud_bytes, set_baud);
+    fujinet_nio_put_le32(baud_bytes, set_baud);
     if (do_control(req, port, open_request, FUJINET_NIO_CMD_SET_BAUD,
                    baud_bytes, 4, NULL, 0) != 0 ||
         req->fn_nio_error != 0) {
@@ -470,7 +402,7 @@ static int run_get_baud_match(struct FujiNetNIORequest *req,
         fprintf(stderr, "GET_BAUD failed\n");
         return -1;
     }
-    got = read_le32(baud_bytes);
+    got = fujinet_nio_get_le32(baud_bytes);
     if (!fn_nio_exchange_warm_baud_ok(want, got)) {
         fprintf(stderr, "WARM baud mismatch got=%lu want=%lu\n", got, want);
         return -1;
@@ -606,12 +538,13 @@ int main(int argc, char **argv)
     uint8_t bad_req[1];
     uint8_t list_req[128];
     uint8_t response[256];
-    uint16_t clock_len;
-    uint16_t list_len;
+    int clock_len;
+    int list_len;
     LONG serial_after;
     ULONG spins;
     struct Process *proc_a;
     struct Process *proc_b;
+    int packet_len;
     int failures = 0;
 
     /* Redirected logs must not sit in a full stdio buffer across a crash. */
@@ -621,10 +554,11 @@ int main(int argc, char **argv)
 
     if (!isolation_ok()) return RETURN_FAIL;
 
+    clock_len = fn_nio_exchange_build_clock_get(clock_req, sizeof(clock_req));
+    if (clock_len < 0) return RETURN_FAIL;
     port = CreatePort(NULL, 0);
     if (port == NULL) return RETURN_FAIL;
 
-    clock_len = build_clock_get(clock_req);
     init_req(&req, port, clock_req, clock_len, response, sizeof(response));
     if (OpenDevice((CONST_STRPTR)FUJINET_NIO_DEVICE_NAME,
                    FUJINET_NIO_DEVICE_UNIT, &req.fn_io, 0) != 0) {
@@ -706,8 +640,14 @@ int main(int argc, char **argv)
     memset(&job_b, 0, sizeof(job_b));
     spawned_a = 0;
     spawned_b = 0;
-    job_a.request_length = build_clock_cmd(job_a.request, FN_CMD_CLOCK_GET);
-    job_b.request_length = build_clock_cmd(job_b.request, FN_CMD_CLOCK_GET_TZ);
+    packet_len = fn_nio_exchange_build_clock_get(
+        job_a.request, sizeof(job_a.request));
+    if (packet_len < 0) return RETURN_FAIL;
+    job_a.request_length = (UWORD)packet_len;
+    packet_len = fn_nio_exchange_build_clock_get_tz(
+        job_b.request, sizeof(job_b.request));
+    if (packet_len < 0) return RETURN_FAIL;
+    job_b.request_length = (UWORD)packet_len;
     proc_a = CreateNewProcTags(NP_Entry, (ULONG)job_a_entry, NP_StackSize,
                                8192, NP_Name, (ULONG) "nio-exch-a", TAG_DONE);
     if (proc_a != NULL) spawned_a = 1;
@@ -752,9 +692,12 @@ int main(int argc, char **argv)
 
     wait_spawned_tasks_gone();
 
+    list_len = fn_nio_exchange_build_file_list(
+        list_req, sizeof(list_req), COMPLETION_URI, sizeof(response));
+    if (list_len < 0) return RETURN_FAIL;
     port = CreatePort(NULL, 0);
     if (port == NULL) return RETURN_FAIL;
-    list_len = build_file_list(list_req, COMPLETION_URI);
+
     init_req(&req, port, list_req, list_len, response, sizeof(response));
     if (OpenDevice((CONST_STRPTR)FUJINET_NIO_DEVICE_NAME,
                    FUJINET_NIO_DEVICE_UNIT, &req.fn_io, 0) != 0) {

@@ -6,6 +6,20 @@
 #define MAX_CALLS 8U
 #define MAX_REQUEST_SIZE NIO_DISK_WRITE_REQUEST_SIZE
 
+static uint8_t packet_checksum(const uint8_t *request,
+                               uint16_t request_length)
+{
+    uint16_t checksum = 0;
+    uint16_t i;
+
+    for (i = 0; i < request_length; ++i) {
+        if (i == 4) continue;
+        checksum = (uint16_t)(checksum + request[i]);
+        checksum = (uint16_t)((checksum >> 8) + (checksum & 0xFF));
+    }
+    return (uint8_t)checksum;
+}
+
 static unsigned failures;
 static unsigned transport_calls;
 static uint8_t scripted_results[MAX_CALLS];

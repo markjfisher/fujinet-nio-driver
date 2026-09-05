@@ -8,20 +8,7 @@
 #include <string.h>
 
 #include "fujinet_nio_device.h"
-
-static void write_le32(UBYTE *data, ULONG value)
-{
-    data[0] = (UBYTE)value;
-    data[1] = (UBYTE)(value >> 8);
-    data[2] = (UBYTE)(value >> 16);
-    data[3] = (UBYTE)(value >> 24);
-}
-
-static ULONG read_le32(const UBYTE *data)
-{
-    return (ULONG)data[0] | ((ULONG)data[1] << 8) |
-           ((ULONG)data[2] << 16) | ((ULONG)data[3] << 24);
-}
+#include "fujinet_nio_endian.h"
 
 static void init_request(struct FujiNetNIORequest *req, struct MsgPort *port,
                          UWORD command)
@@ -68,7 +55,7 @@ int main(int argc, char **argv)
         init_request(&req, port, FUJINET_NIO_CMD_SET_BAUD);
         req.fn_io.io_Device = open_request.io_Device;
         req.fn_io.io_Unit = open_request.io_Unit;
-        write_le32(data, baud);
+        fujinet_nio_put_le32(data, baud);
         req.fn_request_data = data;
         req.fn_request_length = sizeof(data);
         if (DoIO(&req.fn_io) != 0 || req.fn_nio_error != 0) {
@@ -93,7 +80,8 @@ int main(int argc, char **argv)
         DeletePort(port);
         return RETURN_FAIL;
     }
-    printf("FujiNet NIO baud: %lu\n", (unsigned long)read_le32(data));
+    printf("FujiNet NIO baud: %lu\n",
+           (unsigned long)fujinet_nio_get_le32(data));
     CloseDevice(&open_request);
     DeletePort(port);
     return RETURN_OK;

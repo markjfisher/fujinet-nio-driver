@@ -1,4 +1,5 @@
 #include "fujinet_disk_driver.h"
+#include "fujinet_nio_endian.h"
 #include "fn_platform.h"
 #include "fn_protocol.h"
 
@@ -10,8 +11,8 @@ enum {
     NIO_DISK_EXCHANGE_ATTEMPTS = 3
 };
 
-static uint8_t packet_checksum(const uint8_t *request,
-                               uint16_t request_length)
+static uint8_t retry_request_checksum(const uint8_t *request,
+                                      uint16_t request_length)
 {
     uint16_t checksum = 0;
     uint16_t i;
@@ -45,13 +46,13 @@ static uint8_t is_retryable_sector_request(const uint8_t *request,
          command != NIO_DISK_WRITE_SECTOR))
         return 0;
 
-    encoded_length = (uint16_t)request[2] | ((uint16_t)request[3] << 8);
-    sector_length = (uint16_t)request[12] | ((uint16_t)request[13] << 8);
+    encoded_length = fujinet_nio_get_le16(request + 2);
+    sector_length = fujinet_nio_get_le16(request + 12);
     slot = request[7];
 
     return request[0] == FN_DEVICE_DISK &&
            encoded_length == request_length &&
-           request[4] == packet_checksum(request, request_length) &&
+           request[4] == retry_request_checksum(request, request_length) &&
            request[5] == 0 &&
            request[6] == FN_DISK_PROTOCOL_VERSION &&
            slot >= FUJINET_DISK_FIRST_SLOT &&

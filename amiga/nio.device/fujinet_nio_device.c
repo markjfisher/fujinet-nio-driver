@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "fujinet_nio_device.h"
+#include "fujinet_nio_endian.h"
 #include "fujinet_nio_backend.h"
 #include "fujinet_io_queue.h"
 #include "fujinet-nio.h"
@@ -185,20 +186,6 @@ static void process_exchange(struct fujinet_nio_device_base *base,
     ReplyMsg(&req->fn_io.io_Message);
 }
 
-static uint32_t read_le32(const UBYTE *data)
-{
-    return (uint32_t)data[0] | ((uint32_t)data[1] << 8) |
-           ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24);
-}
-
-static void write_le32(UBYTE *data, uint32_t value)
-{
-    data[0] = (UBYTE)value;
-    data[1] = (UBYTE)(value >> 8);
-    data[2] = (UBYTE)(value >> 16);
-    data[3] = (UBYTE)(value >> 24);
-}
-
 static void process_control(struct fujinet_nio_device_base *base,
                             struct FujiNetNIORequest *req)
 {
@@ -212,13 +199,15 @@ static void process_control(struct fujinet_nio_device_base *base,
         if (base->backend_set_baud_fn == NULL) {
             nio_error = FN_ERR_UNSUPPORTED;
         } else {
-            nio_error = base->backend_set_baud_fn(read_le32(req->fn_request_data));
+            nio_error = base->backend_set_baud_fn(
+                fujinet_nio_get_le32(req->fn_request_data));
         }
     } else if (req->fn_io.io_Command == FUJINET_NIO_CMD_GET_BAUD) {
         if (base->backend_get_baud_fn == NULL) {
             nio_error = FN_ERR_UNSUPPORTED;
         } else {
-            write_le32(req->fn_response_data, base->backend_get_baud_fn());
+            fujinet_nio_put_le32(req->fn_response_data,
+                                base->backend_get_baud_fn());
             req->fn_response_length = 4;
         }
     } else {

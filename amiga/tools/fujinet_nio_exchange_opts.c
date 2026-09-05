@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "fujinet_nio_endian.h"
 #include "fn_protocol.h"
 
 #define FN_NIO_EXCH_FILE_CMD_LIST 0x02
@@ -194,17 +195,26 @@ int fn_nio_exchange_format_trial_log(char *buf, unsigned cap,
     return 0;
 }
 
-int fn_nio_exchange_build_clock_get(uint8_t *buf, unsigned cap)
+static int build_clock_command(uint8_t *buf, unsigned cap, uint8_t command)
 {
     if (buf == NULL || cap < FN_HEADER_SIZE) return -1;
     buf[0] = FN_DEVICE_CLOCK;
-    buf[1] = FN_CMD_CLOCK_GET;
-    buf[2] = (uint8_t)(FN_HEADER_SIZE & 0xFF);
-    buf[3] = (uint8_t)(FN_HEADER_SIZE >> 8);
+    buf[1] = command;
+    fujinet_nio_put_le16(buf + 2, FN_HEADER_SIZE);
     buf[4] = 0;
     buf[5] = 0;
     buf[4] = packet_checksum(buf, FN_HEADER_SIZE);
     return FN_HEADER_SIZE;
+}
+
+int fn_nio_exchange_build_clock_get(uint8_t *buf, unsigned cap)
+{
+    return build_clock_command(buf, cap, FN_CMD_CLOCK_GET);
+}
+
+int fn_nio_exchange_build_clock_get_tz(uint8_t *buf, unsigned cap)
+{
+    return build_clock_command(buf, cap, FN_CMD_CLOCK_GET_TZ);
 }
 
 int fn_nio_exchange_build_host_get(uint8_t *buf, unsigned cap)
@@ -214,8 +224,7 @@ int fn_nio_exchange_build_host_get(uint8_t *buf, unsigned cap)
     if (buf == NULL || cap < total) return -1;
     buf[0] = FN_NIO_EXCH_HOST_DEVICE;
     buf[1] = FN_NIO_EXCH_HOST_GET_CURRENT;
-    buf[2] = (uint8_t)(total & 0xFF);
-    buf[3] = (uint8_t)(total >> 8);
+    fujinet_nio_put_le16(buf + 2, total);
     buf[4] = 0;
     buf[5] = 0;
     buf[6] = FN_NIO_EXCH_HOST_VERSION;
@@ -244,19 +253,19 @@ int fn_nio_exchange_build_file_list(uint8_t *buf, unsigned cap,
 
     buf[offset++] = FN_DEVICE_FILE;
     buf[offset++] = FN_NIO_EXCH_FILE_CMD_LIST;
-    buf[offset++] = (uint8_t)(total & 0xFF);
-    buf[offset++] = (uint8_t)(total >> 8);
+    fujinet_nio_put_le16(buf + offset, total);
+    offset += 2;
     buf[offset++] = 0;
     buf[offset++] = 0;
     buf[offset++] = 1;
-    buf[offset++] = (uint8_t)(uri_len & 0xFF);
-    buf[offset++] = (uint8_t)(uri_len >> 8);
+    fujinet_nio_put_le16(buf + offset, uri_len);
+    offset += 2;
     memcpy(buf + offset, uri, uri_len);
     offset = (uint16_t)(offset + uri_len);
-    buf[offset++] = 0;
-    buf[offset++] = 0;
-    buf[offset++] = (uint8_t)(max_payload_bytes & 0xFF);
-    buf[offset++] = (uint8_t)(max_payload_bytes >> 8);
+    fujinet_nio_put_le16(buf + offset, 0);
+    offset += 2;
+    fujinet_nio_put_le16(buf + offset, (uint16_t)max_payload_bytes);
+    offset += 2;
     buf[4] = packet_checksum(buf, offset);
     return (int)offset;
 }

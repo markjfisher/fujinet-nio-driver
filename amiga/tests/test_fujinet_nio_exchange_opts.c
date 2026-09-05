@@ -8,6 +8,8 @@
 
 static unsigned failures;
 
+#define COMPLETION_URI "host:/amiga-e2e-complete/nio-broker-isolated"
+
 #define CHECK(name, expression) do {                                      \
     if (!(expression)) {                                                  \
         fprintf(stderr, "FAIL: %s (line %d)\n", name, __LINE__);          \
@@ -74,6 +76,33 @@ static void test_list_max_payload_bytes(void)
 
     CHECK("list rejects tiny cap",
           fn_nio_exchange_build_file_list(buf, 8, "sd0:/", 8) < 0);
+}
+
+static void test_completion_marker_packet(void)
+{
+    static const uint8_t prefix[] = {
+        0xFE, 0x02, 0x39, 0x00, 0xF6, 0x00, 0x01, 0x2C, 0x00
+    };
+    static const uint8_t suffix[] = { 0x00, 0x00, 0x00, 0x01 };
+    uint8_t buf[64];
+    int len;
+
+    len = fn_nio_exchange_build_file_list(
+        buf, 57, COMPLETION_URI, 256);
+    CHECK("completion marker exact length", len == 57);
+    CHECK("completion marker exact prefix",
+          memcmp(buf, prefix, sizeof(prefix)) == 0);
+    CHECK("completion marker exact URI",
+          memcmp(buf + sizeof(prefix), COMPLETION_URI,
+                 sizeof(COMPLETION_URI) - 1) == 0);
+    CHECK("completion marker exact suffix",
+          memcmp(buf + sizeof(prefix) + sizeof(COMPLETION_URI) - 1,
+                 suffix, sizeof(suffix)) == 0);
+    CHECK("completion marker rejects one-byte-short cap",
+          fn_nio_exchange_build_file_list(
+              buf, 56, COMPLETION_URI, 256) < 0);
+    CHECK("completion marker rejects null URI",
+          fn_nio_exchange_build_file_list(buf, sizeof(buf), NULL, 256) < 0);
 }
 
 static void test_warm_host_get_plan(void)
@@ -211,9 +240,28 @@ static void test_clock_cold_plan_and_packet(void)
           steps[1] == FN_NIO_EXCHANGE_STEP_MEASURE);
 
     len = fn_nio_exchange_build_clock_get(buf, sizeof(buf));
-    CHECK("clock GET length", len == (int)FN_HEADER_SIZE);
-    CHECK("clock GET device", buf[0] == FN_DEVICE_CLOCK);
-    CHECK("clock GET command", buf[1] == FN_CMD_CLOCK_GET);
+    CHECK("clock GET exact packet",
+          len == (int)FN_HEADER_SIZE &&
+          memcmp(buf, "\x45\x01\x06\x00\x4c\x00", FN_HEADER_SIZE) == 0);
+    CHECK("clock GET rejects undersized cap",
+          fn_nio_exchange_build_clock_get(buf, FN_HEADER_SIZE - 1) < 0);
+    CHECK("clock GET rejects null buffer",
+          fn_nio_exchange_build_clock_get(NULL, sizeof(buf)) < 0);
+}
+
+static void test_clock_get_tz_packet(void)
+{
+    uint8_t buf[16];
+    int len;
+
+    len = fn_nio_exchange_build_clock_get_tz(buf, sizeof(buf));
+    CHECK("clock GET_TZ exact packet",
+          len == (int)FN_HEADER_SIZE &&
+          memcmp(buf, "\x45\x04\x06\x00\x4f\x00", FN_HEADER_SIZE) == 0);
+    CHECK("clock GET_TZ rejects undersized cap",
+          fn_nio_exchange_build_clock_get_tz(buf, FN_HEADER_SIZE - 1) < 0);
+    CHECK("clock GET_TZ rejects null buffer",
+          fn_nio_exchange_build_clock_get_tz(NULL, sizeof(buf)) < 0);
 }
 
 static void test_host_get_packet(void)
@@ -222,10 +270,14 @@ static void test_host_get_packet(void)
     int len;
 
     len = fn_nio_exchange_build_host_get(buf, sizeof(buf));
-    CHECK("host-get length", len == (int)FN_HEADER_SIZE + 1);
-    CHECK("host-get device 0xF0", buf[0] == 0xF0);
-    CHECK("host-get GET_CURRENT 0x01", buf[1] == 0x01);
-    CHECK("host-get version 1", buf[6] == 1);
+    CHECK("host-get exact packet",
+          len == (int)FN_HEADER_SIZE + 1 &&
+          memcmp(buf, "\xf0\x01\x07\x00\xf9\x00\x01",
+                 FN_HEADER_SIZE + 1) == 0);
+    CHECK("host-get rejects undersized cap",
+          fn_nio_exchange_build_host_get(buf, FN_HEADER_SIZE) < 0);
+    CHECK("host-get rejects null buffer",
+          fn_nio_exchange_build_host_get(NULL, sizeof(buf)) < 0);
 }
 
 static void test_allowed_list_sizes(void)
@@ -345,10 +397,12 @@ int main(void)
 {
     test_parse_file_list_cold();
     test_list_max_payload_bytes();
+    test_completion_marker_packet();
     test_warm_host_get_plan();
     test_warm_without_baud_skips_get();
     test_usage_errors();
     test_clock_cold_plan_and_packet();
+    test_clock_get_tz_packet();
     test_host_get_packet();
     test_allowed_list_sizes();
     test_warm_baud_mismatch_before_warmup();
