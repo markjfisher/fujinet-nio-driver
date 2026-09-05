@@ -6,20 +6,6 @@
 #define MAX_CALLS 8U
 #define MAX_REQUEST_SIZE NIO_DISK_WRITE_REQUEST_SIZE
 
-static uint8_t packet_checksum(const uint8_t *request,
-                               uint16_t request_length)
-{
-    uint16_t checksum = 0;
-    uint16_t i;
-
-    for (i = 0; i < request_length; ++i) {
-        if (i == 4) continue;
-        checksum = (uint16_t)(checksum + request[i]);
-        checksum = (uint16_t)((checksum >> 8) + (checksum & 0xFF));
-    }
-    return (uint8_t)checksum;
-}
-
 static unsigned failures;
 static unsigned transport_calls;
 static uint8_t scripted_results[MAX_CALLS];
@@ -103,7 +89,7 @@ static void finish_packet(uint8_t *packet, uint16_t length)
 {
     put_u16le(packet + 2, length);
     packet[4] = 0;
-    packet[4] = packet_checksum(packet, length);
+    packet[4] = packet_checksum(packet, length, true);
 }
 
 static void build_read_request(uint8_t *packet, uint8_t slot, uint32_t lba,
@@ -369,7 +355,7 @@ static void test_malformed_sector_packets(void)
     build_read_request(request, 1, 0, FUJINET_DISK_BLOCK_SIZE);
     put_u16le(request + 2, NIO_DISK_READ_REQUEST_SIZE - 1);
     request[4] = 0;
-    request[4] = packet_checksum(request, NIO_DISK_READ_REQUEST_SIZE);
+    request[4] = packet_checksum(request, NIO_DISK_READ_REQUEST_SIZE, true);
     expect_invalid_single_attempt("encoded length mismatch", request,
                                   NIO_DISK_READ_REQUEST_SIZE);
 

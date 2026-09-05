@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "fujinet_nio_checksum.h"
 #include "fujinet_nio_endian.h"
 #include "fn_protocol.h"
 
@@ -11,18 +12,6 @@
 #define FN_NIO_EXCH_HOST_DEVICE 0xF0
 #define FN_NIO_EXCH_HOST_GET_CURRENT 0x01
 #define FN_NIO_EXCH_HOST_VERSION 1
-
-static uint8_t packet_checksum(const uint8_t *data, uint16_t len)
-{
-    uint16_t chk = 0;
-    uint16_t i;
-
-    for (i = 0; i < len; ++i) {
-        chk = (uint16_t)(chk + data[i]);
-        chk = (uint16_t)(((chk >> 8) + (chk & 0xFF)) & 0xFFFF);
-    }
-    return (uint8_t)(chk & 0xFF);
-}
 
 static int parse_ulong(const char *text, unsigned long *out)
 {
@@ -201,9 +190,8 @@ static int build_clock_command(uint8_t *buf, unsigned cap, uint8_t command)
     buf[0] = FN_DEVICE_CLOCK;
     buf[1] = command;
     fujinet_nio_put_le16(buf + 2, FN_HEADER_SIZE);
-    buf[4] = 0;
     buf[5] = 0;
-    buf[4] = packet_checksum(buf, FN_HEADER_SIZE);
+    buf[4] = packet_checksum(buf, FN_HEADER_SIZE, true);
     return FN_HEADER_SIZE;
 }
 
@@ -225,10 +213,9 @@ int fn_nio_exchange_build_host_get(uint8_t *buf, unsigned cap)
     buf[0] = FN_NIO_EXCH_HOST_DEVICE;
     buf[1] = FN_NIO_EXCH_HOST_GET_CURRENT;
     fujinet_nio_put_le16(buf + 2, total);
-    buf[4] = 0;
     buf[5] = 0;
     buf[6] = FN_NIO_EXCH_HOST_VERSION;
-    buf[4] = packet_checksum(buf, total);
+    buf[4] = packet_checksum(buf, total, true);
     return (int)total;
 }
 
@@ -266,6 +253,6 @@ int fn_nio_exchange_build_file_list(uint8_t *buf, unsigned cap,
     offset += 2;
     fujinet_nio_put_le16(buf + offset, (uint16_t)max_payload_bytes);
     offset += 2;
-    buf[4] = packet_checksum(buf, offset);
+    buf[4] = packet_checksum(buf, offset, true);
     return (int)offset;
 }

@@ -73,12 +73,13 @@ $(BUILD_DIR)/nio-framing/fn_slip.o: $(LIB_ROOT)/src/common/fn_slip.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/nio.device/fujinet_nio_device.o \
-$(BUILD_DIR)/channels/rs232/fujinet_nio_client.o: include/fujinet_nio_endian.h
+$(BUILD_DIR)/nio.device/fujinet_nio_device.o: include/fujinet_nio_endian.h
+$(BUILD_DIR)/channels/rs232/fujinet_nio_client.o: include/fujinet_nio_checksum.h \
+		include/fujinet_nio_endian.h
 
 $(NIO_EXCHANGE): tools/fujinet-nio-exchange.c tools/fujinet_nio_exchange_opts.c \
 		tools/fujinet_nio_exchange_opts.h include/fujinet_nio_device.h \
-		include/fujinet_nio_endian.h
+		include/fujinet_nio_checksum.h include/fujinet_nio_endian.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 \
 		tools/fujinet-nio-exchange.c tools/fujinet_nio_exchange_opts.c -lamiga -o $@

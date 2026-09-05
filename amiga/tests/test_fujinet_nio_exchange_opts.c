@@ -1,4 +1,5 @@
 #include "fujinet_nio_exchange_opts.h"
+#include "fujinet_nio_checksum.h"
 
 #include "fn_protocol.h"
 
@@ -16,6 +17,16 @@ static unsigned failures;
         ++failures;                                                       \
     }                                                                     \
 } while (0)
+
+static void test_packet_checksum_modes(void)
+{
+    static const uint8_t data[] = {
+        0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC
+    };
+
+    CHECK("checksum includes byte 4", packet_checksum(data, sizeof(data), false) == 0x6C);
+    CHECK("checksum skips byte 4", packet_checksum(data, sizeof(data), true) == 0xD1);
+}
 
 static void test_parse_file_list_cold(void)
 {
@@ -395,6 +406,7 @@ static void test_argc1_is_not_matrix(void)
 
 int main(void)
 {
+    test_packet_checksum_modes();
     test_parse_file_list_cold();
     test_list_max_payload_bytes();
     test_completion_marker_packet();
