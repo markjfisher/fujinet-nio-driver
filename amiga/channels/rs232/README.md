@@ -18,3 +18,23 @@ ClearChanged, Inspect, network, application, malformed, and incomplete sector
 requests remain single-attempt operations. A future channel backend must
 preserve the same driver/client contract and this narrow replay boundary
 without growing another general protocol stack in the native driver.
+
+## Hardware provocation
+
+The explicit provocation diagnostic exercises the resident `fujinet-disk.device`
+path, including bounded sector retry and broker drain/reopen recovery:
+
+```text
+fujinet-nio-exchange --type disk-read --provocation --backend cold \
+  --baud 38400 --slot 1 --lba 0 --trials 100
+fujinet-nio-exchange --type disk-write --provocation --backend cold \
+  --baud 38400 --slot 1 --lba 0 --trials 100
+```
+
+Before each run, set the ESP UART diagnostic profile to
+`tx_byte_gap_us=0 tx_chunk_size=0 tx_chunk_gap_us=0`. The tool requires the
+provocation flag, fixes the operation to one 512-byte sector, and logs each
+retry attempt with request/response lengths, `result`, `cause`, native error,
+status, final `io_Error`, and `io_Actual`. Restore the product profile
+`tx_byte_gap_us=0 tx_chunk_size=16 tx_chunk_gap_us=2000` immediately afterward.
+The all-zero profile is never selected by normal product startup.

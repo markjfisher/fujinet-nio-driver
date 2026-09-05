@@ -566,6 +566,9 @@ static void device_process_request(struct IORequest *request,
             io->io_Actual = sizeof(base->trace);
         }
         break;
+    case FUJINET_DISK_CMD_TRACE_CLEAR:
+        memset(&base->trace, 0, sizeof(base->trace));
+        break;
     case CMD_READ:
     case ETD_READ:
         {
@@ -781,6 +784,24 @@ static void device_process_request(struct IORequest *request,
     if (trace_index < FUJINET_DISK_TRACE_CAPACITY) {
         base->trace.actuals[trace_index] = io->io_Actual;
         base->trace.errors[trace_index] = request->io_Error;
+        if (request->io_Command == CMD_READ || request->io_Command == ETD_READ ||
+            request->io_Command == CMD_WRITE || request->io_Command == ETD_WRITE) {
+            UBYTE i;
+            fujinet_nio_disk_context_t *diag = &unit->nio_context;
+            base->trace.exchange_attempts[trace_index] = diag->exchange_attempts;
+            for (i = 0; i < FUJINET_DISK_TRACE_ATTEMPTS; ++i) {
+                base->trace.exchange_results[trace_index][i] =
+                    diag->exchange_results[i];
+                base->trace.exchange_causes[trace_index][i] =
+                    diag->exchange_causes[i];
+                base->trace.exchange_native_errors[trace_index][i] =
+                    diag->exchange_native_errors[i];
+                base->trace.exchange_statuses[trace_index][i] =
+                    diag->exchange_statuses[i];
+                base->trace.exchange_response_lengths[trace_index][i] =
+                    diag->exchange_response_lengths[i];
+            }
+        }
     }
 
     if ((request->io_Flags & IOF_QUICK) == 0) {

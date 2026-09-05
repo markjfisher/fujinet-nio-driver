@@ -208,6 +208,14 @@ static void test_usage_errors(void)
         "fujinet-nio-exchange", "--type", "clock", "--backend", "cold",
         "--trials", "100001", NULL
     };
+    char *disk_without_provocation[] = {
+        "fujinet-nio-exchange", "--type", "disk-read", "--backend", "cold",
+        "--baud", "38400", "--slot", "1", "--lba", "0", NULL
+    };
+    char *disk_wrong_baud[] = {
+        "fujinet-nio-exchange", "--type", "disk-write", "--provocation",
+        "--backend", "cold", "--baud", "19200", "--slot", "1", "--lba", "0", NULL
+    };
 
     CHECK("57600 is usage error",
           fn_nio_exchange_opts_parse(7, baud57600, &opts) != 0);
@@ -223,6 +231,34 @@ static void test_usage_errors(void)
           fn_nio_exchange_opts_parse(9, bad_size, &opts) != 0);
     CHECK("trials 100001 is usage error",
           fn_nio_exchange_opts_parse(7, too_many_trials, &opts) != 0);
+    CHECK("disk requires explicit provocation",
+          fn_nio_exchange_opts_parse(11, disk_without_provocation, &opts) != 0);
+    CHECK("disk provocation requires 38400",
+          fn_nio_exchange_opts_parse(12, disk_wrong_baud, &opts) != 0);
+}
+
+static void test_disk_provocation_packets(void)
+{
+    uint8_t read_packet[32];
+    uint8_t write_packet[544];
+    int read_len = fn_nio_exchange_build_disk_read(read_packet, sizeof(read_packet),
+                                                   3, 0x12345678UL);
+    int write_len = fn_nio_exchange_build_disk_write(write_packet, sizeof(write_packet),
+                                                     3, 0x12345678UL);
+    CHECK("disk read packet length", read_len == 14);
+    CHECK("disk read packet shape", read_packet[0] == FN_DEVICE_DISK &&
+          read_packet[1] == 3 && read_packet[7] == 3 &&
+          read_packet[12] == 0 && read_packet[13] == 2);
+    CHECK("disk write packet length", write_len == 526);
+    CHECK("disk write packet shape", write_packet[0] == FN_DEVICE_DISK &&
+          write_packet[1] == 4 && write_packet[7] == 3 &&
+          write_packet[12] == 0 && write_packet[13] == 2);
+    CHECK("disk write deterministic body", write_packet[14] == 0x5A &&
+          write_packet[14 + 511] == (uint8_t)(511 ^ 0x5A));
+    CHECK("disk read checksum", read_packet[FN_CHECKSUM_OFFSET] ==
+          fn_calc_packet_checksum(read_packet, read_len));
+    CHECK("disk write checksum", write_packet[FN_CHECKSUM_OFFSET] ==
+          fn_calc_packet_checksum(write_packet, write_len));
 }
 
 static void test_clock_cold_plan_and_packet(void)
@@ -416,6 +452,7 @@ int main(void)
     test_warm_host_get_plan();
     test_warm_without_baud_skips_get();
     test_usage_errors();
+    test_disk_provocation_packets();
     test_clock_cold_plan_and_packet();
     test_clock_get_tz_packet();
     test_host_get_packet();

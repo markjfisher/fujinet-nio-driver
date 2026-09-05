@@ -78,6 +78,7 @@ $(BUILD_DIR)/channels/rs232/fujinet_nio_client.o: include/fujinet_nio_endian.h
 
 $(NIO_EXCHANGE): tools/fujinet-nio-exchange.c tools/fujinet_nio_exchange_opts.c \
 		tools/fujinet_nio_exchange_opts.h include/fujinet_nio_device.h \
+		include/fujinet_disk_device.h \
 		include/fujinet_nio_endian.h $(LIBRARY)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 \

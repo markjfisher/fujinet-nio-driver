@@ -54,6 +54,12 @@ typedef struct fujinet_disk_driver {
 
 typedef struct fujinet_nio_disk_context {
     fn_disk_client_context_t client;
+    uint8_t exchange_attempts;
+    uint8_t exchange_results[3];
+    uint8_t exchange_causes[3];
+    uint8_t exchange_native_errors[3];
+    uint16_t exchange_statuses[3];
+    uint16_t exchange_response_lengths[3];
 } fujinet_nio_disk_context_t;
 
 void fujinet_disk_driver_init(fujinet_disk_driver_t *driver,

@@ -16,10 +16,12 @@
 #include "fujinet_nio_device.h"
 #include "fujinet_nio_endian.h"
 #include "fujinet_nio_exchange_opts.h"
+#include "fujinet_disk_device.h"
 #include "fujinet-nio.h"
 #include "fn_protocol.h"
 
 #define MATRIX_PACKET_CAP 1024
+#define DISK_PROVOCATION_SECTOR 512
 
 #define COMPLETION_URI "host:/amiga-e2e-complete/nio-broker-isolated"
 
@@ -361,7 +363,10 @@ static void print_matrix_usage(void)
     fprintf(stderr,
             "Usage: fujinet-nio-exchange --type clock|host-get|file-list "
             "--backend cold|warm [--baud 9600|19200|38400] "
-            "[--size 8|16|32|64|128|256|420|512 --uri URI] [--trials N]\n");
+            "[--size 8|16|32|64|128|256|420|512 --uri URI] [--trials N]\n"
+            "       fujinet-nio-exchange --type disk-read|disk-write "
+            "--provocation --backend cold --baud 38400 --slot 1..8 "
+            "--lba N [--trials N]\n");
 }
 
 static int run_set_baud(struct FujiNetNIORequest *req, struct MsgPort *port,
@@ -410,6 +415,145 @@ static int run_get_baud_match(struct FujiNetNIORequest *req,
     return 0;
 }
 
+static int run_disk_provocation(const struct fn_nio_exchange_opts *opts)
+{
+    struct MsgPort *port;
+    struct IORequest nio_open;
+    struct FujiNetNIORequest nio_req;
+    struct IOStdReq disk;
+    struct Device *disk_device;
+    struct Unit *disk_unit;
+    struct fujinet_disk_trace trace;
+    uint8_t baud_bytes[4];
+    uint8_t buffer[DISK_PROVOCATION_SECTOR];
+    unsigned trial;
+    int is_write = opts->type == FN_NIO_EXCHANGE_TYPE_DISK_WRITE;
+    int failures = 0;
+
+    printf("PROVOCATION baud=38400 backend=cold pacing=tx_byte_gap_us:0 "
+           "tx_chunk_size:0 tx_chunk_gap_us:0 op=%s slot=%u lba=%lu "
+           "trials=%u\n", is_write ? "WRITE" : "READ", opts->slot,
+           (unsigned long)opts->lba, opts->trials);
+    printf("PROVOCATION requires ESP uart.set tx_byte_gap_us=0 "
+           "tx_chunk_size=0 tx_chunk_gap_us=0; restore 16/2000 after run\n");
+
+    port = CreatePort(NULL, 0);
+    if (port == NULL) return RETURN_FAIL;
+    memset(&nio_open, 0, sizeof(nio_open));
+    if (OpenDevice((CONST_STRPTR)FUJINET_NIO_DEVICE_NAME,
+                   FUJINET_NIO_DEVICE_UNIT, &nio_open, 0) != 0) {
+        DeletePort(port);
+        return RETURN_FAIL;
+    }
+    memset(&disk, 0, sizeof(disk));
+    disk.io_Message.mn_Node.ln_Type = NT_MESSAGE;
+    disk.io_Message.mn_ReplyPort = port;
+    disk.io_Message.mn_Length = sizeof(disk);
+    if (OpenDevice((CONST_STRPTR)FUJINET_DISK_DEVICE_NAME,
+                   (ULONG)(opts->slot - 1),
+                   (struct IORequest *)&disk, 0) != 0) {
+        CloseDevice(&nio_open);
+        DeletePort(port);
+        return RETURN_FAIL;
+    }
+    disk_device = disk.io_Device;
+    disk_unit = disk.io_Unit;
+
+    disk.io_Command = FUJINET_DISK_CMD_TRACE_CLEAR;
+    disk.io_Data = NULL;
+    disk.io_Length = 0;
+    (void)DoIO((struct IORequest *)&disk);
+    open_elapsed_timer();
+
+    for (trial = 0; trial < opts->trials; ++trial) {
+        ULONG trace_index;
+        UBYTE attempt;
+        char elapsed[32];
+
+        if (run_set_baud(&nio_req, port, &nio_open, opts->baud,
+                         baud_bytes) != 0) {
+            failures = 1;
+            break;
+        }
+        for (trace_index = 0; trace_index < DISK_PROVOCATION_SECTOR; ++trace_index)
+            buffer[trace_index] = (uint8_t)(trace_index ^ 0x5A);
+        memset(&disk, 0, sizeof(disk));
+        disk.io_Device = disk_device;
+        disk.io_Unit = disk_unit;
+        disk.io_Message.mn_Node.ln_Type = NT_MESSAGE;
+        disk.io_Message.mn_ReplyPort = port;
+        disk.io_Message.mn_Length = sizeof(disk);
+        disk.io_Command = is_write ? CMD_WRITE : CMD_READ;
+        disk.io_Data = buffer;
+        disk.io_Length = DISK_PROVOCATION_SECTOR;
+        disk.io_Offset = (ULONG)opts->lba * DISK_PROVOCATION_SECTOR;
+        {
+            struct timeval start;
+            struct timeval end;
+            int have_start = snapshot_time(&start) == 0;
+            (void)DoIO((struct IORequest *)&disk);
+            if (have_start && snapshot_time(&end) == 0) {
+                unsigned long us;
+                long sec = (long)end.tv_secs - (long)start.tv_secs;
+                long micro = (long)end.tv_micro - (long)start.tv_micro;
+                if (micro < 0) { micro += 1000000L; --sec; }
+                us = sec >= 0 ? (unsigned long)sec * 1000000UL +
+                               (unsigned long)micro : 0;
+                fn_nio_exchange_format_elapsed(1, us, elapsed, 32);
+            } else {
+                fn_nio_exchange_format_elapsed(0, 0, elapsed, 32);
+            }
+        }
+
+        memset(&trace, 0, sizeof(trace));
+        disk.io_Command = FUJINET_DISK_CMD_TRACE;
+        disk.io_Data = &trace;
+        disk.io_Length = sizeof(trace);
+        (void)DoIO((struct IORequest *)&disk);
+        if (trace.count == 0) {
+            printf("trial=%u trace=missing io_error=%d io_actual=%lu\n",
+                   trial + 1, (int)disk.io_Error,
+                   (unsigned long)disk.io_Actual);
+            failures = 1;
+            continue;
+        }
+        trace_index = trace.count - 1;
+        for (attempt = 0; attempt < trace.exchange_attempts[trace_index]; ++attempt) {
+            printf("trial=%u baud=38400 cold=1 pacing=0/0/0 op=%s slot=%u "
+                   "lba=%lu req_len=%u resp_len=%u elapsed_us=%s result=%u "
+                   "cause=%u native=%u status=%u attempt=%u/%u io_Error=%d "
+                   "io_Actual=%lu write_pattern= i^0x5a\n", trial + 1,
+                   is_write ? "WRITE" : "READ", opts->slot,
+                   (unsigned long)opts->lba,
+                   is_write ? 526U : 14U,
+                   (unsigned)trace.exchange_response_lengths[trace_index][attempt],
+                   elapsed,
+                   (unsigned)trace.exchange_results[trace_index][attempt],
+                   (unsigned)trace.exchange_causes[trace_index][attempt],
+                   (unsigned)trace.exchange_native_errors[trace_index][attempt],
+                   (unsigned)trace.exchange_statuses[trace_index][attempt],
+                   (unsigned)(attempt + 1),
+                   (unsigned)trace.exchange_attempts[trace_index],
+                   (int)trace.errors[trace_index],
+                   (unsigned long)trace.actuals[trace_index]);
+        }
+        if (trace.errors[trace_index] == 0 &&
+            (trace.exchange_attempts[trace_index] == 0 ||
+             trace.exchange_attempts[trace_index] > FUJINET_DISK_TRACE_ATTEMPTS ||
+             trace.actuals[trace_index] != DISK_PROVOCATION_SECTOR ||
+             trace.exchange_results[trace_index][trace.exchange_attempts[trace_index] - 1] != FN_OK ||
+             trace.exchange_response_lengths[trace_index][trace.exchange_attempts[trace_index] - 1] !=
+                 (is_write ? 17U : 529U)))
+            failures = 1;
+    }
+
+    close_elapsed_timer();
+    CloseDevice((struct IORequest *)&disk);
+    CloseDevice(&nio_open);
+    DeletePort(port);
+    return failures ? RETURN_FAIL : RETURN_OK;
+}
+
 static int run_warmup(struct FujiNetNIORequest *req, struct MsgPort *port,
                       const struct IORequest *open_request,
                       const uint8_t *clock_req, int clock_len,
@@ -451,6 +595,10 @@ static int run_matrix(int argc, char **argv)
         print_matrix_usage();
         return RETURN_ERROR;
     }
+
+    if (opts.type == FN_NIO_EXCHANGE_TYPE_DISK_READ ||
+        opts.type == FN_NIO_EXCHANGE_TYPE_DISK_WRITE)
+        return run_disk_provocation(&opts);
 
     nsteps = fn_nio_exchange_opts_plan(&opts, steps, 4);
     if (nsteps < 0) return RETURN_FAIL;

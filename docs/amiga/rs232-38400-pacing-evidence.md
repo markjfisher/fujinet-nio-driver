@@ -90,7 +90,43 @@ On `FN_ERR_TRANSPORT` / `FN_ERR_TIMEOUT`:
 - `fn_disk_*` returns before copying a truncated FujiBus body into the
   caller buffer.
 
-A lost byte does not become a successful 512-byte block. There is **no**
-NIO-layer retry of that DiskDevice command; AmigaDOS/trackdisk may retry
-or put up a requester. Write that the ESP already committed, then lost the
-ACK, can be replayed as the same 512-byte sector (idempotent for ADF).
+A lost byte does not become a successful 512-byte block. The RS-232
+DiskDevice adapter now retries only structurally valid, byte-identical sector
+READ/WRITE requests up to two times after the initial attempt. Each retry
+follows the broker's drain-until-idle and close/reopen recovery. Non-sector
+and non-idempotent commands are not retried. A write that the ESP already
+committed before the ACK was lost can therefore be replayed as the same
+512-byte ADF sector.
+
+The retry implementation is covered by deterministic native tests, but real
+38400-baud hardware proof remains open: deliberately observe a `cause=7`
+during `CMD_READ`/`CMD_WRITE` and record either full success after retry or a
+bounded persistent error, never a short successful block.
+
+## Hardware-proof procedure (added 2026-09-05)
+
+The deterministic provocation path is the resident DiskDevice diagnostic, not
+the generic raw exchange matrix. With a mounted slot, run both operations:
+
+```text
+fujinet-nio-exchange --type disk-read --provocation --backend cold \
+  --baud 38400 --slot 1 --lba 0 --trials 100
+fujinet-nio-exchange --type disk-write --provocation --backend cold \
+  --baud 38400 --slot 1 --lba 0 --trials 100
+```
+
+Configure the ESP only for this run as
+`tx_byte_gap_us=0 tx_chunk_size=0 tx_chunk_gap_us=0`. The mode is rejected
+unless `--provocation`, cold backend, 38400 baud, slot, and LBA are all
+explicit. It sends exactly one valid 512-byte DiskService sector request per
+trial; WRITE uses the deterministic byte pattern `byte[i] = i ^ 0x5a`.
+Each trace line records operation, slot/LBA, request and response length,
+elapsed time, result, cause, native error, status, attempt ordinal, final
+`io_Error`, and `io_Actual`. The tool clears its diagnostic trace before the
+run. Restore the product profile (16-byte chunks and 2000-us gaps) after the
+provocation.
+
+Execution count in this workspace is 0 READ + 0 WRITE trials: no physical
+Amiga/ESP session was available when this procedure was added, so there is no
+new measured `cause=7` result to claim. The hardware-proof checkbox remains
+open pending a real Amiga/ESP run with both READ and same-sector WRITE.

@@ -3,6 +3,8 @@
 #include "fn_platform.h"
 #include "fn_protocol.h"
 
+#include <string.h>
+
 enum {
     NIO_DISK_READ_SECTOR = 0x03,
     NIO_DISK_WRITE_SECTOR = 0x04,
@@ -56,7 +58,7 @@ static uint8_t nio_exchange(void *exchange_context,
     uint8_t attempts;
     uint8_t result = FN_ERR_INVALID;
 
-    (void)exchange_context;
+    fujinet_nio_disk_context_t *diagnostics = exchange_context;
     if (response_length == NULL) return FN_ERR_INVALID;
 
     attempts = is_retryable_sector_request(request, request_length)
@@ -64,11 +66,31 @@ static uint8_t nio_exchange(void *exchange_context,
                    : 1;
 
     for (attempt = 0; attempt < attempts; ++attempt) {
+        if (diagnostics != NULL) {
+            diagnostics->exchange_attempts = (uint8_t)(attempt + 1);
+            diagnostics->exchange_results[attempt] = FN_ERR_INVALID;
+            diagnostics->exchange_causes[attempt] = 0;
+            diagnostics->exchange_native_errors[attempt] = 0;
+            diagnostics->exchange_statuses[attempt] = 0;
+            diagnostics->exchange_response_lengths[attempt] = 0;
+        }
         *response_length = 0;
         attempt_response_length = 0;
         result = fn_transport_exchange_buffers(
             request, request_length, response, response_capacity,
             &attempt_response_length);
+        if (diagnostics != NULL) {
+            diagnostics->exchange_results[attempt] = result;
+            diagnostics->exchange_response_lengths[attempt] =
+                attempt_response_length;
+#ifdef __AMIGA__
+            fn_amiga_transport_last_broker_cause(
+                &diagnostics->exchange_causes[attempt]);
+            fn_amiga_transport_last_serial_detail(
+                &diagnostics->exchange_native_errors[attempt],
+                &diagnostics->exchange_statuses[attempt]);
+#endif
+        }
         if (result == FN_OK) {
             *response_length = attempt_response_length;
             return FN_OK;
@@ -83,7 +105,8 @@ static uint8_t nio_exchange(void *exchange_context,
 uint8_t fujinet_nio_disk_context_init(fujinet_nio_disk_context_t *context)
 {
     if (context == NULL) return FN_ERR_INVALID;
-    return fn_disk_context_init(&context->client, nio_exchange, NULL);
+    memset(context, 0, sizeof(*context));
+    return fn_disk_context_init(&context->client, nio_exchange, context);
 }
 
 static uint8_t nio_init(void *context)

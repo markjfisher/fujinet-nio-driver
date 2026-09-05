@@ -11,6 +11,10 @@
 #define FN_NIO_EXCH_HOST_DEVICE 0xF0
 #define FN_NIO_EXCH_HOST_GET_CURRENT 0x01
 #define FN_NIO_EXCH_HOST_VERSION 1
+#define FN_NIO_EXCH_DISK_READ 0x03
+#define FN_NIO_EXCH_DISK_WRITE 0x04
+#define FN_NIO_EXCH_DISK_REQUEST_SIZE 8
+#define FN_NIO_EXCH_DISK_SECTOR_SIZE 512
 
 static int parse_ulong(const char *text, unsigned long *out)
 {
@@ -85,6 +89,18 @@ int fn_nio_exchange_opts_parse(int argc, char **argv,
         } else if (strcmp(argv[i], "--uri") == 0) {
             if (take_arg(argc, argv, &i, &value) != 0) return -1;
             out->uri = value;
+        } else if (strcmp(argv[i], "--slot") == 0) {
+            if (take_arg(argc, argv, &i, &value) != 0) return -1;
+            if (parse_ulong(value, &parsed) != 0 || parsed < 1UL || parsed > 8UL)
+                return -1;
+            out->slot = (unsigned)parsed;
+        } else if (strcmp(argv[i], "--lba") == 0) {
+            if (take_arg(argc, argv, &i, &value) != 0) return -1;
+            if (parse_ulong(value, &parsed) != 0 || parsed > 0xFFFFFFFFUL)
+                return -1;
+            out->lba = (uint32_t)parsed;
+        } else if (strcmp(argv[i], "--provocation") == 0) {
+            out->provocation = 1;
         } else if (strcmp(argv[i], "--trials") == 0) {
             if (take_arg(argc, argv, &i, &value) != 0) return -1;
             if (parse_ulong(value, &parsed) != 0 || parsed < 1UL ||
@@ -97,6 +113,14 @@ int fn_nio_exchange_opts_parse(int argc, char **argv,
     }
 
     if (out->type == 0 || out->backend == 0) return -1;
+    if (out->type == FN_NIO_EXCHANGE_TYPE_DISK_READ ||
+        out->type == FN_NIO_EXCHANGE_TYPE_DISK_WRITE) {
+        if (!out->provocation || out->backend != FN_NIO_EXCHANGE_BACKEND_COLD ||
+            out->baud != 38400UL || out->slot == 0) return -1;
+        if (out->has_size || out->uri != NULL) return -1;
+    } else if (out->provocation || out->slot != 0 || out->lba != 0) {
+        return -1;
+    }
     if (out->type == FN_NIO_EXCHANGE_TYPE_FILE_LIST) {
         if (!out->has_size || out->uri == NULL || out->uri[0] == '\0')
             return -1;
@@ -113,6 +137,14 @@ int fn_nio_exchange_opts_plan(const struct fn_nio_exchange_opts *opts,
 
     if (opts == NULL || steps == NULL || max_steps < 1) return -1;
 
+    if (opts->type == FN_NIO_EXCHANGE_TYPE_DISK_READ ||
+        opts->type == FN_NIO_EXCHANGE_TYPE_DISK_WRITE) {
+        if (count >= max_steps) return -1;
+        steps[count++] = FN_NIO_EXCHANGE_STEP_SET_BAUD;
+        if (count >= max_steps) return -1;
+        steps[count++] = FN_NIO_EXCHANGE_STEP_MEASURE;
+        return count;
+    }
     if (opts->backend == FN_NIO_EXCHANGE_BACKEND_COLD) {
         if (count >= max_steps) return -1;
         steps[count++] = FN_NIO_EXCHANGE_STEP_SET_BAUD;
@@ -255,3 +287,38 @@ int fn_nio_exchange_build_file_list(uint8_t *buf, unsigned cap,
     buf[FN_CHECKSUM_OFFSET] = fn_calc_packet_checksum(buf, offset);
     return (int)offset;
 }
+
+static int build_disk_sector(uint8_t *buf, unsigned cap, unsigned slot,
+                             uint32_t lba, int write)
+{
+    uint16_t payload = (uint16_t)(FN_NIO_EXCH_DISK_REQUEST_SIZE +
+                                  (write ? FN_NIO_EXCH_DISK_SECTOR_SIZE : 0));
+    uint16_t total = (uint16_t)(FN_HEADER_SIZE + payload);
+    uint16_t i;
+
+    if (buf == NULL || cap < total || slot < 1 || slot > 8) return -1;
+    memset(buf, 0, total);
+    buf[0] = FN_DEVICE_DISK;
+    buf[1] = write ? FN_NIO_EXCH_DISK_WRITE : FN_NIO_EXCH_DISK_READ;
+    fujinet_nio_put_le16(buf + 2, total);
+    buf[FN_HEADER_SIZE] = FN_DISK_PROTOCOL_VERSION;
+    buf[FN_HEADER_SIZE + 1] = (uint8_t)slot;
+    fujinet_nio_put_le32(buf + FN_HEADER_SIZE + 2, lba);
+    fujinet_nio_put_le16(buf + FN_HEADER_SIZE + 6,
+                         FN_NIO_EXCH_DISK_SECTOR_SIZE);
+    if (write) {
+        for (i = 0; i < FN_NIO_EXCH_DISK_SECTOR_SIZE; ++i)
+            buf[FN_HEADER_SIZE + FN_NIO_EXCH_DISK_REQUEST_SIZE + i] =
+                (uint8_t)(i ^ 0x5A);
+    }
+    buf[FN_CHECKSUM_OFFSET] = fn_calc_packet_checksum(buf, total);
+    return (int)total;
+}
+
+int fn_nio_exchange_build_disk_read(uint8_t *buf, unsigned cap,
+                                    unsigned slot, uint32_t lba)
+{ return build_disk_sector(buf, cap, slot, lba, 0); }
+
+int fn_nio_exchange_build_disk_write(uint8_t *buf, unsigned cap,
+                                     unsigned slot, uint32_t lba)
+{ return build_disk_sector(buf, cap, slot, lba, 1); }

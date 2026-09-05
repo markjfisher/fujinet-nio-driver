@@ -6,7 +6,9 @@
 enum fn_nio_exchange_type {
     FN_NIO_EXCHANGE_TYPE_CLOCK = 1,
     FN_NIO_EXCHANGE_TYPE_HOST_GET = 2,
-    FN_NIO_EXCHANGE_TYPE_FILE_LIST = 3
+    FN_NIO_EXCHANGE_TYPE_FILE_LIST = 3,
+    FN_NIO_EXCHANGE_TYPE_DISK_READ = 4,
+    FN_NIO_EXCHANGE_TYPE_DISK_WRITE = 5
 };
 
 enum fn_nio_exchange_backend {
@@ -28,6 +30,9 @@ struct fn_nio_exchange_opts {
     int has_size;
     unsigned size;
     const char *uri;
+    unsigned slot;
+    uint32_t lba;
+    int provocation;
     unsigned trials;
 };
 
@@ -49,5 +54,9 @@ int fn_nio_exchange_build_clock_get_tz(uint8_t *buf, unsigned cap);
 int fn_nio_exchange_build_host_get(uint8_t *buf, unsigned cap);
 int fn_nio_exchange_build_file_list(uint8_t *buf, unsigned cap,
                                     const char *uri, unsigned max_payload_bytes);
+int fn_nio_exchange_build_disk_read(uint8_t *buf, unsigned cap,
+                                    unsigned slot, uint32_t lba);
+int fn_nio_exchange_build_disk_write(uint8_t *buf, unsigned cap,
+                                     unsigned slot, uint32_t lba);
 
 #endif
