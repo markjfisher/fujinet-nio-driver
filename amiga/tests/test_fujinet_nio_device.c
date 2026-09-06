@@ -347,9 +347,9 @@ static void test_serial_controls(void)
     fujinet_nio_native_test_worker_step();
     CHECK("serial setup exchange opened backend", backend_opens == 1);
 
-    CHECK("encode BaudBandit",
+    CHECK("encode fujinet-serial",
           fujinet_nio_serial_encode(payload, sizeof(payload), &payload_len, 0,
-                                    "BaudBandit.device") == FN_OK);
+                                    "fujinet-serial.device") == FN_OK);
     init_exchange(&set, payload, payload_len, NULL, 0);
     set.fn_io.io_Command = FUJINET_NIO_CMD_SET_SERIAL;
     fujinet_nio_native_test_open(&set.fn_io, FUJINET_NIO_DEVICE_UNIT);
@@ -361,7 +361,7 @@ static void test_serial_controls(void)
     CHECK("serial set no exchange", backend_exchanges == 1);
     CHECK("serial set closes current backend", backend_closes == 1);
     CHECK("serial set name",
-          strcmp(backend_serial_name, "BaudBandit.device") == 0);
+          strcmp(backend_serial_name, "fujinet-serial.device") == 0);
     CHECK("serial set unit", backend_serial_unit == 0);
 
     init_exchange(&get, NULL, 0, payload, sizeof(payload));
@@ -375,7 +375,7 @@ static void test_serial_controls(void)
     CHECK("serial get decode",
           fujinet_nio_serial_decode(payload, get.fn_response_length, &unit,
                                     name, sizeof(name)) == FN_OK);
-    CHECK("serial get name", strcmp(name, "BaudBandit.device") == 0);
+    CHECK("serial get name", strcmp(name, "fujinet-serial.device") == 0);
     CHECK("serial get unit", unit == 0);
 
     CHECK("encode colon rejected",
@@ -403,7 +403,7 @@ static void test_serial_controls(void)
     CHECK("serial invalid FN_ERR_INVALID", bad.fn_nio_error == FN_ERR_INVALID);
     CHECK("serial invalid already closed", backend_closes == 1);
     CHECK("serial invalid kept previous name",
-          strcmp(backend_serial_name, "BaudBandit.device") == 0);
+          strcmp(backend_serial_name, "fujinet-serial.device") == 0);
 
     replies = 0;
     init_exchange(&exchange, request, sizeof(request), response,

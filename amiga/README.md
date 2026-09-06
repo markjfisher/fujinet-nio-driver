@@ -117,15 +117,23 @@ when the RS-232 backend next opens:
 fujinet-nio-baud
 fujinet-nio-baud 38400
 fujinet-nio-serial
-fujinet-nio-serial BaudBandit.device
-fujinet-nio-serial BaudBandit.device 0
+fujinet-nio-serial fujinet-serial.device
 fujinet-nio-serial serial.device
 ```
 
 Supported baud values are 300–230400. The serial driver name is an Exec
-device in `DEVS:` (`serial.device` by default). Do not rename stock
-`serial.device`; select a replacement such as `BaudBandit.device` instead.
-The selection is held by the resident device until it is unloaded or the
+device (`serial.device` by default). `fujinet-serial.device` is the FujiNet
+Paula UART driver: 8N1 only, exclusive open, a receive-buffer-full interrupt
+that copies `SERDATR` into a ring, and polled `TBE` on transmit. Load it
+before selecting it:
+
+```text
+C:fujinet-load-resident DEVS:fujinet-serial.device fujinet-serial.device
+C:fujinet-nio-serial fujinet-serial.device
+```
+
+Do not rename stock `serial.device`; select `fujinet-serial.device` instead.
+The selection is held by the resident broker until it is unloaded or the
 machine reboots; put the desired commands in `S:Startup-Sequence` to make
 them persistent. This affects only the RS-232 byte-stream backend.
 Packet-native transports such as Zorro or floppy use their own transport
@@ -136,7 +144,7 @@ without changing the resident default:
 
 ```text
 fujinet-nio-exchange --type clock --backend cold --baud 38400 \
-    --serial-device BaudBandit.device --trials 20
+    --serial-device fujinet-serial.device --trials 20
 ```
 
 Omitting `--serial-device` uses whatever `fujinet-nio-serial` last set.

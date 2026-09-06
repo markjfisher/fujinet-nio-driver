@@ -27,20 +27,22 @@ Pacing matrix numbers and the 16/2000 product choice:
 
   ```text
   Copy fujinet-nio.device DEVS:
+  Copy fujinet-serial.device DEVS:
   Copy fujinet-nio-exchange C:
   Copy fujinet-nio-serial C:
+  C:fujinet-load-resident DEVS:fujinet-serial.device fujinet-serial.device
   C:fujinet-load-resident DEVS:fujinet-nio.device fujinet-nio.device
 ```
 
 The broker opens `serial.device` unit 0 unless you select another
-IOExtSer-compatible driver on the Amiga (no rebuild):
+IOExtSer-compatible driver on the Amiga (no rebuild). For hardware above
+9600 baud use the FujiNet Paula driver:
 
 ```text
-Copy BaudBandit.device DEVS:
-C:fujinet-nio-serial BaudBandit.device
+C:fujinet-nio-serial fujinet-serial.device
 ```
 
-Or pass `--serial-device BaudBandit.device` on a matrix command. Cold still
+Or pass `--serial-device fujinet-serial.device` on a matrix command. Cold still
 closes and reopens that driver before the measured request. Omit the flag to
 keep whatever `fujinet-nio-serial` last set.
 
@@ -192,7 +194,7 @@ For each baud in **9600, then 19200, then 38400**:
 
    ```text
    fujinet-nio-exchange --type clock --backend cold --baud 38400 \
-       --serial-device BaudBandit.device --trials 20
+       --serial-device fujinet-serial.device --trials 20
    ```
 
 2. **Clock warm** — same request on the retained backend.

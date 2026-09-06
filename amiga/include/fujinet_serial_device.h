@@ -1,0 +1,7 @@
+#ifndef FUJINET_SERIAL_DEVICE_H
+#define FUJINET_SERIAL_DEVICE_H
+
+#define FUJINET_SERIAL_DEVICE_NAME "fujinet-serial.device"
+#define FUJINET_SERIAL_DEVICE_UNIT 0
+
+#endif

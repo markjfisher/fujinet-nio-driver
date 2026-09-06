@@ -12,6 +12,8 @@ RESIDENT_UNLOADER := $(BUILD_DIR)/fujinet-unload-resident
 TD_PROBE := $(BUILD_DIR)/fujinet-td-probe
 NIO_DEVICE := $(BUILD_DIR)/fujinet-nio.device
 NIO_DEVICE_MAP := $(NIO_DEVICE).map
+SERIAL_DEVICE := $(BUILD_DIR)/fujinet-serial.device
+SERIAL_DEVICE_MAP := $(SERIAL_DEVICE).map
 NIO_EXCHANGE := $(BUILD_DIR)/fujinet-nio-exchange
 NIO_BAUD := $(BUILD_DIR)/fujinet-nio-baud
 NIO_SERIAL := $(BUILD_DIR)/fujinet-nio-serial
@@ -20,6 +22,8 @@ NIO_OBJECTS := $(BUILD_DIR)/nio.device/fujinet_nio_device.o \
 	$(BUILD_DIR)/common/fujinet_io_queue.o \
 	$(BUILD_DIR)/nio-framing/fn_session.o \
 	$(BUILD_DIR)/nio-framing/fn_slip.o
+SERIAL_OBJECTS := $(BUILD_DIR)/serial.device/fujinet_serial_device.o \
+	$(BUILD_DIR)/serial.device/fujinet_paula_uart.o
 SDK_INCLUDE := $(BUILD_DIR)/include
 SDK_LIBRARY := $(BUILD_DIR)/lib/libfujinet-amiga-disk.a
 SDK_SOURCES := common/fujinet_disk_dos_envec.c common/fujinet_disk_filesystem.c common/fujinet_disk_media_profile.c
@@ -39,7 +43,7 @@ OBJECTS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SOURCES))
 all: tests native sdk
 
 native: library $(DEVICE) $(MOUNT_TOOL) $(RESIDENT_LOADER) $(RESIDENT_UNLOADER) $(TD_PROBE) \
-	$(NIO_DEVICE) $(NIO_EXCHANGE) $(NIO_BAUD) $(NIO_SERIAL)
+	$(NIO_DEVICE) $(SERIAL_DEVICE) $(NIO_EXCHANGE) $(NIO_BAUD) $(NIO_SERIAL)
 
 sdk: $(SDK_LIBRARY) $(SDK_INCLUDE)/fujinet-amiga-disk/support.h $(SDK_INCLUDE)/fujinet-amiga-disk/device.h
 
@@ -67,6 +71,9 @@ $(DEVICE): $(OBJECTS) $(LIBRARY)
 $(NIO_DEVICE): $(NIO_OBJECTS)
 	$(CC) -nostartfiles -mcpu=68000 -msoft-float $^ -lamiga -Wl,-Map,$(NIO_DEVICE_MAP) -o $@
 
+$(SERIAL_DEVICE): $(SERIAL_OBJECTS)
+	$(CC) -nostartfiles -mcpu=68000 -msoft-float $^ -lamiga -Wl,-Map,$(SERIAL_DEVICE_MAP) -o $@
+
 $(BUILD_DIR)/nio-framing/fn_session.o: $(LIB_ROOT)/src/common/fn_session.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
@@ -78,6 +85,9 @@ $(BUILD_DIR)/nio-framing/fn_slip.o: $(LIB_ROOT)/src/common/fn_slip.c
 $(BUILD_DIR)/nio.device/fujinet_nio_device.o: include/fujinet_nio_endian.h \
 	include/fujinet_nio_serial_config.h
 $(BUILD_DIR)/nio.device/fujinet_nio_serial_backend.o: include/fujinet_nio_serial_config.h
+$(BUILD_DIR)/serial.device/fujinet_serial_device.o: include/fujinet_paula_uart.h \
+	include/fujinet_serial_device.h
+$(BUILD_DIR)/serial.device/fujinet_paula_uart.o: include/fujinet_paula_uart.h
 $(BUILD_DIR)/channels/rs232/fujinet_nio_client.o: include/fujinet_nio_endian.h
 
 $(NIO_EXCHANGE): tools/fujinet-nio-exchange.c tools/fujinet_nio_exchange_opts.c \

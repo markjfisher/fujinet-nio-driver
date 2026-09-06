@@ -406,7 +406,7 @@ static void test_serial_device_opts(void)
         "--type", "clock",
         "--backend", "cold",
         "--baud", "38400",
-        "--serial-device", "BaudBandit.device",
+        "--serial-device", "fujinet-serial.device",
         NULL
     };
     char *warm[] = {
@@ -414,7 +414,7 @@ static void test_serial_device_opts(void)
         "--type", "clock",
         "--backend", "warm",
         "--baud", "38400",
-        "--serial-device", "BaudBandit.device",
+        "--serial-device", "fujinet-serial.device",
         "--serial-unit", "0",
         NULL
     };
@@ -429,7 +429,7 @@ static void test_serial_device_opts(void)
         "fujinet-nio-exchange",
         "--type", "clock",
         "--backend", "cold",
-        "--serial-device", "DEVS:BaudBandit.device",
+        "--serial-device", "DEVS:fujinet-serial.device",
         NULL
     };
     struct fn_nio_exchange_opts opts;
@@ -444,7 +444,7 @@ static void test_serial_device_opts(void)
           fn_nio_exchange_opts_parse(9, cold, &opts) == 0);
     CHECK("serial-device stored",
           opts.serial_device != NULL &&
-          strcmp(opts.serial_device, "BaudBandit.device") == 0);
+          strcmp(opts.serial_device, "fujinet-serial.device") == 0);
     CHECK("serial-unit default 0", opts.serial_unit == 0UL && !opts.has_serial_unit);
     n = fn_nio_exchange_opts_plan(&opts, steps, 5);
     CHECK("cold serial plan count", n == 3);
@@ -474,13 +474,13 @@ static void test_serial_device_opts(void)
     CHECK("serial-device path is usage error",
           fn_nio_exchange_opts_parse(7, bad_name, &opts) != 0);
 
-    CHECK("encode BaudBandit",
+    CHECK("encode fujinet-serial",
           fujinet_nio_serial_encode(payload, sizeof(payload), &payload_len, 0,
-                                    "BaudBandit.device") == FN_OK);
-    CHECK("decode BaudBandit",
+                                    "fujinet-serial.device") == FN_OK);
+    CHECK("decode fujinet-serial",
           fujinet_nio_serial_decode(payload, payload_len, &unit, name,
                                     sizeof(name)) == FN_OK &&
-          unit == 0 && strcmp(name, "BaudBandit.device") == 0);
+          unit == 0 && strcmp(name, "fujinet-serial.device") == 0);
     CHECK("name_ok serial.device",
           fujinet_nio_serial_name_ok("serial.device"));
     CHECK("name_ok rejects colon",
