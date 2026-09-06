@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "fujinet-nio.h"
+#include "../../common/fujinet_disk_retry.h"
 #include <fujinet-amiga-disk/support.h>
 
 #define FUJINET_DISK_UNIT_COUNT 8U
@@ -54,8 +55,7 @@ typedef struct fujinet_disk_driver {
 
 typedef struct fujinet_nio_disk_context {
     fn_disk_client_context_t client;
-    uint8_t exchange_attempts;
-    uint8_t exchange_results[3];
+    fujinet_disk_retry_diagnostics_t retry;
     uint8_t exchange_causes[3];
     uint8_t exchange_native_errors[3];
     uint16_t exchange_statuses[3];

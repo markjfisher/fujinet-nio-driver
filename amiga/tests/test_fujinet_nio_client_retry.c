@@ -1,7 +1,17 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "../channels/rs232/fujinet_nio_client.c"
+#include "../../common/fujinet_disk_retry.h"
+#include "../include/fujinet_disk_driver.h"
+#include "../include/fujinet_nio_endian.h"
+#include "fn_protocol.h"
+
+enum {
+    NIO_DISK_READ_SECTOR = 0x03,
+    NIO_DISK_WRITE_SECTOR = 0x04,
+    NIO_DISK_READ_REQUEST_SIZE = FN_HEADER_SIZE + 8,
+    NIO_DISK_WRITE_REQUEST_SIZE = FN_HEADER_SIZE + 8 + FUJINET_DISK_BLOCK_SIZE
+};
 
 #define MAX_CALLS 8U
 #define MAX_REQUEST_SIZE NIO_DISK_WRITE_REQUEST_SIZE
@@ -56,6 +66,36 @@ uint8_t __wrap_fn_transport_exchange_buffers(
             *response_length = scripted_failure_lengths[call];
     }
     return result;
+}
+
+static uint8_t scripted_transport(void *context, const uint8_t *request,
+                                  uint16_t request_length, uint8_t *response,
+                                  uint16_t response_capacity,
+                                  uint16_t *response_length)
+{
+    (void)context;
+    return __wrap_fn_transport_exchange_buffers(
+        request, request_length, response, response_capacity, response_length);
+}
+
+static uint8_t retry_exchange(const uint8_t *request, uint16_t request_length,
+                              uint8_t *response, uint16_t response_capacity,
+                              uint16_t *response_length)
+{
+    return fujinet_disk_retry_exchange(
+        scripted_transport, NULL, request, request_length, response,
+        response_capacity, response_length, NULL, NULL, NULL);
+}
+
+static uint8_t context_exchange(void *context, const uint8_t *request,
+                                uint16_t request_length, uint8_t *response,
+                                uint16_t response_capacity,
+                                uint16_t *response_length)
+{
+    return fujinet_disk_retry_exchange(
+        scripted_transport, NULL, request, request_length, response,
+        response_capacity, response_length,
+        (fujinet_disk_retry_diagnostics_t *)context, NULL, NULL);
 }
 
 static void put_u16le(uint8_t *data, uint16_t value)
@@ -146,7 +186,8 @@ static void build_status_response(uint8_t command, uint8_t status)
 
 static void test_recovered_read(void)
 {
-    fujinet_nio_disk_context_t context;
+    fn_disk_client_context_t context;
+    fujinet_disk_retry_diagnostics_t diagnostics;
     uint8_t payload[11 + FUJINET_DISK_BLOCK_SIZE];
     uint8_t expected[FUJINET_DISK_BLOCK_SIZE];
     uint8_t actual[FUJINET_DISK_BLOCK_SIZE];
@@ -167,8 +208,9 @@ static void test_recovered_read(void)
     scripted_results[0] = FN_ERR_TRANSPORT;
     scripted_failure_lengths[0] = 37;
 
-    CHECK("read context init", fujinet_nio_disk_context_init(&context) == FN_OK);
-    result = fujinet_nio_disk_client.read_sector(
+    CHECK("read context init", fn_disk_context_init(&context, context_exchange,
+                                                    &diagnostics) == FN_OK);
+    result = fn_disk_read_sector_context(
         &context, 2, 0x12345678UL, actual, sizeof(actual), &actual_length);
 
     CHECK("recovered read result", result == FN_OK);
@@ -187,7 +229,8 @@ static void test_recovered_read(void)
 
 static void test_recovered_write(void)
 {
-    fujinet_nio_disk_context_t context;
+    fn_disk_client_context_t context;
+    fujinet_disk_retry_diagnostics_t diagnostics;
     uint8_t payload[11];
     uint8_t data[FUJINET_DISK_BLOCK_SIZE];
     uint16_t i;
@@ -207,8 +250,9 @@ static void test_recovered_write(void)
     scripted_failure_lengths[0] = 11;
     scripted_failure_lengths[1] = 22;
 
-    CHECK("write context init", fujinet_nio_disk_context_init(&context) == FN_OK);
-    result = fujinet_nio_disk_client.write_sector(
+    CHECK("write context init", fn_disk_context_init(&context, context_exchange,
+                                                     &diagnostics) == FN_OK);
+    result = fn_disk_write_sector_context(
         &context, 8, 0x89ABCDEFUL, data, sizeof(data));
 
     CHECK("recovered write result", result == FN_OK);
@@ -244,7 +288,7 @@ static void test_persistent_fault(void)
     scripted_failure_lengths[1] = 20;
     scripted_failure_lengths[2] = 30;
 
-    result = nio_exchange(NULL, request, sizeof(request), response,
+    result = retry_exchange(request, sizeof(request), response,
                           sizeof(response), &response_length);
 
     CHECK("persistent result preserved", result == FN_ERR_TRANSPORT);
@@ -273,7 +317,7 @@ static void test_non_retryable_result(void)
     build_write_request(request, 4, 99, FUJINET_DISK_BLOCK_SIZE);
     scripted_results[0] = FN_ERR_BUSY;
     scripted_failure_lengths[0] = 44;
-    result = nio_exchange(NULL, request, sizeof(request), response,
+    result = retry_exchange(request, sizeof(request), response,
                           sizeof(response), &response_length);
 
     CHECK("non-retryable result", result == FN_ERR_BUSY);
@@ -301,7 +345,7 @@ static void test_excluded_commands(void)
         response_length = 99;
 
         CHECK("excluded result",
-              nio_exchange(NULL, request, sizeof(request), response,
+              retry_exchange(request, sizeof(request), response,
                            sizeof(response), &response_length) ==
                   FN_ERR_TRANSPORT);
         CHECK("excluded one attempt", transport_calls == 1);
@@ -315,7 +359,7 @@ static void test_excluded_commands(void)
     scripted_results[0] = FN_ERR_TIMEOUT;
     response_length = 99;
     CHECK("network read excluded",
-          nio_exchange(NULL, request, NIO_DISK_READ_REQUEST_SIZE, response,
+          retry_exchange(request, NIO_DISK_READ_REQUEST_SIZE, response,
                        sizeof(response), &response_length) == FN_ERR_TIMEOUT);
     CHECK("network read one attempt", transport_calls == 1);
 }
@@ -329,7 +373,7 @@ static void expect_invalid_single_attempt(const char *name,
 
     reset_harness();
     scripted_results[0] = FN_ERR_TRANSPORT;
-    CHECK(name, nio_exchange(NULL, request, request_length, response,
+    CHECK(name, retry_exchange(request, request_length, response,
                              sizeof(response), &response_length) ==
                     FN_ERR_TRANSPORT);
     CHECK("invalid one attempt", transport_calls == 1);
@@ -398,7 +442,8 @@ static void test_malformed_sector_packets(void)
 
 static void test_remote_timeout_is_not_retried(void)
 {
-    fujinet_nio_disk_context_t context;
+    fn_disk_client_context_t context;
+    fujinet_disk_retry_diagnostics_t diagnostics;
     uint8_t data[FUJINET_DISK_BLOCK_SIZE];
     uint16_t data_length = 0;
     uint8_t result;
@@ -406,8 +451,8 @@ static void test_remote_timeout_is_not_retried(void)
     reset_harness();
     build_status_response(NIO_DISK_READ_SECTOR, FN_ERR_TIMEOUT);
     CHECK("remote timeout context init",
-          fujinet_nio_disk_context_init(&context) == FN_OK);
-    result = fujinet_nio_disk_client.read_sector(
+          fn_disk_context_init(&context, context_exchange, &diagnostics) == FN_OK);
+    result = fn_disk_read_sector_context(
         &context, 1, 0, data, sizeof(data), &data_length);
 
     CHECK("remote timeout result", result == FN_ERR_TIMEOUT);
@@ -422,7 +467,7 @@ static void test_null_response_length_is_rejected(void)
     reset_harness();
     build_read_request(request, 1, 0, FUJINET_DISK_BLOCK_SIZE);
     CHECK("null response length rejected",
-          nio_exchange(NULL, request, sizeof(request), response,
+          retry_exchange(request, sizeof(request), response,
                        sizeof(response), NULL) == FN_ERR_INVALID);
     CHECK("null response length does not call transport", transport_calls == 0);
 }

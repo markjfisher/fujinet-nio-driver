@@ -788,10 +788,10 @@ static void device_process_request(struct IORequest *request,
             request->io_Command == CMD_WRITE || request->io_Command == ETD_WRITE) {
             UBYTE i;
             fujinet_nio_disk_context_t *diag = &unit->nio_context;
-            base->trace.exchange_attempts[trace_index] = diag->exchange_attempts;
+            base->trace.exchange_attempts[trace_index] = diag->retry.attempts;
             for (i = 0; i < FUJINET_DISK_TRACE_ATTEMPTS; ++i) {
                 base->trace.exchange_results[trace_index][i] =
-                    diag->exchange_results[i];
+                    diag->retry.results[i];
                 base->trace.exchange_causes[trace_index][i] =
                     diag->exchange_causes[i];
                 base->trace.exchange_native_errors[trace_index][i] =
@@ -799,7 +799,7 @@ static void device_process_request(struct IORequest *request,
                 base->trace.exchange_statuses[trace_index][i] =
                     diag->exchange_statuses[i];
                 base->trace.exchange_response_lengths[trace_index][i] =
-                    diag->exchange_response_lengths[i];
+                    diag->retry.response_lengths[i];
             }
         }
     }

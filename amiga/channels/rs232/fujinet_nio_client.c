@@ -1,51 +1,32 @@
 #include "fujinet_disk_driver.h"
-#include "fujinet_nio_endian.h"
 #include "fn_platform.h"
-#include "fn_protocol.h"
 
 #include <string.h>
 
-enum {
-    NIO_DISK_READ_SECTOR = 0x03,
-    NIO_DISK_WRITE_SECTOR = 0x04,
-    NIO_DISK_READ_REQUEST_SIZE = FN_HEADER_SIZE + 8,
-    NIO_DISK_WRITE_REQUEST_SIZE = FN_HEADER_SIZE + 8 + FUJINET_DISK_BLOCK_SIZE,
-    NIO_DISK_EXCHANGE_ATTEMPTS = 3
-};
-
-static uint8_t is_retryable_sector_request(const uint8_t *request,
-                                            uint16_t request_length)
+static uint8_t nio_transport(void *context, const uint8_t *request,
+                             uint16_t request_length, uint8_t *response,
+                             uint16_t response_capacity,
+                             uint16_t *response_length)
 {
-    uint16_t encoded_length;
-    uint16_t sector_length;
-    uint8_t command;
-    uint8_t slot;
+    (void)context;
+    return fn_transport_exchange_buffers(request, request_length, response,
+                                         response_capacity, response_length);
+}
 
-    if (request == NULL || request_length < FN_HEADER_SIZE)
-        return 0;
+static void nio_record_attempt(void *context, uint8_t attempt,
+                               uint8_t result, uint16_t response_length)
+{
+    fujinet_nio_disk_context_t *diagnostics = context;
+    uint8_t index = (uint8_t)(attempt - 1);
 
-    command = request[1];
-    if ((command == NIO_DISK_READ_SECTOR &&
-         request_length != NIO_DISK_READ_REQUEST_SIZE) ||
-        (command == NIO_DISK_WRITE_SECTOR &&
-         request_length != NIO_DISK_WRITE_REQUEST_SIZE) ||
-        (command != NIO_DISK_READ_SECTOR &&
-         command != NIO_DISK_WRITE_SECTOR))
-        return 0;
-
-    encoded_length = fujinet_nio_get_le16(request + 2);
-    sector_length = fujinet_nio_get_le16(request + 12);
-    slot = request[7];
-
-    return request[0] == FN_DEVICE_DISK &&
-           encoded_length == request_length &&
-           request[FN_CHECKSUM_OFFSET] ==
-               fn_calc_packet_checksum(request, request_length) &&
-           request[5] == 0 &&
-           request[6] == FN_DISK_PROTOCOL_VERSION &&
-           slot >= FUJINET_DISK_FIRST_SLOT &&
-           slot < FUJINET_DISK_FIRST_SLOT + FUJINET_DISK_UNIT_COUNT &&
-           sector_length == FUJINET_DISK_BLOCK_SIZE;
+    if (diagnostics == NULL || index >= FUJINET_DISK_RETRY_ATTEMPTS)
+        return;
+    diagnostics->retry.results[index] = result;
+    diagnostics->retry.response_lengths[index] = response_length;
+    fn_amiga_transport_last_broker_cause(&diagnostics->exchange_causes[index]);
+    fn_amiga_transport_last_serial_detail(
+        &diagnostics->exchange_native_errors[index],
+        &diagnostics->exchange_statuses[index]);
 }
 
 static uint8_t nio_exchange(void *exchange_context,
@@ -53,53 +34,14 @@ static uint8_t nio_exchange(void *exchange_context,
                             uint8_t *response, uint16_t response_capacity,
                             uint16_t *response_length)
 {
-    uint16_t attempt_response_length;
-    uint8_t attempt;
-    uint8_t attempts;
-    uint8_t result = FN_ERR_INVALID;
-
     fujinet_nio_disk_context_t *diagnostics = exchange_context;
-    if (response_length == NULL) return FN_ERR_INVALID;
-
-    attempts = is_retryable_sector_request(request, request_length)
-                   ? NIO_DISK_EXCHANGE_ATTEMPTS
-                   : 1;
-
-    for (attempt = 0; attempt < attempts; ++attempt) {
-        if (diagnostics != NULL) {
-            diagnostics->exchange_attempts = (uint8_t)(attempt + 1);
-            diagnostics->exchange_results[attempt] = FN_ERR_INVALID;
-            diagnostics->exchange_causes[attempt] = 0;
-            diagnostics->exchange_native_errors[attempt] = 0;
-            diagnostics->exchange_statuses[attempt] = 0;
-            diagnostics->exchange_response_lengths[attempt] = 0;
-        }
-        *response_length = 0;
-        attempt_response_length = 0;
-        result = fn_transport_exchange_buffers(
-            request, request_length, response, response_capacity,
-            &attempt_response_length);
-        if (diagnostics != NULL) {
-            diagnostics->exchange_results[attempt] = result;
-            diagnostics->exchange_response_lengths[attempt] =
-                attempt_response_length;
-#ifdef __AMIGA__
-            fn_amiga_transport_last_broker_cause(
-                &diagnostics->exchange_causes[attempt]);
-            fn_amiga_transport_last_serial_detail(
-                &diagnostics->exchange_native_errors[attempt],
-                &diagnostics->exchange_statuses[attempt]);
-#endif
-        }
-        if (result == FN_OK) {
-            *response_length = attempt_response_length;
-            return FN_OK;
-        }
-        if (result != FN_ERR_TRANSPORT && result != FN_ERR_TIMEOUT)
-            return result;
-    }
-
-    return result;
+    if (diagnostics != NULL) memset(&diagnostics->retry, 0,
+                                   sizeof(diagnostics->retry));
+    return fujinet_disk_retry_exchange(
+        nio_transport, NULL, request, request_length,
+        response, response_capacity, response_length,
+        diagnostics != NULL ? &diagnostics->retry : NULL,
+        nio_record_attempt, diagnostics);
 }
 
 uint8_t fujinet_nio_disk_context_init(fujinet_nio_disk_context_t *context)

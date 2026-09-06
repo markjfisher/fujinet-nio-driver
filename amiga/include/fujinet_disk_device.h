@@ -3,6 +3,7 @@
 
 #include <exec/io.h>
 #include "fujinet-nio.h"
+#include "../../common/fujinet_disk_retry.h"
 
 /* Keep private commands beyond the complete trackdisk.device command range.
  * CMD_NONSTD itself is TD_MOTOR and must never be repurposed. */
@@ -13,7 +14,7 @@
 #define FUJINET_DISK_CMD_INSPECT_CATALOG (CMD_NONSTD + 0x104)
 #define FUJINET_DISK_CMD_TRACE_CLEAR (CMD_NONSTD + 0x105)
 #define FUJINET_DISK_TRACE_CAPACITY 32
-#define FUJINET_DISK_TRACE_ATTEMPTS 3
+#define FUJINET_DISK_TRACE_ATTEMPTS FUJINET_DISK_RETRY_ATTEMPTS
 
 struct fujinet_disk_trace {
     UWORD count;

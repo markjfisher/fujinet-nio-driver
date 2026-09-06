@@ -24,6 +24,7 @@ SDK_LIBRARY := $(BUILD_DIR)/lib/libfujinet-amiga-disk.a
 SDK_SOURCES := common/fujinet_disk_dos_envec.c common/fujinet_disk_filesystem.c common/fujinet_disk_media_profile.c
 SDK_OBJECTS := $(patsubst %.c,$(BUILD_DIR)/sdk/%.o,$(SDK_SOURCES))
 SOURCES := common/fujinet_disk_driver.c \
+	../common/fujinet_disk_retry.c \
 	common/fujinet_disk_dos_envec.c \
 	common/fujinet_disk_filesystem.c \
 	common/fujinet_disk_media_profile.c \
