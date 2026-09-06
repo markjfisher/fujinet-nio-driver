@@ -28,8 +28,21 @@ Pacing matrix numbers and the 16/2000 product choice:
   ```text
   Copy fujinet-nio.device DEVS:
   Copy fujinet-nio-exchange C:
+  Copy fujinet-nio-serial C:
   C:fujinet-load-resident DEVS:fujinet-nio.device fujinet-nio.device
-  ```
+```
+
+The broker opens `serial.device` unit 0 unless you select another
+IOExtSer-compatible driver on the Amiga (no rebuild):
+
+```text
+Copy BaudBandit.device DEVS:
+C:fujinet-nio-serial BaudBandit.device
+```
+
+Or pass `--serial-device BaudBandit.device` on a matrix command. Cold still
+closes and reopens that driver before the measured request. Omit the flag to
+keep whatever `fujinet-nio-serial` last set.
 
 - **No other FujiNet serial client** during the matrix. Unload
   `fujinet-disk.device` if it is resident, and do not run `FLS`, `FHOST`, or
@@ -145,6 +158,7 @@ not the burst-overrun signature.
 ```text
 fujinet-nio-exchange --type clock|host-get|file-list --backend cold|warm
     [--baud 9600|19200|38400]
+    [--serial-device NAME] [--serial-unit 0..255]
     [--size 8|16|32|64|128|256|420|512 --uri URI]
     [--trials N]
 ```
@@ -177,7 +191,8 @@ For each baud in **9600, then 19200, then 38400**:
 1. **Clock cold** — smallest useful first FujiBus after reopen.
 
    ```text
-   fujinet-nio-exchange --type clock --backend cold --baud 38400 --trials 20
+   fujinet-nio-exchange --type clock --backend cold --baud 38400 \
+       --serial-device BaudBandit.device --trials 20
    ```
 
 2. **Clock warm** — same request on the retained backend.

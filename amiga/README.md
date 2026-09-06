@@ -106,22 +106,40 @@ name mismatch, non-resident rejection, registration, `OpenDevice()`, and
 standard trackdisk status commands on both the normal test OS and Workbench
 3.1.
 
-## RS-232 baud rate
+## RS-232 baud rate and serial driver
 
-`make native` also builds `build/amiga/fujinet-nio-baud`. With the resident
-`fujinet-nio.device` loaded, use it to inspect or select the rate used when
-the serial backend next opens:
+`make native` also builds `build/amiga/fujinet-nio-baud` and
+`build/amiga/fujinet-nio-serial`. With the resident `fujinet-nio.device`
+loaded, use them to inspect or select the rate and Exec serial driver used
+when the RS-232 backend next opens:
 
 ```text
 fujinet-nio-baud
-fujinet-nio-baud 115200
+fujinet-nio-baud 38400
+fujinet-nio-serial
+fujinet-nio-serial BaudBandit.device
+fujinet-nio-serial BaudBandit.device 0
+fujinet-nio-serial serial.device
 ```
 
-Supported values are 300–230400 baud. The selection is held by the resident
-device until it is unloaded or the machine reboots; put the desired command in
-`S:Startup-Sequence` to make it persistent. This affects only the RS-232
-byte-stream backend. Packet-native transports such as Zorro or floppy use
-their own transport configuration and are unaffected.
+Supported baud values are 300–230400. The serial driver name is an Exec
+device in `DEVS:` (`serial.device` by default). Do not rename stock
+`serial.device`; select a replacement such as `BaudBandit.device` instead.
+The selection is held by the resident device until it is unloaded or the
+machine reboots; put the desired commands in `S:Startup-Sequence` to make
+them persistent. This affects only the RS-232 byte-stream backend.
+Packet-native transports such as Zorro or floppy use their own transport
+configuration and are unaffected.
+
+`fujinet-nio-exchange` accepts the same choice for a single matrix run
+without changing the resident default:
+
+```text
+fujinet-nio-exchange --type clock --backend cold --baud 38400 \
+    --serial-device BaudBandit.device --trials 20
+```
+
+Omitting `--serial-device` uses whatever `fujinet-nio-serial` last set.
 
 To separate cold vs warm serial and response size on real hardware, use
 `fujinet-nio-exchange` as described in

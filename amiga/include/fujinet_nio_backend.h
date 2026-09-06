@@ -33,5 +33,7 @@ uint8_t backend_exchange(
     uint16_t *native_status);
 uint8_t backend_set_baud(uint32_t baud);
 uint32_t backend_get_baud(void);
+uint8_t backend_set_serial(uint32_t unit, const char *name);
+void backend_get_serial(uint32_t *unit, char *name, uint16_t name_cap);
 
 #endif

@@ -14,6 +14,7 @@ NIO_DEVICE := $(BUILD_DIR)/fujinet-nio.device
 NIO_DEVICE_MAP := $(NIO_DEVICE).map
 NIO_EXCHANGE := $(BUILD_DIR)/fujinet-nio-exchange
 NIO_BAUD := $(BUILD_DIR)/fujinet-nio-baud
+NIO_SERIAL := $(BUILD_DIR)/fujinet-nio-serial
 NIO_OBJECTS := $(BUILD_DIR)/nio.device/fujinet_nio_device.o \
 	$(BUILD_DIR)/nio.device/fujinet_nio_serial_backend.o \
 	$(BUILD_DIR)/common/fujinet_io_queue.o \
@@ -38,7 +39,7 @@ OBJECTS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SOURCES))
 all: tests native sdk
 
 native: library $(DEVICE) $(MOUNT_TOOL) $(RESIDENT_LOADER) $(RESIDENT_UNLOADER) $(TD_PROBE) \
-	$(NIO_DEVICE) $(NIO_EXCHANGE) $(NIO_BAUD)
+	$(NIO_DEVICE) $(NIO_EXCHANGE) $(NIO_BAUD) $(NIO_SERIAL)
 
 sdk: $(SDK_LIBRARY) $(SDK_INCLUDE)/fujinet-amiga-disk/support.h $(SDK_INCLUDE)/fujinet-amiga-disk/device.h
 
@@ -74,13 +75,16 @@ $(BUILD_DIR)/nio-framing/fn_slip.o: $(LIB_ROOT)/src/common/fn_slip.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/nio.device/fujinet_nio_device.o: include/fujinet_nio_endian.h
+$(BUILD_DIR)/nio.device/fujinet_nio_device.o: include/fujinet_nio_endian.h \
+	include/fujinet_nio_serial_config.h
+$(BUILD_DIR)/nio.device/fujinet_nio_serial_backend.o: include/fujinet_nio_serial_config.h
 $(BUILD_DIR)/channels/rs232/fujinet_nio_client.o: include/fujinet_nio_endian.h
 
 $(NIO_EXCHANGE): tools/fujinet-nio-exchange.c tools/fujinet_nio_exchange_opts.c \
 		tools/fujinet_nio_exchange_opts.h include/fujinet_nio_device.h \
 		include/fujinet_disk_device.h \
-		include/fujinet_nio_endian.h $(LIBRARY)
+		include/fujinet_nio_endian.h include/fujinet_nio_serial_config.h \
+		$(LIBRARY)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 \
 		tools/fujinet-nio-exchange.c tools/fujinet_nio_exchange_opts.c \
@@ -88,6 +92,11 @@ $(NIO_EXCHANGE): tools/fujinet-nio-exchange.c tools/fujinet_nio_exchange_opts.c 
 
 $(NIO_BAUD): tools/fujinet-nio-baud.c include/fujinet_nio_device.h \
 		include/fujinet_nio_endian.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 $< -lamiga -o $@
+
+$(NIO_SERIAL): tools/fujinet-nio-serial.c include/fujinet_nio_device.h \
+		include/fujinet_nio_endian.h include/fujinet_nio_serial_config.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 $< -lamiga -o $@
 

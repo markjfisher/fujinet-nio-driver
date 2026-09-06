@@ -1,4 +1,5 @@
 #include "fujinet_nio_exchange_opts.h"
+#include "fujinet_nio_serial_config.h"
 
 #include "fn_protocol.h"
 
@@ -392,6 +393,98 @@ static void test_warm_baud_mismatch_before_warmup(void)
           !fn_nio_exchange_step_failure_aborts(FN_NIO_EXCHANGE_STEP_WARMUP));
     CHECK("MEASURE failure does not abort remaining log path",
           !fn_nio_exchange_step_failure_aborts(FN_NIO_EXCHANGE_STEP_MEASURE));
+    CHECK("SET_SERIAL failure aborts",
+          fn_nio_exchange_step_failure_aborts(FN_NIO_EXCHANGE_STEP_SET_SERIAL));
+    CHECK("GET_SERIAL failure aborts",
+          fn_nio_exchange_step_failure_aborts(FN_NIO_EXCHANGE_STEP_GET_SERIAL));
+}
+
+static void test_serial_device_opts(void)
+{
+    char *cold[] = {
+        "fujinet-nio-exchange",
+        "--type", "clock",
+        "--backend", "cold",
+        "--baud", "38400",
+        "--serial-device", "BaudBandit.device",
+        NULL
+    };
+    char *warm[] = {
+        "fujinet-nio-exchange",
+        "--type", "clock",
+        "--backend", "warm",
+        "--baud", "38400",
+        "--serial-device", "BaudBandit.device",
+        "--serial-unit", "0",
+        NULL
+    };
+    char *unit_only[] = {
+        "fujinet-nio-exchange",
+        "--type", "clock",
+        "--backend", "cold",
+        "--serial-unit", "0",
+        NULL
+    };
+    char *bad_name[] = {
+        "fujinet-nio-exchange",
+        "--type", "clock",
+        "--backend", "cold",
+        "--serial-device", "DEVS:BaudBandit.device",
+        NULL
+    };
+    struct fn_nio_exchange_opts opts;
+    int steps[5];
+    int n;
+    uint8_t payload[FUJINET_NIO_SERIAL_PAYLOAD_MAX];
+    uint16_t payload_len;
+    char name[FUJINET_NIO_SERIAL_NAME_MAX + 1];
+    uint32_t unit;
+
+    CHECK("parse serial-device cold",
+          fn_nio_exchange_opts_parse(9, cold, &opts) == 0);
+    CHECK("serial-device stored",
+          opts.serial_device != NULL &&
+          strcmp(opts.serial_device, "BaudBandit.device") == 0);
+    CHECK("serial-unit default 0", opts.serial_unit == 0UL && !opts.has_serial_unit);
+    n = fn_nio_exchange_opts_plan(&opts, steps, 5);
+    CHECK("cold serial plan count", n == 3);
+    CHECK("cold SET_SERIAL first",
+          steps[0] == FN_NIO_EXCHANGE_STEP_SET_SERIAL);
+    CHECK("cold SET_BAUD second",
+          steps[1] == FN_NIO_EXCHANGE_STEP_SET_BAUD);
+    CHECK("cold MEASURE last",
+          steps[2] == FN_NIO_EXCHANGE_STEP_MEASURE);
+
+    CHECK("parse serial-device warm",
+          fn_nio_exchange_opts_parse(11, warm, &opts) == 0);
+    CHECK("serial-unit 0 stored", opts.has_serial_unit && opts.serial_unit == 0UL);
+    n = fn_nio_exchange_opts_plan(&opts, steps, 5);
+    CHECK("warm serial plan count", n == 4);
+    CHECK("warm GET_SERIAL first",
+          steps[0] == FN_NIO_EXCHANGE_STEP_GET_SERIAL);
+    CHECK("warm GET_BAUD second",
+          steps[1] == FN_NIO_EXCHANGE_STEP_GET_BAUD);
+    CHECK("warm WARMUP third",
+          steps[2] == FN_NIO_EXCHANGE_STEP_WARMUP);
+    CHECK("warm MEASURE last",
+          steps[3] == FN_NIO_EXCHANGE_STEP_MEASURE);
+
+    CHECK("serial-unit without device is usage error",
+          fn_nio_exchange_opts_parse(7, unit_only, &opts) != 0);
+    CHECK("serial-device path is usage error",
+          fn_nio_exchange_opts_parse(7, bad_name, &opts) != 0);
+
+    CHECK("encode BaudBandit",
+          fujinet_nio_serial_encode(payload, sizeof(payload), &payload_len, 0,
+                                    "BaudBandit.device") == FN_OK);
+    CHECK("decode BaudBandit",
+          fujinet_nio_serial_decode(payload, payload_len, &unit, name,
+                                    sizeof(name)) == FN_OK &&
+          unit == 0 && strcmp(name, "BaudBandit.device") == 0);
+    CHECK("name_ok serial.device",
+          fujinet_nio_serial_name_ok("serial.device"));
+    CHECK("name_ok rejects colon",
+          !fujinet_nio_serial_name_ok("DEVS:serial.device"));
 }
 
 static void test_elapsed_and_trial_log(void)
@@ -458,6 +551,7 @@ int main(void)
     test_host_get_packet();
     test_allowed_list_sizes();
     test_warm_baud_mismatch_before_warmup();
+    test_serial_device_opts();
     test_elapsed_and_trial_log();
     test_argc1_is_not_matrix();
 

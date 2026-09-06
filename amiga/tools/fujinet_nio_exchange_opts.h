@@ -20,7 +20,9 @@ enum fn_nio_exchange_step {
     FN_NIO_EXCHANGE_STEP_GET_BAUD = 1,
     FN_NIO_EXCHANGE_STEP_SET_BAUD = 2,
     FN_NIO_EXCHANGE_STEP_WARMUP = 3,
-    FN_NIO_EXCHANGE_STEP_MEASURE = 4
+    FN_NIO_EXCHANGE_STEP_MEASURE = 4,
+    FN_NIO_EXCHANGE_STEP_GET_SERIAL = 5,
+    FN_NIO_EXCHANGE_STEP_SET_SERIAL = 6
 };
 
 struct fn_nio_exchange_opts {
@@ -34,6 +36,9 @@ struct fn_nio_exchange_opts {
     uint32_t lba;
     int provocation;
     unsigned trials;
+    const char *serial_device; /* NULL if --serial-device omitted */
+    unsigned long serial_unit; /* 0 if omitted */
+    int has_serial_unit;
 };
 
 int fn_nio_exchange_opts_parse(int argc, char **argv,

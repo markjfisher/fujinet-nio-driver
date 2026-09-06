@@ -13,6 +13,7 @@
 
 #include "fujinet_nio_device.h"
 #include "fujinet_nio_endian.h"
+#include "fujinet_nio_serial_config.h"
 #include "fujinet_nio_backend.h"
 #include "fujinet_io_queue.h"
 #include "fujinet-nio.h"
@@ -39,6 +40,10 @@ typedef uint8_t (*fujinet_nio_backend_exchange_fn)(
     uint8_t *native_io_error, uint16_t *native_status);
 typedef uint8_t (*fujinet_nio_backend_set_baud_fn)(uint32_t baud);
 typedef uint32_t (*fujinet_nio_backend_get_baud_fn)(void);
+typedef uint8_t (*fujinet_nio_backend_set_serial_fn)(uint32_t unit,
+                                                    const char *name);
+typedef void (*fujinet_nio_backend_get_serial_fn)(uint32_t *unit, char *name,
+                                                 uint16_t name_cap);
 
 enum {
     NIO_WORKER_IDLE = 0,
@@ -64,6 +69,8 @@ struct fujinet_nio_device_base {
     fujinet_nio_backend_exchange_fn backend_exchange_fn;
     fujinet_nio_backend_set_baud_fn backend_set_baud_fn;
     fujinet_nio_backend_get_baud_fn backend_get_baud_fn;
+    fujinet_nio_backend_set_serial_fn backend_set_serial_fn;
+    fujinet_nio_backend_get_serial_fn backend_get_serial_fn;
 };
 
 struct ExecBase *SysBase;
@@ -210,6 +217,32 @@ static void process_control(struct fujinet_nio_device_base *base,
                                 base->backend_get_baud_fn());
             req->fn_response_length = 4;
         }
+    } else if (req->fn_io.io_Command == FUJINET_NIO_CMD_SET_SERIAL) {
+        uint32_t unit;
+        char name[FUJINET_NIO_SERIAL_NAME_MAX + 1];
+
+        close_backend(base);
+        if (base->backend_set_serial_fn == NULL) {
+            nio_error = FN_ERR_UNSUPPORTED;
+        } else if (fujinet_nio_serial_decode(
+                       req->fn_request_data, req->fn_request_length, &unit,
+                       name, sizeof(name)) != FN_OK) {
+            nio_error = FN_ERR_INVALID;
+        } else {
+            nio_error = base->backend_set_serial_fn(unit, name);
+        }
+    } else if (req->fn_io.io_Command == FUJINET_NIO_CMD_GET_SERIAL) {
+        uint32_t unit;
+        char name[FUJINET_NIO_SERIAL_NAME_MAX + 1];
+
+        if (base->backend_get_serial_fn == NULL) {
+            nio_error = FN_ERR_UNSUPPORTED;
+        } else {
+            base->backend_get_serial_fn(&unit, name, sizeof(name));
+            nio_error = fujinet_nio_serial_encode(
+                req->fn_response_data, req->fn_response_capacity,
+                &req->fn_response_length, unit, name);
+        }
     } else {
         nio_error = FN_ERR_INVALID;
     }
@@ -221,7 +254,9 @@ static void process_control(struct fujinet_nio_device_base *base,
     } else {
         req->fn_io.io_Error = 0;
         req->fn_nio_error = nio_error;
-        if (nio_error != FN_OK || req->fn_io.io_Command != FUJINET_NIO_CMD_GET_BAUD)
+        if (nio_error != FN_OK ||
+            (req->fn_io.io_Command != FUJINET_NIO_CMD_GET_BAUD &&
+             req->fn_io.io_Command != FUJINET_NIO_CMD_GET_SERIAL))
             req->fn_response_length = 0;
     }
     base->in_progress = NULL;
@@ -275,6 +310,8 @@ static struct fujinet_nio_device_base *device_init(
     base->backend_exchange_fn = backend_exchange;
     base->backend_set_baud_fn = backend_set_baud;
     base->backend_get_baud_fn = backend_get_baud;
+    base->backend_set_serial_fn = backend_set_serial;
+    base->backend_get_serial_fn = backend_get_serial;
     base->worker_signal = AllocSignal(-1);
     if (base->worker_signal == -1) return NULL;
     base->worker_stack = AllocMem(WORKER_STACK_SIZE, MEMF_PUBLIC | MEMF_CLEAR);
@@ -424,7 +461,9 @@ static void device_begin_io(
 
     if (request->io_Command != FUJINET_NIO_CMD_EXCHANGE &&
         request->io_Command != FUJINET_NIO_CMD_SET_BAUD &&
-        request->io_Command != FUJINET_NIO_CMD_GET_BAUD) {
+        request->io_Command != FUJINET_NIO_CMD_GET_BAUD &&
+        request->io_Command != FUJINET_NIO_CMD_SET_SERIAL &&
+        request->io_Command != FUJINET_NIO_CMD_GET_SERIAL) {
         reject_begin_io(req, IOERR_NOCMD);
         return;
     }
@@ -456,8 +495,22 @@ static void device_begin_io(
             reject_begin_io(req, IOERR_BADLENGTH);
             return;
         }
+    } else if (request->io_Command == FUJINET_NIO_CMD_GET_BAUD) {
+        if (req->fn_request_length != 0 || req->fn_response_data == NULL ||
+            req->fn_response_capacity < 4) {
+            reject_begin_io(req, IOERR_BADLENGTH);
+            return;
+        }
+    } else if (request->io_Command == FUJINET_NIO_CMD_SET_SERIAL) {
+        if (req->fn_request_data == NULL ||
+            req->fn_request_length < FUJINET_NIO_SERIAL_PAYLOAD_MIN ||
+            req->fn_request_length > FUJINET_NIO_SERIAL_PAYLOAD_MAX ||
+            req->fn_response_capacity != 0) {
+            reject_begin_io(req, IOERR_BADLENGTH);
+            return;
+        }
     } else if (req->fn_request_length != 0 || req->fn_response_data == NULL ||
-               req->fn_response_capacity < 4) {
+               req->fn_response_capacity < FUJINET_NIO_SERIAL_PAYLOAD_MAX) {
         reject_begin_io(req, IOERR_BADLENGTH);
         return;
     }
@@ -558,13 +611,17 @@ void fujinet_nio_native_test_set_backend(
     fujinet_nio_backend_close_fn close_fn,
     fujinet_nio_backend_exchange_fn exchange_fn,
     fujinet_nio_backend_set_baud_fn set_baud_fn,
-    fujinet_nio_backend_get_baud_fn get_baud_fn)
+    fujinet_nio_backend_get_baud_fn get_baud_fn,
+    fujinet_nio_backend_set_serial_fn set_serial_fn,
+    fujinet_nio_backend_get_serial_fn get_serial_fn)
 {
     native_test_base.backend_open_fn = open_fn;
     native_test_base.backend_close_fn = close_fn;
     native_test_base.backend_exchange_fn = exchange_fn;
     native_test_base.backend_set_baud_fn = set_baud_fn;
     native_test_base.backend_get_baud_fn = get_baud_fn;
+    native_test_base.backend_set_serial_fn = set_serial_fn;
+    native_test_base.backend_get_serial_fn = get_serial_fn;
 }
 
 struct Device *fujinet_nio_native_test_open(struct IORequest *request,

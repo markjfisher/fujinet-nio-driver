@@ -9,6 +9,7 @@
 
 #include "fujinet_nio_backend.h"
 #include "fujinet_nio_serial_channel.h"
+#include "fujinet_nio_serial_config.h"
 #include "fujinet-nio.h"
 #include "fn_protocol.h"
 #include "fn_session.h"
@@ -18,7 +19,12 @@ extern struct ExecBase *SysBase;
 #ifndef FN_SERIAL_BACKEND_BAUD
 #define FN_SERIAL_BACKEND_BAUD 19200UL
 #endif
+#ifndef FN_SERIAL_BACKEND_DEVICE
+#define FN_SERIAL_BACKEND_DEVICE "serial.device"
+#endif
+#ifndef FN_SERIAL_BACKEND_UNIT
 #define FN_SERIAL_BACKEND_UNIT 0
+#endif
 #define FN_SERIAL_BACKEND_TIMER_UNIT UNIT_MICROHZ
 /* The exchange worker waits for a complete FujiBus frame. A 10 ms empty-RX
  * poll adds up to a full video frame of avoidable response latency for each
@@ -33,7 +39,9 @@ extern struct ExecBase *SysBase;
 #define FN_SERIAL_BACKEND_RBUF_SIZE \
     (((FN_SERIAL_BACKEND_WIRE_BUF_SIZE + 63) / 64) * 64)
 
-static const UBYTE serial_device_name[] = "serial.device";
+static char serial_device_name[FUJINET_NIO_SERIAL_NAME_MAX + 1] =
+    FN_SERIAL_BACKEND_DEVICE;
+static uint32_t serial_unit = FN_SERIAL_BACKEND_UNIT;
 
 static struct MsgPort *serial_port;
 static struct IOExtSer *serial_req;
@@ -408,6 +416,22 @@ uint32_t backend_get_baud(void)
     return serial_baud;
 }
 
+uint8_t backend_set_serial(uint32_t unit, const char *name)
+{
+    if (!fujinet_nio_serial_name_ok(name)) return FN_ERR_INVALID;
+    strcpy(serial_device_name, name);
+    serial_unit = unit;
+    return FN_OK;
+}
+
+void backend_get_serial(uint32_t *unit, char *name, uint16_t name_cap)
+{
+    if (unit != NULL) *unit = serial_unit;
+    if (name == NULL || name_cap == 0) return;
+    strncpy(name, serial_device_name, (size_t)name_cap - 1U);
+    name[name_cap - 1U] = '\0';
+}
+
 uint8_t backend_open(void)
 {
     if (serial_open && timer_open && session_initialized) return FN_OK;
@@ -422,7 +446,7 @@ uint8_t backend_open(void)
         backend_close();
         return FN_ERR_IO;
     }
-    if (OpenDevice(serial_device_name, FN_SERIAL_BACKEND_UNIT,
+    if (OpenDevice((CONST_STRPTR)serial_device_name, serial_unit,
                    (struct IORequest *)serial_req, 0) != 0) {
         backend_close();
         return FN_ERR_NOT_FOUND;

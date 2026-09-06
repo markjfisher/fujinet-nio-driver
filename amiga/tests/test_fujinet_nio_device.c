@@ -4,6 +4,7 @@
 
 #include "fujinet_nio_device.h"
 #include "fujinet_nio_backend.h"
+#include "fujinet_nio_serial_config.h"
 #include "fujinet-nio.h"
 #include "fn_protocol.h"
 
@@ -19,6 +20,10 @@ typedef uint8_t (*fujinet_nio_backend_exchange_fn)(
     uint8_t *native_io_error, uint16_t *native_status);
 typedef uint8_t (*fujinet_nio_backend_set_baud_fn)(uint32_t baud);
 typedef uint32_t (*fujinet_nio_backend_get_baud_fn)(void);
+typedef uint8_t (*fujinet_nio_backend_set_serial_fn)(uint32_t unit,
+                                                    const char *name);
+typedef void (*fujinet_nio_backend_get_serial_fn)(uint32_t *unit, char *name,
+                                                 uint16_t name_cap);
 
 void fujinet_nio_native_test_reset(void);
 void fujinet_nio_native_test_set_backend(
@@ -26,7 +31,9 @@ void fujinet_nio_native_test_set_backend(
     fujinet_nio_backend_close_fn close_fn,
     fujinet_nio_backend_exchange_fn exchange_fn,
     fujinet_nio_backend_set_baud_fn set_baud_fn,
-    fujinet_nio_backend_get_baud_fn get_baud_fn);
+    fujinet_nio_backend_get_baud_fn get_baud_fn,
+    fujinet_nio_backend_set_serial_fn set_serial_fn,
+    fujinet_nio_backend_get_serial_fn get_serial_fn);
 struct Device *fujinet_nio_native_test_open(struct IORequest *request,
                                             ULONG unit);
 BPTR fujinet_nio_native_test_close(struct IORequest *request);
@@ -86,6 +93,8 @@ static uint8_t canned_response[4] = {9, 8, 7, 6};
 static uint16_t canned_len = 4;
 static BPTR expunge_from_backend;
 static uint32_t backend_baud;
+static char backend_serial_name[FUJINET_NIO_SERIAL_NAME_MAX + 1];
+static uint32_t backend_serial_unit;
 
 static uint8_t test_backend_open(void)
 {
@@ -108,6 +117,23 @@ static uint8_t test_backend_set_baud(uint32_t baud)
 static uint32_t test_backend_get_baud(void)
 {
     return backend_baud;
+}
+
+static uint8_t test_backend_set_serial(uint32_t unit, const char *name)
+{
+    if (!fujinet_nio_serial_name_ok(name)) return FN_ERR_INVALID;
+    strcpy(backend_serial_name, name);
+    backend_serial_unit = unit;
+    return FN_OK;
+}
+
+static void test_backend_get_serial(uint32_t *unit, char *name,
+                                   uint16_t name_cap)
+{
+    if (unit != NULL) *unit = backend_serial_unit;
+    if (name == NULL || name_cap == 0) return;
+    strncpy(name, backend_serial_name, (size_t)name_cap - 1U);
+    name[name_cap - 1U] = '\0';
 }
 
 static uint8_t test_backend_exchange(const uint8_t *request,
@@ -179,11 +205,15 @@ static void reset_harness(void)
     delay_target = NULL;
     expunge_from_backend = (BPTR)0;
     backend_baud = 19200;
+    strcpy(backend_serial_name, "serial.device");
+    backend_serial_unit = 0;
     fujinet_nio_native_test_reset();
     fujinet_nio_native_test_set_backend(test_backend_open, test_backend_close,
                                         test_backend_exchange,
                                         test_backend_set_baud,
-                                        test_backend_get_baud);
+                                        test_backend_get_baud,
+                                        test_backend_set_serial,
+                                        test_backend_get_serial);
 }
 
 static void init_exchange(struct FujiNetNIORequest *req,
@@ -299,6 +329,92 @@ static void test_baud_controls(void)
     CHECK("SET_BAUD next EXCHANGE ran", backend_exchanges == 2);
 }
 
+static void test_serial_controls(void)
+{
+    struct FujiNetNIORequest exchange, set, get, bad;
+    UBYTE request[1] = {1};
+    UBYTE response[8];
+    UBYTE payload[FUJINET_NIO_SERIAL_PAYLOAD_MAX];
+    char name[FUJINET_NIO_SERIAL_NAME_MAX + 1];
+    uint16_t payload_len;
+    uint32_t unit;
+
+    reset_harness();
+    init_exchange(&exchange, request, sizeof(request), response,
+                  sizeof(response));
+    open_unit0(&exchange);
+    fujinet_nio_native_test_begin_io(&exchange.fn_io);
+    fujinet_nio_native_test_worker_step();
+    CHECK("serial setup exchange opened backend", backend_opens == 1);
+
+    CHECK("encode BaudBandit",
+          fujinet_nio_serial_encode(payload, sizeof(payload), &payload_len, 0,
+                                    "BaudBandit.device") == FN_OK);
+    init_exchange(&set, payload, payload_len, NULL, 0);
+    set.fn_io.io_Command = FUJINET_NIO_CMD_SET_SERIAL;
+    fujinet_nio_native_test_open(&set.fn_io, FUJINET_NIO_DEVICE_UNIT);
+    replies = 0;
+    fujinet_nio_native_test_begin_io(&set.fn_io);
+    fujinet_nio_native_test_worker_step();
+    CHECK("serial set replied", replies == 1);
+    CHECK("serial set FN_OK", set.fn_nio_error == FN_OK);
+    CHECK("serial set no exchange", backend_exchanges == 1);
+    CHECK("serial set closes current backend", backend_closes == 1);
+    CHECK("serial set name",
+          strcmp(backend_serial_name, "BaudBandit.device") == 0);
+    CHECK("serial set unit", backend_serial_unit == 0);
+
+    init_exchange(&get, NULL, 0, payload, sizeof(payload));
+    get.fn_io.io_Command = FUJINET_NIO_CMD_GET_SERIAL;
+    fujinet_nio_native_test_open(&get.fn_io, FUJINET_NIO_DEVICE_UNIT);
+    replies = 0;
+    fujinet_nio_native_test_begin_io(&get.fn_io);
+    fujinet_nio_native_test_worker_step();
+    CHECK("serial get replied", replies == 1);
+    CHECK("serial get FN_OK", get.fn_nio_error == FN_OK);
+    CHECK("serial get decode",
+          fujinet_nio_serial_decode(payload, get.fn_response_length, &unit,
+                                    name, sizeof(name)) == FN_OK);
+    CHECK("serial get name", strcmp(name, "BaudBandit.device") == 0);
+    CHECK("serial get unit", unit == 0);
+
+    CHECK("encode colon rejected",
+          fujinet_nio_serial_encode(payload, sizeof(payload), &payload_len, 0,
+                                    "DEVS:serial.device") != FN_OK);
+    CHECK("encode empty rejected",
+          fujinet_nio_serial_name_ok("") == 0);
+    CHECK("encode path rejected",
+          fujinet_nio_serial_name_ok("foo/bar.device") == 0);
+
+    /* Hand-build a payload BeginIO will queue, then the worker rejects. */
+    payload[0] = 0;
+    payload[1] = 0;
+    payload[2] = 0;
+    payload[3] = 0;
+    payload[4] = ':';
+    payload[5] = '\0';
+    init_exchange(&bad, payload, 6, NULL, 0);
+    bad.fn_io.io_Command = FUJINET_NIO_CMD_SET_SERIAL;
+    fujinet_nio_native_test_open(&bad.fn_io, FUJINET_NIO_DEVICE_UNIT);
+    replies = 0;
+    fujinet_nio_native_test_begin_io(&bad.fn_io);
+    fujinet_nio_native_test_worker_step();
+    CHECK("serial invalid queued", replies == 1);
+    CHECK("serial invalid FN_ERR_INVALID", bad.fn_nio_error == FN_ERR_INVALID);
+    CHECK("serial invalid already closed", backend_closes == 1);
+    CHECK("serial invalid kept previous name",
+          strcmp(backend_serial_name, "BaudBandit.device") == 0);
+
+    replies = 0;
+    init_exchange(&exchange, request, sizeof(request), response,
+                  sizeof(response));
+    fujinet_nio_native_test_open(&exchange.fn_io, FUJINET_NIO_DEVICE_UNIT);
+    fujinet_nio_native_test_begin_io(&exchange.fn_io);
+    fujinet_nio_native_test_worker_step();
+    CHECK("SET_SERIAL next EXCHANGE reopens backend", backend_opens == 2);
+    CHECK("SET_SERIAL next EXCHANGE ran", backend_exchanges == 2);
+}
+
 static void test_empty_request(void)
 {
     struct FujiNetNIORequest req;
@@ -322,7 +438,7 @@ static void test_overlapping_malformed(void)
 
     reset_harness();
     init_exchange(&req, NULL, 0, response, sizeof(response));
-    req.fn_io.io_Command = (UWORD)(FUJINET_NIO_CMD_GET_BAUD + 1);
+    req.fn_io.io_Command = (UWORD)(FUJINET_NIO_CMD_GET_SERIAL + 1);
     req.fn_struct_size = 1;
     req.fn_flags = 1;
     req.fn_pad[0] = 1;
@@ -765,6 +881,7 @@ int main(void)
     test_stub_ndk_symbols();
     test_happy_injected();
     test_baud_controls();
+    test_serial_controls();
     test_empty_request();
     test_overlapping_malformed();
     test_beginio_first_match_rows();

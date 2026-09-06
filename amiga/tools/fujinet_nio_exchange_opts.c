@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "fujinet_nio_endian.h"
+#include "fujinet_nio_serial_config.h"
 #include "fn_protocol.h"
 
 #define FN_NIO_EXCH_FILE_CMD_LIST 0x02
@@ -107,12 +108,23 @@ int fn_nio_exchange_opts_parse(int argc, char **argv,
                 parsed > 100000UL)
                 return -1;
             out->trials = (unsigned)parsed;
+        } else if (strcmp(argv[i], "--serial-device") == 0) {
+            if (take_arg(argc, argv, &i, &value) != 0) return -1;
+            if (!fujinet_nio_serial_name_ok(value)) return -1;
+            out->serial_device = value;
+        } else if (strcmp(argv[i], "--serial-unit") == 0) {
+            if (take_arg(argc, argv, &i, &value) != 0) return -1;
+            if (parse_ulong(value, &parsed) != 0 || parsed > 255UL)
+                return -1;
+            out->serial_unit = parsed;
+            out->has_serial_unit = 1;
         } else {
             return -1;
         }
     }
 
     if (out->type == 0 || out->backend == 0) return -1;
+    if (out->has_serial_unit && out->serial_device == NULL) return -1;
     if (out->type == FN_NIO_EXCHANGE_TYPE_DISK_READ ||
         out->type == FN_NIO_EXCHANGE_TYPE_DISK_WRITE) {
         if (!out->provocation || out->backend != FN_NIO_EXCHANGE_BACKEND_COLD ||
@@ -136,6 +148,18 @@ int fn_nio_exchange_opts_plan(const struct fn_nio_exchange_opts *opts,
     int count = 0;
 
     if (opts == NULL || steps == NULL || max_steps < 1) return -1;
+
+    if (opts->serial_device != NULL) {
+        if (count >= max_steps) return -1;
+        if (opts->backend == FN_NIO_EXCHANGE_BACKEND_COLD ||
+            opts->type == FN_NIO_EXCHANGE_TYPE_DISK_READ ||
+            opts->type == FN_NIO_EXCHANGE_TYPE_DISK_WRITE)
+            steps[count++] = FN_NIO_EXCHANGE_STEP_SET_SERIAL;
+        else if (opts->backend == FN_NIO_EXCHANGE_BACKEND_WARM)
+            steps[count++] = FN_NIO_EXCHANGE_STEP_GET_SERIAL;
+        else
+            return -1;
+    }
 
     if (opts->type == FN_NIO_EXCHANGE_TYPE_DISK_READ ||
         opts->type == FN_NIO_EXCHANGE_TYPE_DISK_WRITE) {
@@ -171,11 +195,13 @@ int fn_nio_exchange_warm_baud_ok(unsigned long want, unsigned long got)
 
 int fn_nio_exchange_step_failure_aborts(int step)
 {
-    /* GET_BAUD / SET_BAUD failures are setup errors. WARMUP and MEASURE
-     * failures are logged and the remaining trials continue so a warm
-     * overrun does not abort the whole command. */
+    /* GET_BAUD / SET_BAUD / GET_SERIAL / SET_SERIAL failures are setup
+     * errors. WARMUP and MEASURE failures are logged and the remaining
+     * trials continue so a warm overrun does not abort the whole command. */
     return step == FN_NIO_EXCHANGE_STEP_GET_BAUD ||
-           step == FN_NIO_EXCHANGE_STEP_SET_BAUD;
+           step == FN_NIO_EXCHANGE_STEP_SET_BAUD ||
+           step == FN_NIO_EXCHANGE_STEP_GET_SERIAL ||
+           step == FN_NIO_EXCHANGE_STEP_SET_SERIAL;
 }
 
 int fn_nio_exchange_format_elapsed(int timer_ok, unsigned long us,

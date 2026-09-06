@@ -17,6 +17,11 @@
 #define FUJINET_NIO_CMD_EXCHANGE   (CMD_NONSTD + 0)
 #define FUJINET_NIO_CMD_SET_BAUD   (CMD_NONSTD + 1)
 #define FUJINET_NIO_CMD_GET_BAUD   (CMD_NONSTD + 2)
+#define FUJINET_NIO_CMD_SET_SERIAL (CMD_NONSTD + 3)
+#define FUJINET_NIO_CMD_GET_SERIAL (CMD_NONSTD + 4)
+
+/* SET/GET_SERIAL payload: little-endian unit, then a NUL-terminated
+ * Exec device name. OpenDevice looks the name up in DEVS:. */
 
 /* Current struct size; callers must set fn_struct_size to this value */
 #define FUJINET_NIO_REQUEST_SIZE   (sizeof(struct FujiNetNIORequest))

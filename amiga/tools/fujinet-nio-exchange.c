@@ -16,6 +16,7 @@
 #include "fujinet_nio_device.h"
 #include "fujinet_nio_endian.h"
 #include "fujinet_nio_exchange_opts.h"
+#include "fujinet_nio_serial_config.h"
 #include "fujinet_disk_device.h"
 #include "fujinet-nio.h"
 #include "fn_protocol.h"
@@ -85,6 +86,10 @@ static LONG do_exchange(struct FujiNetNIORequest *req, struct MsgPort *port)
     return DoIO(&req->fn_io);
 }
 
+static char probe_serial_name[FUJINET_NIO_SERIAL_NAME_MAX + 1] =
+    "serial.device";
+static uint32_t probe_serial_unit;
+
 static LONG try_open_serial(void)
 {
     struct MsgPort *port;
@@ -98,7 +103,7 @@ static LONG try_open_serial(void)
         DeletePort(port);
         return IOERR_OPENFAIL;
     }
-    result = OpenDevice((CONST_STRPTR)"serial.device", 0,
+    result = OpenDevice((CONST_STRPTR)probe_serial_name, probe_serial_unit,
                         (struct IORequest *)serial, 0);
     if (result == 0) CloseDevice((struct IORequest *)serial);
     DeleteExtIO((struct IORequest *)serial);
@@ -363,10 +368,12 @@ static void print_matrix_usage(void)
     fprintf(stderr,
             "Usage: fujinet-nio-exchange --type clock|host-get|file-list "
             "--backend cold|warm [--baud 9600|19200|38400] "
+            "[--serial-device NAME] [--serial-unit 0..255] "
             "[--size 8|16|32|64|128|256|420|512 --uri URI] [--trials N]\n"
             "       fujinet-nio-exchange --type disk-read|disk-write "
             "--provocation --backend cold --baud 38400 --slot 1..8 "
-            "--lba N [--trials N]\n");
+            "--lba N [--serial-device NAME] [--serial-unit 0..255] "
+            "[--trials N]\n");
 }
 
 static int run_set_baud(struct FujiNetNIORequest *req, struct MsgPort *port,
@@ -412,6 +419,73 @@ static int run_get_baud_match(struct FujiNetNIORequest *req,
         fprintf(stderr, "WARM baud mismatch got=%lu want=%lu\n", got, want);
         return -1;
     }
+    return 0;
+}
+
+static int run_set_serial(struct FujiNetNIORequest *req, struct MsgPort *port,
+                          const struct IORequest *open_request,
+                          const char *name, unsigned long unit)
+{
+    uint8_t payload[FUJINET_NIO_SERIAL_PAYLOAD_MAX];
+    uint16_t payload_len;
+
+    if (fujinet_nio_serial_encode(payload, sizeof(payload), &payload_len,
+                                  (uint32_t)unit, name) != FN_OK) {
+        fprintf(stderr, "SET_SERIAL encode failed\n");
+        return -1;
+    }
+    if (do_control(req, port, open_request, FUJINET_NIO_CMD_SET_SERIAL,
+                   payload, payload_len, NULL, 0) != 0 ||
+        req->fn_nio_error != 0) {
+        fprintf(stderr, "SET_SERIAL failed\n");
+        return -1;
+    }
+    return 0;
+}
+
+static int run_get_serial_match(struct FujiNetNIORequest *req,
+                                struct MsgPort *port,
+                                const struct IORequest *open_request,
+                                const char *want_name, unsigned long want_unit)
+{
+    uint8_t payload[FUJINET_NIO_SERIAL_PAYLOAD_MAX];
+    char got_name[FUJINET_NIO_SERIAL_NAME_MAX + 1];
+    uint32_t got_unit;
+
+    if (do_control(req, port, open_request, FUJINET_NIO_CMD_GET_SERIAL, NULL, 0,
+                   payload, sizeof(payload)) != 0 ||
+        req->fn_nio_error != 0 ||
+        fujinet_nio_serial_decode(payload, req->fn_response_length, &got_unit,
+                                  got_name, sizeof(got_name)) != FN_OK) {
+        fprintf(stderr, "GET_SERIAL failed\n");
+        return -1;
+    }
+    if (got_unit != (uint32_t)want_unit || strcmp(got_name, want_name) != 0) {
+        fprintf(stderr,
+                "WARM serial mismatch got=%s unit=%lu want=%s unit=%lu\n",
+                got_name, (unsigned long)got_unit, want_name, want_unit);
+        return -1;
+    }
+    return 0;
+}
+
+static int cache_serial_probe(const struct IORequest *open_request,
+                              struct MsgPort *port)
+{
+    struct FujiNetNIORequest req;
+    uint8_t payload[FUJINET_NIO_SERIAL_PAYLOAD_MAX];
+    char name[FUJINET_NIO_SERIAL_NAME_MAX + 1];
+    uint32_t unit;
+
+    if (do_control(&req, port, open_request, FUJINET_NIO_CMD_GET_SERIAL, NULL, 0,
+                   payload, sizeof(payload)) != 0 ||
+        req.fn_nio_error != 0 ||
+        fujinet_nio_serial_decode(payload, req.fn_response_length, &unit, name,
+                                  sizeof(name)) != FN_OK) {
+        return -1;
+    }
+    strcpy(probe_serial_name, name);
+    probe_serial_unit = unit;
     return 0;
 }
 
@@ -470,6 +544,12 @@ static int run_disk_provocation(const struct fn_nio_exchange_opts *opts)
         UBYTE attempt;
         char elapsed[32];
 
+        if (opts->serial_device != NULL &&
+            run_set_serial(&nio_req, port, &nio_open, opts->serial_device,
+                           opts->serial_unit) != 0) {
+            failures = 1;
+            break;
+        }
         if (run_set_baud(&nio_req, port, &nio_open, opts->baud,
                          baud_bytes) != 0) {
             failures = 1;
@@ -584,7 +664,7 @@ static int run_matrix(int argc, char **argv)
     uint8_t response[MATRIX_PACKET_CAP];
     uint8_t clock_req[FN_HEADER_SIZE];
     uint8_t baud_bytes[4];
-    int steps[4];
+    int steps[5];
     int nsteps;
     int request_len;
     int clock_len;
@@ -600,7 +680,7 @@ static int run_matrix(int argc, char **argv)
         opts.type == FN_NIO_EXCHANGE_TYPE_DISK_WRITE)
         return run_disk_provocation(&opts);
 
-    nsteps = fn_nio_exchange_opts_plan(&opts, steps, 4);
+    nsteps = fn_nio_exchange_opts_plan(&opts, steps, 5);
     if (nsteps < 0) return RETURN_FAIL;
 
     clock_len = fn_nio_exchange_build_clock_get(clock_req, sizeof(clock_req));
@@ -636,7 +716,15 @@ static int run_matrix(int argc, char **argv)
             int step = steps[si];
             int step_failed = 0;
 
-            if (step == FN_NIO_EXCHANGE_STEP_SET_BAUD) {
+            if (step == FN_NIO_EXCHANGE_STEP_SET_SERIAL) {
+                step_failed = run_set_serial(&req, port, &open_request,
+                                             opts.serial_device,
+                                             opts.serial_unit);
+            } else if (step == FN_NIO_EXCHANGE_STEP_GET_SERIAL) {
+                step_failed = run_get_serial_match(&req, port, &open_request,
+                                                   opts.serial_device,
+                                                   opts.serial_unit);
+            } else if (step == FN_NIO_EXCHANGE_STEP_SET_BAUD) {
                 step_failed = run_set_baud(&req, port, &open_request, opts.baud,
                                            baud_bytes);
             } else if (step == FN_NIO_EXCHANGE_STEP_GET_BAUD) {
@@ -715,6 +803,7 @@ int main(int argc, char **argv)
         DeletePort(port);
         return RETURN_FAIL;
     }
+    (void)cache_serial_probe(&req.fn_io, port);
 
     do_exchange(&req, port);
     /* native = serial.device io_Error; status-hi = high byte of io_Status:
