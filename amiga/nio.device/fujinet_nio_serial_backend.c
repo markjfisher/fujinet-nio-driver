@@ -575,5 +575,11 @@ uint8_t backend_exchange(
      * next EXCHANGE lazy-reopens a clean session.
      */
     if (result != FN_OK) session_flush_until_idle();
+    if (serial_open) {
+        serial_req->IOSer.io_Command = CMD_FLUSH;
+        serial_req->IOSer.io_Data = NULL;
+        serial_req->IOSer.io_Length = 0;
+        DoIO((struct IORequest *)serial_req);
+    }
     return result;
 }

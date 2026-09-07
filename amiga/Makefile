@@ -23,6 +23,7 @@ NIO_OBJECTS := $(BUILD_DIR)/nio.device/fujinet_nio_device.o \
 	$(BUILD_DIR)/nio-framing/fn_session.o \
 	$(BUILD_DIR)/nio-framing/fn_slip.o
 SERIAL_OBJECTS := $(BUILD_DIR)/serial.device/fujinet_serial_device.o \
+	$(BUILD_DIR)/serial.device/fujinet_serial_rbf.o \
 	$(BUILD_DIR)/serial.device/fujinet_paula_uart.o
 SDK_INCLUDE := $(BUILD_DIR)/include
 SDK_LIBRARY := $(BUILD_DIR)/lib/libfujinet-amiga-disk.a
@@ -86,7 +87,11 @@ $(BUILD_DIR)/nio.device/fujinet_nio_device.o: include/fujinet_nio_endian.h \
 	include/fujinet_nio_serial_config.h
 $(BUILD_DIR)/nio.device/fujinet_nio_serial_backend.o: include/fujinet_nio_serial_config.h
 $(BUILD_DIR)/serial.device/fujinet_serial_device.o: include/fujinet_paula_uart.h \
-	include/fujinet_serial_device.h
+	include/fujinet_serial_device.h include/fujinet_serial_rbf_off.h
+$(BUILD_DIR)/serial.device/fujinet_serial_rbf.o: serial.device/fujinet_serial_rbf.S \
+	include/fujinet_serial_rbf_off.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 $(BUILD_DIR)/serial.device/fujinet_paula_uart.o: include/fujinet_paula_uart.h
 $(BUILD_DIR)/channels/rs232/fujinet_nio_client.o: include/fujinet_nio_endian.h
 
