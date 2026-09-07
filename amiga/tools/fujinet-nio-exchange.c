@@ -90,6 +90,8 @@ static char probe_serial_name[FUJINET_NIO_SERIAL_NAME_MAX + 1] =
     "serial.device";
 static uint32_t probe_serial_unit;
 
+static void reclaim_io(struct IORequest *io);
+
 static LONG try_open_serial(void)
 {
     struct MsgPort *port;
@@ -105,7 +107,10 @@ static LONG try_open_serial(void)
     }
     result = OpenDevice((CONST_STRPTR)probe_serial_name, probe_serial_unit,
                         (struct IORequest *)serial, 0);
-    if (result == 0) CloseDevice((struct IORequest *)serial);
+    if (result == 0) {
+        reclaim_io((struct IORequest *)serial);
+        CloseDevice((struct IORequest *)serial);
+    }
     DeleteExtIO((struct IORequest *)serial);
     DeletePort(port);
     return result;
@@ -161,6 +166,7 @@ static void run_job(struct exchange_job *job)
         req.fn_response_length <= sizeof(job->response)) {
         memcpy(job->response, response, req.fn_response_length);
     }
+    reclaim_io(&req.fn_io);
     CloseDevice(&req.fn_io);
     DeletePort(port);
     job->done = 1;
@@ -225,10 +231,69 @@ static struct MsgPort *elapsed_port;
 static struct timerequest *elapsed_req;
 static uint8_t elapsed_ready;
 
+/* Crude CAP-5 breadcrumbs. Write() so a crash cannot leave them in stdio. */
+static void mark(char letter)
+{
+    char line[4];
+    BPTR out = Output();
+
+    if (out == 0) return;
+    line[0] = '[';
+    line[1] = letter;
+    line[2] = ']';
+    line[3] = '\n';
+    Write(out, line, 4);
+}
+
+static void mark_step(const char *name)
+{
+    BPTR out = Output();
+
+    if (out == 0 || name == NULL) return;
+    Write(out, (APTR) ">", 1);
+    Write(out, (APTR)name, (LONG)strlen(name));
+    Write(out, (APTR) "\n", 1);
+}
+
+static const char *step_name(int step)
+{
+    switch (step) {
+    case FN_NIO_EXCHANGE_STEP_SET_SERIAL:
+        return "SET_SERIAL";
+    case FN_NIO_EXCHANGE_STEP_GET_SERIAL:
+        return "GET_SERIAL";
+    case FN_NIO_EXCHANGE_STEP_SET_BAUD:
+        return "SET_BAUD";
+    case FN_NIO_EXCHANGE_STEP_GET_BAUD:
+        return "GET_BAUD";
+    case FN_NIO_EXCHANGE_STEP_WARMUP:
+        return "WARMUP";
+    case FN_NIO_EXCHANGE_STEP_MEASURE:
+        return "MEASURE";
+    default:
+        return "STEP";
+    }
+}
+
+/* WaitIO only if CheckIO says the request is still outstanding. A second
+ * WaitIO after DoIO has already taken the reply can pull the next message
+ * or hang. AbortIO on an idle request is a no-op. */
+static void reclaim_io(struct IORequest *io)
+{
+    if (io == NULL || io->io_Device == NULL) return;
+    if (CheckIO(io) == NULL) {
+        AbortIO(io);
+        WaitIO(io);
+    }
+}
+
 static void close_elapsed_timer(void)
 {
     if (elapsed_req != NULL) {
-        if (elapsed_ready) CloseDevice((struct IORequest *)elapsed_req);
+        if (elapsed_ready) {
+            reclaim_io((struct IORequest *)elapsed_req);
+            CloseDevice((struct IORequest *)elapsed_req);
+        }
         DeleteExtIO((struct IORequest *)elapsed_req);
         elapsed_req = NULL;
     }
@@ -526,6 +591,7 @@ static int run_disk_provocation(const struct fn_nio_exchange_opts *opts)
     if (OpenDevice((CONST_STRPTR)FUJINET_DISK_DEVICE_NAME,
                    (ULONG)(opts->slot - 1),
                    (struct IORequest *)&disk, 0) != 0) {
+        reclaim_io(&nio_open);
         CloseDevice(&nio_open);
         DeletePort(port);
         return RETURN_FAIL;
@@ -628,7 +694,9 @@ static int run_disk_provocation(const struct fn_nio_exchange_opts *opts)
     }
 
     close_elapsed_timer();
+    reclaim_io((struct IORequest *)&disk);
     CloseDevice((struct IORequest *)&disk);
+    reclaim_io(&nio_open);
     CloseDevice(&nio_open);
     DeletePort(port);
     return failures ? RETURN_FAIL : RETURN_OK;
@@ -705,6 +773,7 @@ static int run_matrix(int argc, char **argv)
         return RETURN_FAIL;
     }
 
+    memset(&req, 0, sizeof(req));
     open_elapsed_timer();
 
     for (trial = 0; trial < opts.trials; ++trial) {
@@ -716,6 +785,7 @@ static int run_matrix(int argc, char **argv)
             int step = steps[si];
             int step_failed = 0;
 
+            mark_step(step_name(step));
             if (step == FN_NIO_EXCHANGE_STEP_SET_SERIAL) {
                 step_failed = run_set_serial(&req, port, &open_request,
                                              opts.serial_device,
@@ -760,9 +830,24 @@ static int run_matrix(int argc, char **argv)
         if (abort_trials) break;
     }
 
-    close_elapsed_timer();
+    mark('A'); /* exchange returned */
+    mark('B');
+    if (req.fn_io.io_Device != NULL && CheckIO(&req.fn_io) == NULL) {
+        AbortIO(&req.fn_io);
+        mark('C');
+        WaitIO(&req.fn_io);
+    } else {
+        mark('C');
+    }
+    mark('D');
+    reclaim_io(&open_request);
     CloseDevice(&open_request);
+    mark('E'); /* command IORequest is stack; elapsed timer is the heap one */
+    close_elapsed_timer();
+    mark('F');
     DeletePort(port);
+    mark('G'); /* session lives in the broker; CLI has nothing extra to free */
+    mark('H');
     return status;
 }
 
@@ -826,6 +911,7 @@ int main(int argc, char **argv)
            (unsigned)(req.fn_flags & 0xFF), (unsigned)(req.fn_flags >> 8));
     if (!clock_response_ok(&req, response)) failures = 1;
 
+    reclaim_io(&req.fn_io);
     CloseDevice(&req.fn_io);
     serial_after = try_open_serial();
     printf("RESIDENT serial-busy-after-opencnt0=%d\n", serial_after != 0);
@@ -870,6 +956,7 @@ int main(int argc, char **argv)
            (unsigned)req.fn_pad[1], (unsigned)req.fn_pad[2]);
     if (!clock_response_ok(&req, response)) failures = 1;
 
+    reclaim_io(&req.fn_io);
     CloseDevice(&req.fn_io);
     DeletePort(port);
 
@@ -947,6 +1034,7 @@ int main(int argc, char **argv)
            (unsigned)req.fn_response_length, (unsigned)req.fn_pad[0],
            (unsigned)req.fn_pad[1], (unsigned)req.fn_pad[2]);
     if (req.fn_io.io_Error != 0 || req.fn_nio_error != FN_OK) failures = 1;
+    reclaim_io(&req.fn_io);
     CloseDevice(&req.fn_io);
     DeletePort(port);
 

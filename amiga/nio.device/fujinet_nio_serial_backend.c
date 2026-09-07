@@ -71,6 +71,8 @@ static uint32_t serial_baud = FN_SERIAL_BACKEND_BAUD;
  * CMD_READ that length. QUERY can over-report after an overrun; unbounded
  * DoIO(CMD_READ) then waits forever. Those reads use SendIO plus a timer
  * AbortIO so the worker can return FN_ERR_TIMEOUT instead of hanging.
+ * CloseDevice/DeleteExtIO/DeletePort of serial_req or timer_req must follow
+ * CheckIO-complete or AbortIO+WaitIO so ownership is back on this task.
  */
 static uint8_t serial_write(const uint8_t *buf, uint16_t len)
 {
@@ -351,8 +353,21 @@ static const fn_stream_channel_ops_t session_ops = {
     session_write_bytes
 };
 
+/* CMD_READ uses SendIO. CloseDevice/DeleteExtIO/DeletePort are illegal
+ * until CheckIO is done or AbortIO+WaitIO has returned ownership. */
+static void reclaim_io(struct IORequest *io)
+{
+    if (io == NULL || io->io_Device == NULL) return;
+    if (CheckIO(io) == NULL) {
+        AbortIO(io);
+        WaitIO(io);
+    }
+}
+
 static void release_timer(void)
 {
+    if (timer_req != NULL && timer_open)
+        reclaim_io((struct IORequest *)timer_req);
     if (timer_open) {
         CloseDevice((struct IORequest *)timer_req);
         timer_open = 0;
@@ -369,6 +384,8 @@ static void release_timer(void)
 
 static void release_serial(void)
 {
+    if (serial_req != NULL && serial_open)
+        reclaim_io((struct IORequest *)serial_req);
     if (serial_open) {
         CloseDevice((struct IORequest *)serial_req);
         serial_open = 0;

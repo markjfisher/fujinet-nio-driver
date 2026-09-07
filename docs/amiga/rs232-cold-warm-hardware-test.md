@@ -58,7 +58,18 @@ C:fujinet-nio-exchange --type clock --backend cold --baud 38400 --trials 1
 ```
 
 (Use the baud the ESP is already on.) You want one `req_len=… backend=cold`
-line and `exit 0`.
+line, then teardown markers `[A]` through `[H]`, and `exit 0`.
+
+The markers are unbuffered `Write()` breadcrumbs. Last letter printed is
+where it died. `>SET_SERIAL` / `>SET_BAUD` / `>MEASURE` print *before* each
+`DoIO`. `[A]` means the command loop returned. Then `[B]` AbortIO (if the
+nio request was still outstanding), `[C]` WaitIO, `[D]` CloseDevice nio,
+`[E]` timer CloseDevice/DeleteExtIO, `[F]` DeleteMsgPort, `[G]` skip
+(session lives in the broker), `[H]` return from `main`.
+
+`#80000006` is a CHK in this CLI process (Suspend/Reboot), not the PiStorm
+power-LED reset. Both are CAP-5 fail. Note the last marker before the
+requester.
 
 Do **not** run `C:fujinet-nio-exchange` with no arguments on PiStorm or real
 hardware. That is the Amiberry isolation suite: it sends a malformed packet
