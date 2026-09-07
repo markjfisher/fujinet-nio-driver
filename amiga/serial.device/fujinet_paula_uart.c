@@ -29,7 +29,8 @@ int fujinet_paula_rx_init(fujinet_paula_rx_t *rx, uint8_t *buf, uint16_t size)
     rx->mask = (uint16_t)(size - 1U);
     rx->head = 0;
     rx->tail = 0;
-    rx->overrun = 0;
+    rx->hardware_overrun_latched = 0;
+    rx->software_ring_overflow_latched = 0;
     return 0;
 }
 
@@ -38,7 +39,8 @@ void fujinet_paula_rx_clear(fujinet_paula_rx_t *rx)
     if (rx == NULL) return;
     rx->head = 0;
     rx->tail = 0;
-    rx->overrun = 0;
+    rx->hardware_overrun_latched = 0;
+    rx->software_ring_overflow_latched = 0;
 }
 
 uint16_t fujinet_paula_rx_count(const fujinet_paula_rx_t *rx)
@@ -52,11 +54,12 @@ void fujinet_paula_rx_ingest(fujinet_paula_rx_t *rx, uint16_t serdatr)
     uint16_t next;
 
     if (rx == NULL) return;
-    if (serdatr & FUJINET_PAULA_SERDATR_OVRUN) rx->overrun = 1;
+    if (serdatr & FUJINET_PAULA_SERDATR_OVRUN)
+        rx->hardware_overrun_latched = 1;
     if ((serdatr & FUJINET_PAULA_SERDATR_RBF) == 0) return;
     next = (uint16_t)((rx->head + 1U) & rx->mask);
     if (next == rx->tail) {
-        rx->overrun = 1;
+        rx->software_ring_overflow_latched = 1;
         return;
     }
     rx->buf[rx->head] = (uint8_t)serdatr;
@@ -73,4 +76,22 @@ uint16_t fujinet_paula_rx_read(fujinet_paula_rx_t *rx, uint8_t *dst, uint16_t n)
         rx->tail = (uint16_t)((rx->tail + 1U) & rx->mask);
     }
     return copied;
+}
+
+uint8_t fujinet_paula_rx_public_overrun(const fujinet_paula_rx_t *rx)
+{
+    if (rx == NULL) return 0;
+    return (uint8_t)(rx->hardware_overrun_latched |
+                     rx->software_ring_overflow_latched);
+}
+
+int fujinet_serial_params_valid(uint32_t baud, unsigned read_len,
+                                unsigned write_len, unsigned stop_bits,
+                                int parity_on)
+{
+    if (baud < FUJINET_SERIAL_BAUD_MIN || baud > FUJINET_SERIAL_BAUD_MAX)
+        return 0;
+    if (read_len != 8U || write_len != 8U || stop_bits != 1U) return 0;
+    if (parity_on) return 0;
+    return 1;
 }

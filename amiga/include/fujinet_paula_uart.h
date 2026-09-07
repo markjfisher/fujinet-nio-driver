@@ -18,13 +18,16 @@
 #define FUJINET_PAULA_SERDATR_TSRE   0x1000U
 
 #define FUJINET_PAULA_RX_DEFAULT_SIZE 2048U
+#define FUJINET_SERIAL_BAUD_MIN       300UL
+#define FUJINET_SERIAL_BAUD_MAX       230400UL
 
 typedef struct fujinet_paula_rx {
     uint8_t *buf;
     uint16_t mask;
     uint16_t head;
     uint16_t tail;
-    uint8_t overrun;
+    uint8_t hardware_overrun_latched;
+    uint8_t software_ring_overflow_latched;
 } fujinet_paula_rx_t;
 
 uint16_t fujinet_paula_serper(uint32_t baud, int pal);
@@ -36,5 +39,9 @@ void fujinet_paula_rx_clear(fujinet_paula_rx_t *rx);
 uint16_t fujinet_paula_rx_count(const fujinet_paula_rx_t *rx);
 void fujinet_paula_rx_ingest(fujinet_paula_rx_t *rx, uint16_t serdatr);
 uint16_t fujinet_paula_rx_read(fujinet_paula_rx_t *rx, uint8_t *dst, uint16_t n);
+uint8_t fujinet_paula_rx_public_overrun(const fujinet_paula_rx_t *rx);
+int fujinet_serial_params_valid(uint32_t baud, unsigned read_len,
+                                unsigned write_len, unsigned stop_bits,
+                                int parity_on);
 
 #endif

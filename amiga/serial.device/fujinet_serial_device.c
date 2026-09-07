@@ -12,58 +12,89 @@
 #include <hardware/custom.h>
 #include <hardware/intbits.h>
 #include <proto/exec.h>
+#include <proto/misc.h>
+#include <resources/misc.h>
 
 #include <stddef.h>
 #include <string.h>
 
 #include "fujinet_paula_uart.h"
 #include "fujinet_serial_device.h"
-#include "fujinet_serial_rbf_off.h"
 
 #define FN_REGISTER(name) __asm(name)
 
 #define DEVICE_NAME FUJINET_SERIAL_DEVICE_NAME
 #define DEVICE_VERSION 0
 #define DEVICE_BAUD_DEFAULT 19200UL
-#define DEVICE_BAUD_MIN 300UL
-#define DEVICE_BAUD_MAX 230400UL
 #define TBE_SPIN_MAX 2000000UL
 
+#define READ_IDLE 0
+#define READ_PENDING 1
+#define READ_COMPLETING 2
+#define READ_ABORTING 3
+#define READ_REPLIED 4
+
 #define paula (*(volatile struct Custom *)0xdff000)
+
+struct fujinet_serial_rbf_data {
+    fujinet_paula_rx_t rx;
+    uint16_t pending_need;
+    uint16_t pad;
+    struct Interrupt *soft_int;
+    struct ExecBase *sys_base;
+};
 
 struct fujinet_serial_base {
     struct Device device;
     BPTR segment_list;
     struct Unit exec_unit;
     struct Interrupt rbf_int;
+    struct Interrupt soft_int;
     uint8_t rx_buf[FUJINET_PAULA_RX_DEFAULT_SIZE];
-    fujinet_paula_rx_t rx;
+    struct fujinet_serial_rbf_data rbf_data;
     uint32_t baud;
     struct Interrupt *old_rbf;
-    UBYTE rbf_added;
+    struct IOExtSer *pending_read;
+    UBYTE read_state;
+    UBYTE rbf_installed;
     UBYTE rbf_was_enabled;
     UBYTE tbe_was_enabled;
-    UBYTE paula_claimed;
+    UBYTE port_claimed;
+    UBYTE bits_claimed;
+    UBYTE receive_armed;
+    UBYTE closing;
 };
 
 struct ExecBase *SysBase;
+struct Library *MiscBase;
 
 extern void fujinet_serial_rbf_server(void);
+extern void fujinet_serial_softint(void);
+void fujinet_serial_complete_read(
+    register struct fujinet_serial_base *base FN_REGISTER("a1"));
 
-typedef char fn_serial_off_rx_buf_ok[
-    offsetof(struct fujinet_serial_base, rx.buf) == FN_SERIAL_OFF_RX_BUF ? 1 : -1];
-typedef char fn_serial_off_rx_mask_ok[
-    offsetof(struct fujinet_serial_base, rx.mask) == FN_SERIAL_OFF_RX_MASK ? 1 : -1];
-typedef char fn_serial_off_rx_head_ok[
-    offsetof(struct fujinet_serial_base, rx.head) == FN_SERIAL_OFF_RX_HEAD ? 1 : -1];
-typedef char fn_serial_off_rx_tail_ok[
-    offsetof(struct fujinet_serial_base, rx.tail) == FN_SERIAL_OFF_RX_TAIL ? 1 : -1];
-typedef char fn_serial_off_rx_overrun_ok[
-    offsetof(struct fujinet_serial_base, rx.overrun) == FN_SERIAL_OFF_RX_OVERRUN ? 1 : -1];
+typedef char fn_rbf_off_buf_ok[
+    offsetof(struct fujinet_serial_rbf_data, rx.buf) == 0 ? 1 : -1];
+typedef char fn_rbf_off_mask_ok[
+    offsetof(struct fujinet_serial_rbf_data, rx.mask) == 4 ? 1 : -1];
+typedef char fn_rbf_off_head_ok[
+    offsetof(struct fujinet_serial_rbf_data, rx.head) == 6 ? 1 : -1];
+typedef char fn_rbf_off_tail_ok[
+    offsetof(struct fujinet_serial_rbf_data, rx.tail) == 8 ? 1 : -1];
+typedef char fn_rbf_off_hw_ok[
+    offsetof(struct fujinet_serial_rbf_data, rx.hardware_overrun_latched) == 10 ? 1 : -1];
+typedef char fn_rbf_off_sw_ok[
+    offsetof(struct fujinet_serial_rbf_data, rx.software_ring_overflow_latched) == 11 ? 1 : -1];
+typedef char fn_rbf_off_need_ok[
+    offsetof(struct fujinet_serial_rbf_data, pending_need) == 12 ? 1 : -1];
+typedef char fn_rbf_off_soft_ok[
+    offsetof(struct fujinet_serial_rbf_data, soft_int) == 16 ? 1 : -1];
+typedef char fn_rbf_off_sys_ok[
+    offsetof(struct fujinet_serial_rbf_data, sys_base) == 20 ? 1 : -1];
 
 static const char device_name[] = DEVICE_NAME;
 static const char device_id[] =
-    "$VER: " DEVICE_NAME " 0.1 (7.9.2026) \xa9 2026 Mark Fisher\r\n";
+    "$VER: " DEVICE_NAME " 0.2 (7.9.2026) \xa9 2026 Mark Fisher\r\n";
 
 static int pal_display(void)
 {
@@ -75,61 +106,196 @@ static void apply_serper(struct fujinet_serial_base *base)
     paula.serper = fujinet_paula_serper(base->baud, pal_display());
 }
 
-static void ack_rbf(void)
-{
-    /* 68040/Emu68 can defer custom-chip writes past RTS; write twice. */
-    paula.intreq = (UWORD)INTF_RBF;
-    paula.intreq = (UWORD)INTF_RBF;
-}
-
 static void drain_rbf_locked(struct fujinet_serial_base *base)
 {
-    UWORD serdatr = paula.serdatr;
-
-    ack_rbf();
-    if ((serdatr & (FUJINET_PAULA_SERDATR_RBF | FUJINET_PAULA_SERDATR_OVRUN)) == 0)
-        return;
-    fujinet_paula_rx_ingest(&base->rx, serdatr);
+    while ((paula.intreqr & (UWORD)INTF_RBF) != 0) {
+        UWORD serdatr = paula.serdatr;
+        fujinet_paula_rx_ingest(&base->rbf_data.rx, serdatr);
+        paula.intreq = (UWORD)INTF_RBF;
+    }
 }
 
-static void drain_rbf(struct fujinet_serial_base *base)
+static int rbf_vector_is_ours(struct fujinet_serial_base *base)
 {
+    return SysBase->IntVects[INTB_RBF].iv_Code ==
+               (void (*)())fujinet_serial_rbf_server &&
+           SysBase->IntVects[INTB_RBF].iv_Data == &base->rbf_data;
+}
+
+static void rearm_receive(struct fujinet_serial_base *base)
+{
+    if (base->receive_armed) return;
     Disable();
     drain_rbf_locked(base);
-    Enable();
-}
-
-static void rbf_install(struct fujinet_serial_base *base)
-{
-    if (base->rbf_added) return;
-    base->old_rbf = SetIntVector(INTB_RBF, &base->rbf_int);
-    base->rbf_added = 1;
-}
-
-static void rbf_remove(struct fujinet_serial_base *base)
-{
-    if (!base->rbf_added) return;
-    SetIntVector(INTB_RBF, base->old_rbf);
-    base->rbf_added = 0;
-}
-
-static void rbf_enable(struct fujinet_serial_base *base)
-{
-    Disable();
-    rbf_install(base);
-    ack_rbf();
     paula.intena = (UWORD)(INTF_SETCLR | INTF_RBF);
+    base->receive_armed = 1;
     Enable();
 }
 
-static void rbf_disable(struct fujinet_serial_base *base)
+static struct IOExtSer *take_pending(struct fujinet_serial_base *base, UBYTE next)
 {
+    struct IOExtSer *req;
+
+    if (base->read_state != READ_PENDING || base->pending_read == NULL)
+        return NULL;
+    req = base->pending_read;
+    base->read_state = next;
+    base->pending_read = NULL;
+    base->rbf_data.pending_need = 0;
+    return req;
+}
+
+static void reply_request(struct IOExtSer *req, BYTE err)
+{
+    req->IOSer.io_Error = err;
+    ReplyMsg(&req->IOSer.io_Message);
+}
+
+static void finish(struct IOExtSer *req, BYTE err)
+{
+    req->IOSer.io_Error = err;
+    if ((req->IOSer.io_Flags & IOF_QUICK) != 0) return;
+    ReplyMsg(&req->IOSer.io_Message);
+}
+
+void fujinet_serial_complete_read(
+    register struct fujinet_serial_base *base FN_REGISTER("a1"))
+{
+    struct IOExtSer *req;
+    ULONG length;
+    uint8_t *data;
+    uint16_t copied;
+
     Disable();
-    paula.intena = (UWORD)INTF_RBF;
-    ack_rbf();
-    drain_rbf_locked(base);
-    rbf_remove(base);
+    req = take_pending(base, READ_COMPLETING);
+    if (req == NULL) {
+        Enable();
+        return;
+    }
+    length = req->IOSer.io_Length;
+    data = (uint8_t *)req->IOSer.io_Data;
+    if (length > 0xFFFFUL) length = 0xFFFFUL;
+    copied = fujinet_paula_rx_read(&base->rbf_data.rx, data, (uint16_t)length);
+    req->IOSer.io_Actual = copied;
+    req->io_Status = fujinet_paula_rx_public_overrun(&base->rbf_data.rx)
+                         ? (UWORD)IO_STATF_OVERRUN
+                         : 0;
+    base->read_state = READ_REPLIED;
     Enable();
+    reply_request(req, 0);
+}
+
+static BYTE claim_misc(struct fujinet_serial_base *base)
+{
+    if (MiscBase == NULL) {
+        MiscBase = (struct Library *)OpenResource((CONST_STRPTR)MISCNAME);
+        if (MiscBase == NULL) return IOERR_OPENFAIL;
+    }
+    if (AllocMiscResource(MR_SERIALPORT, (UBYTE *)device_name) != NULL)
+        return IOERR_UNITBUSY;
+    base->port_claimed = 1;
+    if (AllocMiscResource(MR_SERIALBITS, (UBYTE *)device_name) != NULL) {
+        FreeMiscResource(MR_SERIALPORT);
+        base->port_claimed = 0;
+        return IOERR_UNITBUSY;
+    }
+    base->bits_claimed = 1;
+    return 0;
+}
+
+static void release_misc(struct fujinet_serial_base *base)
+{
+    if (base->bits_claimed) {
+        FreeMiscResource(MR_SERIALBITS);
+        base->bits_claimed = 0;
+    }
+    if (base->port_claimed) {
+        FreeMiscResource(MR_SERIALPORT);
+        base->port_claimed = 0;
+    }
+}
+
+static void release_paula(struct fujinet_serial_base *base)
+{
+    struct IOExtSer *pending;
+
+    if (!base->port_claimed && !base->bits_claimed && !base->rbf_installed)
+        return;
+    Disable();
+    base->closing = 1;
+    pending = take_pending(base, READ_ABORTING);
+    paula.intena = (UWORD)INTF_RBF;
+    base->receive_armed = 0;
+    drain_rbf_locked(base);
+    if (base->rbf_installed && rbf_vector_is_ours(base)) {
+        SetIntVector(INTB_RBF, base->old_rbf);
+        if (base->rbf_was_enabled)
+            paula.intena = (UWORD)(INTF_SETCLR | INTF_RBF);
+        if (base->tbe_was_enabled)
+            paula.intena = (UWORD)(INTF_SETCLR | INTF_TBE);
+    }
+    base->rbf_installed = 0;
+    base->old_rbf = NULL;
+    base->pending_read = NULL;
+    base->rbf_data.pending_need = 0;
+    if (pending != NULL) {
+        pending->IOSer.io_Actual = 0;
+        base->read_state = READ_REPLIED;
+        Enable();
+        reply_request(pending, IOERR_ABORTED);
+    } else {
+        Enable();
+    }
+    release_misc(base);
+}
+
+static BYTE claim_paula(struct fujinet_serial_base *base)
+{
+    BYTE err;
+
+    if (fujinet_paula_rx_init(&base->rbf_data.rx, base->rx_buf,
+                              FUJINET_PAULA_RX_DEFAULT_SIZE) != 0)
+        return IOERR_OPENFAIL;
+    base->baud = DEVICE_BAUD_DEFAULT;
+    base->closing = 0;
+    base->pending_read = NULL;
+    base->read_state = READ_IDLE;
+    base->rbf_data.pending_need = 0;
+    err = claim_misc(base);
+    if (err != 0) return err;
+
+    Disable();
+    base->rbf_was_enabled =
+        (UBYTE)((paula.intenar & (UWORD)INTF_RBF) != 0);
+    base->tbe_was_enabled =
+        (UBYTE)((paula.intenar & (UWORD)INTF_TBE) != 0);
+    paula.intena = (UWORD)(INTF_RBF | INTF_TBE);
+    drain_rbf_locked(base);
+    fujinet_paula_rx_clear(&base->rbf_data.rx);
+    apply_serper(base);
+
+    memset(&base->rbf_int, 0, sizeof(base->rbf_int));
+    base->rbf_int.is_Node.ln_Type = NT_INTERRUPT;
+    base->rbf_int.is_Node.ln_Pri = 0;
+    base->rbf_int.is_Node.ln_Name = (char *)device_name;
+    base->rbf_int.is_Data = &base->rbf_data;
+    base->rbf_int.is_Code = (void (*)())fujinet_serial_rbf_server;
+
+    memset(&base->soft_int, 0, sizeof(base->soft_int));
+    base->soft_int.is_Node.ln_Type = NT_INTERRUPT;
+    base->soft_int.is_Node.ln_Pri = 0;
+    base->soft_int.is_Node.ln_Name = (char *)device_name;
+    base->soft_int.is_Data = base;
+    base->soft_int.is_Code = (void (*)())fujinet_serial_softint;
+
+    base->rbf_data.soft_int = &base->soft_int;
+    base->rbf_data.sys_base = SysBase;
+    base->old_rbf = SetIntVector(INTB_RBF, &base->rbf_int);
+    base->rbf_installed = 1;
+    paula.intena = (UWORD)(INTF_SETCLR | INTF_RBF);
+    base->receive_armed = 1;
+    Enable();
+    return 0;
 }
 
 static void fill_open_defaults(struct IOExtSer *req, struct fujinet_serial_base *base)
@@ -148,72 +314,14 @@ static void fill_open_defaults(struct IOExtSer *req, struct fujinet_serial_base 
     req->io_Status = 0;
 }
 
-static void finish(struct IOExtSer *req, BYTE err)
-{
-    req->IOSer.io_Error = err;
-    if ((req->IOSer.io_Flags & IOF_QUICK) != 0) return;
-    ReplyMsg(&req->IOSer.io_Message);
-}
-
-static void release_paula(struct fujinet_serial_base *base)
-{
-    if (!base->paula_claimed) return;
-    Disable();
-    paula.intena = (UWORD)(INTF_RBF | INTF_TBE);
-    ack_rbf();
-    paula.intreq = (UWORD)INTF_TBE;
-    rbf_remove(base);
-    drain_rbf_locked(base);
-    paula.serper = fujinet_paula_serper(9600UL, pal_display());
-    if (base->old_rbf != NULL && base->rbf_was_enabled)
-        paula.intena = (UWORD)(INTF_SETCLR | INTF_RBF);
-    if (base->tbe_was_enabled)
-        paula.intena = (UWORD)(INTF_SETCLR | INTF_TBE);
-    base->rbf_was_enabled = 0;
-    base->tbe_was_enabled = 0;
-    base->paula_claimed = 0;
-    Enable();
-}
-
-static BYTE claim_paula(struct fujinet_serial_base *base)
-{
-    if (fujinet_paula_rx_init(&base->rx, base->rx_buf,
-                              FUJINET_PAULA_RX_DEFAULT_SIZE) != 0)
-        return IOERR_OPENFAIL;
-    base->baud = DEVICE_BAUD_DEFAULT;
-    Disable();
-    base->rbf_was_enabled =
-        (UBYTE)((paula.intenar & (UWORD)INTF_RBF) != 0);
-    base->tbe_was_enabled =
-        (UBYTE)((paula.intenar & (UWORD)INTF_TBE) != 0);
-    paula.intena = (UWORD)(INTF_RBF | INTF_TBE);
-    ack_rbf();
-    paula.intreq = (UWORD)INTF_TBE;
-    apply_serper(base);
-    drain_rbf_locked(base);
-    fujinet_paula_rx_clear(&base->rx);
-
-    memset(&base->rbf_int, 0, sizeof(base->rbf_int));
-    base->rbf_int.is_Node.ln_Type = NT_INTERRUPT;
-    base->rbf_int.is_Node.ln_Pri = 127;
-    base->rbf_int.is_Node.ln_Name = (char *)device_name;
-    base->rbf_int.is_Data = base;
-    base->rbf_int.is_Code = (void (*)())fujinet_serial_rbf_server;
-    rbf_install(base);
-    paula.intena = (UWORD)(INTF_SETCLR | INTF_RBF);
-    paula.intena = (UWORD)(INTF_SETCLR | INTF_RBF);
-    base->paula_claimed = 1;
-    Enable();
-    return 0;
-}
-
 static void cmd_query(struct fujinet_serial_base *base, struct IOExtSer *req)
 {
-    rbf_enable(base);
-    drain_rbf(base);
+    rearm_receive(base);
     Disable();
-    req->IOSer.io_Actual = fujinet_paula_rx_count(&base->rx);
-    req->io_Status = base->rx.overrun ? (UWORD)IO_STATF_OVERRUN : 0;
+    req->IOSer.io_Actual = fujinet_paula_rx_count(&base->rbf_data.rx);
+    req->io_Status = fujinet_paula_rx_public_overrun(&base->rbf_data.rx)
+                         ? (UWORD)IO_STATF_OVERRUN
+                         : 0;
     Enable();
     finish(req, 0);
 }
@@ -222,23 +330,41 @@ static void cmd_read(struct fujinet_serial_base *base, struct IOExtSer *req)
 {
     ULONG length = req->IOSer.io_Length;
     uint8_t *data = (uint8_t *)req->IOSer.io_Data;
-    uint16_t copied;
 
-    rbf_enable(base);
-    drain_rbf(base);
+    if (base->closing) {
+        finish(req, IOERR_OPENFAIL);
+        return;
+    }
+    rearm_receive(base);
     if (length != 0 && data == NULL) {
         req->IOSer.io_Actual = 0;
         finish(req, IOERR_BADADDRESS);
         return;
     }
+    if (length == 0) {
+        req->IOSer.io_Actual = 0;
+        finish(req, 0);
+        return;
+    }
     if (length > 0xFFFFUL) length = 0xFFFFUL;
+    if (length > base->rbf_data.rx.mask) {
+        req->IOSer.io_Actual = 0;
+        finish(req, SerErr_InvParam);
+        return;
+    }
+    req->IOSer.io_Flags &= (UBYTE)~IOF_QUICK;
     Disable();
-    copied = fujinet_paula_rx_read(&base->rx, data, (uint16_t)length);
-    if (copied != 0) base->rx.overrun = 0;
-    req->io_Status = base->rx.overrun ? (UWORD)IO_STATF_OVERRUN : 0;
+    if (base->read_state == READ_PENDING) {
+        Enable();
+        finish(req, IOERR_UNITBUSY);
+        return;
+    }
+    base->pending_read = req;
+    base->read_state = READ_PENDING;
+    base->rbf_data.pending_need = (uint16_t)length;
+    if (fujinet_paula_rx_count(&base->rbf_data.rx) >= (uint16_t)length)
+        Cause(&base->soft_int);
     Enable();
-    req->IOSer.io_Actual = copied;
-    finish(req, 0);
 }
 
 static void cmd_write(struct fujinet_serial_base *base, struct IOExtSer *req)
@@ -252,13 +378,12 @@ static void cmd_write(struct fujinet_serial_base *base, struct IOExtSer *req)
         finish(req, IOERR_BADADDRESS);
         return;
     }
-    rbf_enable(base);
+    rearm_receive(base);
     Forbid();
     for (i = 0; i < length; ++i) {
         ULONG spin = 0;
 
         while ((paula.serdatr & FUJINET_PAULA_SERDATR_TBE) == 0) {
-            drain_rbf(base);
             if (++spin >= TBE_SPIN_MAX) {
                 Permit();
                 req->IOSer.io_Actual = i;
@@ -266,7 +391,6 @@ static void cmd_write(struct fujinet_serial_base *base, struct IOExtSer *req)
                 return;
             }
         }
-        drain_rbf(base);
         paula.serdat = fujinet_paula_serdat_word(data[i]);
     }
     Permit();
@@ -278,15 +402,17 @@ static void cmd_setparams(struct fujinet_serial_base *base, struct IOExtSer *req
 {
     uint32_t baud = req->io_Baud;
 
-    if (baud < DEVICE_BAUD_MIN || baud > DEVICE_BAUD_MAX) {
-        finish(req, SerErr_BaudMismatch);
-        return;
-    }
-    if (req->io_ReadLen != 8 || req->io_WriteLen != 8 || req->io_StopBits != 1) {
+    if (base->read_state == READ_PENDING) {
         finish(req, SerErr_InvParam);
         return;
     }
-    if ((req->io_SerFlags & SERF_PARTY_ON) != 0) {
+    if (baud < FUJINET_SERIAL_BAUD_MIN || baud > FUJINET_SERIAL_BAUD_MAX) {
+        finish(req, SerErr_BaudMismatch);
+        return;
+    }
+    if (!fujinet_serial_params_valid(baud, req->io_ReadLen, req->io_WriteLen,
+                                     req->io_StopBits,
+                                     (req->io_SerFlags & SERF_PARTY_ON) != 0)) {
         finish(req, SerErr_InvParam);
         return;
     }
@@ -299,10 +425,20 @@ static void cmd_setparams(struct fujinet_serial_base *base, struct IOExtSer *req
 
 static void cmd_clear(struct fujinet_serial_base *base, struct IOExtSer *req)
 {
+    struct IOExtSer *pending;
+
     Disable();
+    pending = take_pending(base, READ_ABORTING);
     drain_rbf_locked(base);
-    fujinet_paula_rx_clear(&base->rx);
-    Enable();
+    fujinet_paula_rx_clear(&base->rbf_data.rx);
+    if (pending != NULL) {
+        pending->IOSer.io_Actual = 0;
+        base->read_state = READ_REPLIED;
+        Enable();
+        reply_request(pending, IOERR_ABORTED);
+    } else {
+        Enable();
+    }
     req->IOSer.io_Actual = 0;
     req->io_Status = 0;
     finish(req, 0);
@@ -310,10 +446,22 @@ static void cmd_clear(struct fujinet_serial_base *base, struct IOExtSer *req)
 
 static void cmd_flush(struct fujinet_serial_base *base, struct IOExtSer *req)
 {
-    rbf_disable(base);
+    struct IOExtSer *pending;
+
     Disable();
-    fujinet_paula_rx_clear(&base->rx);
-    Enable();
+    pending = take_pending(base, READ_ABORTING);
+    paula.intena = (UWORD)INTF_RBF;
+    base->receive_armed = 0;
+    drain_rbf_locked(base);
+    fujinet_paula_rx_clear(&base->rbf_data.rx);
+    if (pending != NULL) {
+        pending->IOSer.io_Actual = 0;
+        base->read_state = READ_REPLIED;
+        Enable();
+        reply_request(pending, IOERR_ABORTED);
+    } else {
+        Enable();
+    }
     req->IOSer.io_Actual = 0;
     req->io_Status = 0;
     finish(req, 0);
@@ -337,6 +485,7 @@ static struct Device *device_open(
     register struct fujinet_serial_base *base FN_REGISTER("a6"))
 {
     struct IOExtSer *req = (struct IOExtSer *)request;
+    BYTE err;
 
     (void)flags;
     if (unit_number != FUJINET_SERIAL_DEVICE_UNIT) {
@@ -347,8 +496,9 @@ static struct Device *device_open(
         request->io_Error = IOERR_UNITBUSY;
         return NULL;
     }
-    if (claim_paula(base) != 0) {
-        request->io_Error = IOERR_OPENFAIL;
+    err = claim_paula(base);
+    if (err != 0) {
+        request->io_Error = err;
         return NULL;
     }
     fill_open_defaults(req, base);
@@ -413,7 +563,7 @@ static void device_begin_io(
 {
     struct IOExtSer *req = (struct IOExtSer *)request;
 
-    if (!base->paula_claimed) {
+    if (!base->port_claimed || !base->bits_claimed || base->closing) {
         finish(req, IOERR_OPENFAIL);
         return;
     }
@@ -447,9 +597,23 @@ static LONG device_abort_io(
     register struct IORequest *request FN_REGISTER("a1"),
     register struct fujinet_serial_base *base FN_REGISTER("a6"))
 {
-    (void)request;
-    (void)base;
-    /* READ/WRITE/QUERY complete inside BeginIO, so there is nothing to abort. */
+    struct IOExtSer *req = (struct IOExtSer *)request;
+    struct IOExtSer *taken;
+
+    Disable();
+    if (base->pending_read != req) {
+        Enable();
+        return 0;
+    }
+    taken = take_pending(base, READ_ABORTING);
+    if (taken != NULL) {
+        taken->IOSer.io_Actual = 0;
+        base->read_state = READ_REPLIED;
+        Enable();
+        reply_request(taken, IOERR_ABORTED);
+    } else {
+        Enable();
+    }
     return 0;
 }
 

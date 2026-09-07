@@ -67,6 +67,26 @@ clock commands. On PiStorm that sequence has completed with `PASS` and then
 rebooted the machine (power LED flash, no Guru). Isolation is already
 `disk.device` unloaded and no `FLS`/`FHOST`/`FIN` in another shell.
 
+## FujiNet Paula device lifecycle (this cut)
+
+`fujinet-serial.device` claims `misc.resource` as `MR_SERIALPORT` then
+`MR_SERIALBITS` before touching Paula or `INTB_RBF`. `CMD_READ` waits until
+the requested byte count is available. The RBF handler only samples
+`SERDATR`, retains into the private ring, and acknowledges once per byte; a
+device-owned software interrupt completes a pending READ. `CMD_FLUSH` aborts
+a retained READ (`IOERR_ABORTED`), clears the software queue, and masks RBF
+without releasing Paula. The next `CMD_WRITE`, `CMD_READ`, or `SDCMD_QUERY`
+rearms RBF before the first new `SERDAT` byte, sampling a pending RBF first.
+
+Always-armed receive is the documented PiStorm fallback if testing shows lost
+leading response bytes or unacceptable rearm latency. Do not switch to it
+without that evidence.
+
+**CAP-5:** PiStorm is the sole hardware-stability gate. A 19200 cold clock
+through `fujinet-serial.device` must print `result=0` / `status=0` and return
+to the Shell with no power-LED flash and no PiStorm reboot screen. Amiberry
+does not prove that.
+
 ## ESP response pacing (rank 2)
 
 Product default on ESP `UartGpio` is **16-byte chunks, 2000 µs between

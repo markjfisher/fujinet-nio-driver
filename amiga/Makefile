@@ -87,9 +87,8 @@ $(BUILD_DIR)/nio.device/fujinet_nio_device.o: include/fujinet_nio_endian.h \
 	include/fujinet_nio_serial_config.h
 $(BUILD_DIR)/nio.device/fujinet_nio_serial_backend.o: include/fujinet_nio_serial_config.h
 $(BUILD_DIR)/serial.device/fujinet_serial_device.o: include/fujinet_paula_uart.h \
-	include/fujinet_serial_device.h include/fujinet_serial_rbf_off.h
-$(BUILD_DIR)/serial.device/fujinet_serial_rbf.o: serial.device/fujinet_serial_rbf.S \
-	include/fujinet_serial_rbf_off.h
+	include/fujinet_serial_device.h
+$(BUILD_DIR)/serial.device/fujinet_serial_rbf.o: serial.device/fujinet_serial_rbf.S
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 $(BUILD_DIR)/serial.device/fujinet_paula_uart.o: include/fujinet_paula_uart.h

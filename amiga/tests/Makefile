@@ -12,13 +12,14 @@ NIO_DEVICE_TEST := $(BUILD_DIR)/test_fujinet_nio_device
 SERIAL_CHANNEL_TEST := $(BUILD_DIR)/test_fujinet_nio_serial_channel
 EXCHANGE_OPTS_TEST := $(BUILD_DIR)/test_fujinet_nio_exchange_opts
 PAULA_UART_TEST := $(BUILD_DIR)/test_fujinet_paula_uart
+LIFECYCLE_TEST := $(BUILD_DIR)/test_fujinet_serial_lifecycle
 LIBRARY := $(LIB_ROOT)/build/fujinet-nio-linux.a
 
 .PHONY: all test library clean
 
 all: $(TEST) $(RETRY_TEST) $(QUEUE_TEST) $(EXEC_BOUNDARY_TEST) $(RESIDENT_TEST) \
 	$(NIO_DEVICE_TEST) $(SERIAL_CHANNEL_TEST) $(EXCHANGE_OPTS_TEST) \
-	$(PAULA_UART_TEST)
+	$(PAULA_UART_TEST) $(LIFECYCLE_TEST)
 
 $(TEST): test_fujinet_disk_driver.c \
 		$(DRIVER_ROOT)/common/fujinet_disk_driver.c \
@@ -88,9 +89,18 @@ $(PAULA_UART_TEST): test_fujinet_paula_uart.c \
 		test_fujinet_paula_uart.c \
 		$(DRIVER_ROOT)/serial.device/fujinet_paula_uart.c -o $@
 
+$(LIFECYCLE_TEST): test_fujinet_serial_lifecycle.c \
+		$(DRIVER_ROOT)/serial.device/fujinet_serial_lifecycle.c \
+		$(DRIVER_ROOT)/serial.device/fujinet_paula_uart.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -I$(DRIVER_ROOT)/include -I$(DRIVER_ROOT)/serial.device \
+		test_fujinet_serial_lifecycle.c \
+		$(DRIVER_ROOT)/serial.device/fujinet_serial_lifecycle.c \
+		$(DRIVER_ROOT)/serial.device/fujinet_paula_uart.c -o $@
+
 test: $(TEST) $(RETRY_TEST) $(QUEUE_TEST) $(EXEC_BOUNDARY_TEST) $(RESIDENT_TEST) \
 		$(NIO_DEVICE_TEST) $(SERIAL_CHANNEL_TEST) $(EXCHANGE_OPTS_TEST) \
-		$(PAULA_UART_TEST)
+		$(PAULA_UART_TEST) $(LIFECYCLE_TEST)
 	./$(TEST)
 	./$(RETRY_TEST)
 	./$(QUEUE_TEST)
@@ -100,6 +110,7 @@ test: $(TEST) $(RETRY_TEST) $(QUEUE_TEST) $(EXEC_BOUNDARY_TEST) $(RESIDENT_TEST)
 	./$(SERIAL_CHANNEL_TEST)
 	./$(EXCHANGE_OPTS_TEST)
 	./$(PAULA_UART_TEST)
+	./$(LIFECYCLE_TEST)
 
 clean:
 	rm -rf $(BUILD_DIR)
