@@ -117,6 +117,8 @@ static void test_rbf_handler_register_contract(void)
     CHECK("rbf-no-a6", !token_present(body, "%a6") &&
           strstr(body, "_LVOCause(%a6)") == NULL);
     CHECK("rbf-cause-via-a0", strstr(body, "_LVOCause(%a0)") != NULL);
+    CHECK("rbf-debug-fire", strstr(body, "OFF_RBF_FIRE") != NULL);
+    CHECK("rbf-debug-ingest", strstr(body, "OFF_INGEST") != NULL);
     CHECK("rbf-single-ack-pattern",
           strstr(body, "move.w  #INTF_RBF,INTREQ\n        move.w  #INTF_RBF,INTREQ") == NULL);
     CHECK("rbf-no-nop-rts", strstr(body, "nop") == NULL);
@@ -385,6 +387,37 @@ static void test_overrun_and_expunge(void)
           lc.bits_owned == 0);
 }
 
+static void test_open_baud_and_setparams_settle(void)
+{
+    fn_serial_lc_t lc;
+    int writes_at_open;
+
+    fn_serial_lc_init(&lc);
+    CHECK("open-38400",
+          fn_serial_lc_open_at_baud(&lc, 38400UL) == FN_SERIAL_LC_OK);
+    CHECK("open-38400-serper", lc.last_serper == 91U);
+    CHECK("open-38400-one-write", lc.serper_writes == 1);
+    writes_at_open = lc.serper_writes;
+    CHECK("setparams-same-38400",
+          fn_serial_lc_setparams(&lc, 38400UL, 8U, 8U, 1U, 0) == FN_SERIAL_LC_OK);
+    CHECK("setparams-keeps-38400", lc.last_serper == 91U);
+    CHECK("setparams-no-19200-detour", lc.last_serper != 183U);
+    CHECK("setparams-wrote-again", lc.serper_writes == writes_at_open + 1);
+    CHECK("setparams-stays-armed", lc.receive_armed == 1 && lc.rbf_intena == 1);
+
+    fn_serial_lc_init(&lc);
+    CHECK("open-default-19200", fn_serial_lc_open(&lc) == FN_SERIAL_LC_OK);
+    CHECK("open-default-serper", lc.last_serper == 183U);
+    fn_serial_lc_hw_rx(&lc, 0xA5, 0);
+    fn_serial_lc_rbf_handler(&lc);
+    CHECK("pre-setparams-queued", fujinet_paula_rx_count(&lc.rx) == 1);
+    CHECK("setparams-to-38400",
+          fn_serial_lc_setparams(&lc, 38400UL, 8U, 8U, 1U, 0) == FN_SERIAL_LC_OK);
+    CHECK("setparams-38400-serper", lc.last_serper == 91U);
+    CHECK("setparams-discards-rx", fujinet_paula_rx_count(&lc.rx) == 0);
+    CHECK("setparams-rate-change-armed", lc.receive_armed == 1);
+}
+
 int main(void)
 {
     test_rbf_handler_register_contract();
@@ -393,6 +426,7 @@ int main(void)
     test_read_cause_and_abort();
     test_flush_rearm_and_close();
     test_overrun_and_expunge();
+    test_open_baud_and_setparams_settle();
 
     if (failures != 0) {
         fprintf(stderr, "%u fujinet_serial_lifecycle checks failed\n", failures);

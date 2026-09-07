@@ -89,6 +89,7 @@ typedef struct fn_serial_lc {
 
 void fn_serial_lc_init(fn_serial_lc_t *lc);
 int fn_serial_lc_open(fn_serial_lc_t *lc);
+int fn_serial_lc_open_at_baud(fn_serial_lc_t *lc, uint32_t baud);
 int fn_serial_lc_open_unit(fn_serial_lc_t *lc, unsigned unit);
 int fn_serial_lc_setparams(fn_serial_lc_t *lc, uint32_t baud, unsigned read_len,
                            unsigned write_len, unsigned stop_bits,

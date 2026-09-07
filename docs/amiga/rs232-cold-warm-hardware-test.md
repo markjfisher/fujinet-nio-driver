@@ -79,16 +79,34 @@ device-owned software interrupt completes a pending READ. `CMD_FLUSH` aborts
 a retained READ (`IOERR_ABORTED`) and clears the software queue **without**
 masking RBF. `CMD_WRITE` drains leftover `SERDATR` and discards the software
 queue immediately before TX so idle bytes are not parsed as the next frame.
+`OpenDevice` programs `SERPER` from the request `io_Baud` (the broker fills
+this before `OpenDevice`). `SETPARAMS` waits for TX idle, applies `SERPER`,
+discards RX garbage, and leaves RBF armed.
 
 PiStorm 38400: FLUSH-quiesce lost the first request after idle (`cause=4`,
 ~13.7 s, FLS single-shot fail) with and without ESP 16/2000 pacing. Later
 trials in the same command succeeded. Always-armed is the production path.
+Always-armed did not fix a clean-reboot first 38400 open: claim wrote 19200
+then `SETPARAMS` jumped to 38400. 19200 first-open never took that jump.
 
 **CAP-5:** PiStorm is the sole hardware-stability gate. A 19200 cold clock
 through `fujinet-serial.device` must print `result=0` / `status=0` and return
 to the Shell with no power-LED flash and no PiStorm reboot screen. Amiberry
 does not prove that. 38400 FLS / first file-list after idle must not sit in
-the 5 s QUERY timeout.
+the 5 s QUERY timeout. Confirm the guest `fujinet-serial.device` is 0.6
+(`$VER`) and `fujinet-nio.device` is 0.5. Serial 0.5 polled `INTREQ` TBE
+while that interrupt was masked; WRITE failed `SerErr_LineErr` (`cause=5
+native=6`), froze the mouse, and the ESP saw no request. Serial 0.6 waits
+for `SERDATR` TBE again and keeps any RBF byte from that same read. First
+38400 file-list stayed `6/4/255/255` through serial 0.6 and broker 0.3.
+`native=255` is a **log-field cap**, not the ring size: Paula RX is 2048
+bytes, so a ~513-byte FujiBus + SLIP (opening `C0`, payload, closing `C0`)
+fits. Broker 0.4 completes a frame whose opening END was lost if the
+trailing END was among the bytes read. Broker 0.5 adds a `peek=` hex line
+on `cause` 4/7/9: the first 32 bytes the session actually received (or the
+unread ring head if QUERY never delivered). Compare that to the ESP
+`payload` dump — a leading `c0` vs `01 01 00 00…`. Cause=4
+`native`/`status` remain session-bytes / ingest.
 
 ## ESP response pacing (rank 2)
 
@@ -149,8 +167,8 @@ req_len=6 resp_len=14 elapsed_us=4120 ttfb_us=- result=0 cause=0 native=0 status
 | `ttfb_us` | Always `-` in this build (no first-bit stamp). |
 | `result` | Broker result pad. `0` is a clean completion. |
 | `cause` | Where a transport fault was classified (see below). `0` is none. |
-| `native` | `serial.device` `io_Error`. `0` is none. |
-| `status` | High byte of `serial.device` `io_Status`. `1` is `IO_STATF_OVERRUN`. |
+| `native` | `serial.device` `io_Error`. `0` is none. **On `cause=4` with `fujinet-nio.device` 0.3 this is bytes `serial_read_byte` returned to the session (capped 255), not an io_Error. 0.4–0.6 packed RBF-fire here instead.** |
+| `status` | High byte of `serial.device` `io_Status`. `1` is `IO_STATF_OVERRUN`. **On `cause=4` this is bytes ingested into the ring, or WRITE-discarded count if ingest was 0 (capped 255).** |
 | `backend` | `cold` or `warm` as requested, not inferred. |
 
 `--size` on `file-list` is LIST `maxPayloadBytes` (how much directory blob
@@ -177,6 +195,22 @@ passed. Failures are still printed; there is no retry.
 `native` is often `6` (`SerErr_LineErr`) on those rows. Other `cause` values
 (write, query, timeout, timer) are different faults; note them, but they are
 not the burst-overrun signature.
+
+On **`cause=4`** with `fujinet-nio.device` 0.3+, read `native` / `status` as
+session-delivered bytes vs ring ingest from after `CMD_WRITE` until QUERY
+gave up (not serial.device errors). `fujinet-serial.device` 0.4–0.6 packed
+RBF-fire into `native`; a first-timeout `255/255` could not split the two
+cases below. Broker 0.4 still reports these counters on timeout; a first
+38400 pass is `result=0`. prints a second line `peek=..` (first 32 wire bytes) on `cause` 3, 4, 7, or 9.
+`peek=-` means none were captured. That dump does not grow `FujiNetNIORequest`;
+FLS still sees `fn_response_length=0` on error.
+
+| `native` (bytes to session) | `status` (ingested, or WRITE discards if ingested=0) | Meaning |
+| ---: | ---: | --- |
+| 0 | 0 | ISR never stored a byte. Paula never interrupted, or a task-level `SERDATR` poll stole it before INTREQ latched. |
+| 0 | N≠0 | ISR (or WRITE discard) counted N bytes, but QUERY never handed the session even one. Ring occupancy and QUERY are the next place to look. |
+| N≠0 | 0 | Session got N bytes; ISR ingest was 0 (unexpected if those bytes came from this device). |
+| N≠0 | M≠0 | Session consumed bytes (N) and the ring was filled (M). SLIP never closed — likely lost opening `0xC0`, hunt-sync on the trailing END. |
 
 ## Commands
 

@@ -22,6 +22,8 @@
 #define OFF_NEED    12
 #define OFF_SOFTINT 16
 #define OFF_SYSBASE 20
+#define OFF_RBF_FIRE 24
+#define OFF_INGEST 26
 
         .text
         .align  2
@@ -29,13 +31,14 @@
 _fujinet_serial_rbf_server:
         move.w  INTENAR,%d0
         btst    #INTB_INTEN,%d0
-        beq.s   .exit
+        beq     .exit
         move.l  %a1,%d0
-        beq.s   .exit
+        beq     .exit
 .drain:
         move.w  INTREQR,%d0
         btst    #INTB_RBF,%d0
         beq.s   .maybe_cause
+        addq.w  #1,OFF_RBF_FIRE(%a1)
         move.w  SERDATR,%d0
         btst    #SERDATR_OVRUN,%d0
         beq.s   .check_byte
@@ -52,6 +55,7 @@ _fujinet_serial_rbf_server:
         adda.w  OFF_HEAD(%a1),%a0
         move.b  %d0,(%a0)
         move.w  %d1,OFF_HEAD(%a1)
+        addq.w  #1,OFF_INGEST(%a1)
         bra.s   .ack
 .soft_overrun:
         move.b  #1,OFF_SW_OV(%a1)

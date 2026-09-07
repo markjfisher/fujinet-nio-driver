@@ -138,11 +138,24 @@ int fn_serial_lc_setparams(fn_serial_lc_t *lc, uint32_t baud, unsigned read_len,
     lc->last_serper = fujinet_paula_serper(baud, 1);
     lc->serper_writes += 1;
     lc->paula_mutated = 1;
+    drain_rbf(lc);
+    fujinet_paula_rx_clear(&lc->rx);
+    if (!lc->receive_armed) {
+        lc->rbf_intena = 1;
+        lc->receive_armed = 1;
+    }
     return FN_SERIAL_LC_OK;
 }
 
 int fn_serial_lc_open(fn_serial_lc_t *lc)
 {
+    return fn_serial_lc_open_at_baud(lc, 19200UL);
+}
+
+int fn_serial_lc_open_at_baud(fn_serial_lc_t *lc, uint32_t baud)
+{
+    uint32_t use = baud;
+
     if (lc->open_cnt != 0U) return FN_SERIAL_LC_BUSY;
 
     lc->claim_trace_n = 0;
@@ -161,9 +174,12 @@ int fn_serial_lc_open(fn_serial_lc_t *lc)
     lc->bits_owned = 1;
     trace_add(lc->claim_trace, &lc->claim_trace_n, FN_SERIAL_LC_MISC_BITS);
 
+    if (use < FUJINET_SERIAL_BAUD_MIN || use > FUJINET_SERIAL_BAUD_MAX)
+        use = 19200UL;
+
     lc->saved_vector = lc->rbf_vector;
     lc->rbf_was_enabled = lc->rbf_intena;
-    lc->last_serper = 183U;
+    lc->last_serper = fujinet_paula_serper(use, 1);
     lc->serper_writes += 1;
     lc->paula_mutated = 1;
     lc->rbf_vector = lc->fujinet_handler;

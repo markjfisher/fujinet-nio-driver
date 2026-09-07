@@ -10,6 +10,7 @@
 #include "fujinet_nio_backend.h"
 #include "fujinet_nio_serial_channel.h"
 #include "fujinet_nio_serial_config.h"
+#include "fujinet_serial_device.h"
 #include "fujinet-nio.h"
 #include "fn_protocol.h"
 #include "fn_session.h"
@@ -61,6 +62,14 @@ static uint8_t serial_failure_io_error;
 static uint16_t serial_failure_status;
 static uint8_t serial_flush_drained_overrun; /* set when session_flush drained IO_STATF_OVERRUN */
 static uint32_t serial_baud = FN_SERIAL_BACKEND_BAUD;
+/* Bytes serial_read_byte() actually returned to the session this EXCHANGE.
+ * cause=4 used to pack RBF-fire/ingest, both saturating at 255, so a first
+ * 38400 timeout could not tell "ISR filled the ring, QUERY never advertised"
+ * from "session consumed the burst, SLIP never closed." */
+static uint16_t debug_bytes_got;
+#define DEBUG_PEEK_MAX 32
+static uint8_t debug_peek[DEBUG_PEEK_MAX];
+static uint8_t debug_peek_len;
 
 /*
  * Writes use synchronous DoIO(CMD_WRITE). timeout_ms is unused on purpose:
@@ -140,12 +149,32 @@ static uint8_t serial_cmd_read(APTR buf, ULONG length, uint16_t timeout_ms)
     return FN_OK;
 }
 
+static void note_byte_got(uint8_t value)
+{
+    if (debug_bytes_got != 0xFFFFU) debug_bytes_got++;
+    if (debug_peek_len < DEBUG_PEEK_MAX)
+        debug_peek[debug_peek_len++] = value;
+}
+
+static void copy_debug_peek(uint8_t *response, uint16_t capacity)
+{
+    uint8_t n;
+
+    if (response == NULL || capacity < 1U) return;
+    n = debug_peek_len;
+    if (n > DEBUG_PEEK_MAX) n = DEBUG_PEEK_MAX;
+    if ((uint16_t)n + 1U > capacity) n = (uint8_t)(capacity - 1U);
+    response[0] = n;
+    if (n != 0) memcpy(response + 1, debug_peek, n);
+}
+
 static uint8_t serial_read_byte(uint8_t *byte_out, uint16_t timeout_ms)
 {
     ULONG available;
 
     if (read_pos < read_len) {
         *byte_out = read_buf[read_pos++];
+        note_byte_got(*byte_out);
         return FN_OK;
     }
 
@@ -204,6 +233,7 @@ static uint8_t serial_read_byte(uint8_t *byte_out, uint16_t timeout_ms)
     read_len = (uint16_t)serial_req->IOSer.io_Actual;
     if (read_len == 0) return FN_ERR_NOT_READY;
     *byte_out = read_buf[0];
+    note_byte_got(*byte_out);
     return FN_OK;
 }
 
@@ -463,13 +493,9 @@ uint8_t backend_open(void)
         backend_close();
         return FN_ERR_IO;
     }
-    if (OpenDevice((CONST_STRPTR)serial_device_name, serial_unit,
-                   (struct IORequest *)serial_req, 0) != 0) {
-        backend_close();
-        return FN_ERR_NOT_FOUND;
-    }
-    serial_open = 1;
-
+    /* Fill IOExtSer before OpenDevice so fujinet-serial.device can program
+     * SERPER at the requested rate on claim. Writing 19200 then SETPARAMS
+     * 38400 garbled the first PiStorm request (QUERY timeout, cause=4). */
     serial_req->io_Baud = serial_baud;
     serial_req->io_ReadLen = 8;
     serial_req->io_WriteLen = 8;
@@ -482,6 +508,13 @@ uint8_t backend_open(void)
      * IO_STATF_OVERRUN / SerErr_LineErr is preserved. FujiBus uses SLIP
      * framing and its own packet integrity rather than RS-232 line-status bits. */
     serial_req->io_SerFlags = SERF_XDISABLED | SERF_RAD_BOOGIE;
+    if (OpenDevice((CONST_STRPTR)serial_device_name, serial_unit,
+                   (struct IORequest *)serial_req, 0) != 0) {
+        backend_close();
+        return FN_ERR_NOT_FOUND;
+    }
+    serial_open = 1;
+
     serial_req->IOSer.io_Command = SDCMD_SETPARAMS;
     if (DoIO((struct IORequest *)serial_req) != 0) {
         backend_close();
@@ -567,9 +600,45 @@ uint8_t backend_exchange(
     serial_failure_detail = FUJINET_NIO_DETAIL_NONE;
     serial_failure_io_error = 0;
     serial_failure_status = 0;
+    debug_bytes_got = 0;
+    debug_peek_len = 0;
     session_result = fn_stream_session_request(
         &session, request, request_len, response, response_capacity,
         response_len, FN_SERIAL_BACKEND_TIMEOUT_MS);
+    if (session_result == FN_ERR_TIMEOUT && serial_open &&
+        strcmp(serial_device_name, FUJINET_SERIAL_DEVICE_NAME) == 0) {
+        serial_req->IOSer.io_Command = SDCMD_QUERY;
+        serial_req->IOSer.io_Data = NULL;
+        serial_req->IOSer.io_Length = 0;
+        serial_req->IOSer.io_Actual = 0;
+        if (DoIO((struct IORequest *)serial_req) == 0 &&
+            serial_failure_io_error == 0 && serial_failure_status == 0) {
+            uint16_t got = (uint16_t)serial_req->io_ExtFlags;
+            uint16_t disc_w = (uint16_t)(serial_req->io_CtlChar >> 16);
+            uint16_t shown = got != 0U ? got : disc_w;
+
+            if (debug_peek_len == 0 && serial_req->IOSer.io_Actual != 0) {
+                ULONG n = serial_req->IOSer.io_Actual;
+                uint8_t saved_detail = serial_failure_detail;
+                uint8_t saved_err = serial_failure_io_error;
+                uint16_t saved_st = serial_failure_status;
+
+                if (n > DEBUG_PEEK_MAX) n = DEBUG_PEEK_MAX;
+                if (serial_cmd_read(debug_peek, n, 50) == FN_OK) {
+                    n = serial_req->IOSer.io_Actual;
+                    if (n > DEBUG_PEEK_MAX) n = DEBUG_PEEK_MAX;
+                    debug_peek_len = (uint8_t)n;
+                }
+                serial_failure_detail = saved_detail;
+                serial_failure_io_error = saved_err;
+                serial_failure_status = saved_st;
+            }
+            serial_failure_io_error =
+                debug_bytes_got > 255U ? 255U : (uint8_t)debug_bytes_got;
+            serial_failure_status =
+                (UWORD)((shown > 255U ? 255U : (uint8_t)shown) << 8);
+        }
+    }
     if (detail != NULL) {
         if (channel_error != 0)
             *detail = serial_failure_detail != FUJINET_NIO_DETAIL_NONE
@@ -591,6 +660,9 @@ uint8_t backend_exchange(
      * gaps), so drain until RX is idle before the worker CloseDevice. The
      * next EXCHANGE lazy-reopens a clean session.
      */
+    if (result != FN_OK && serial_open &&
+        strcmp(serial_device_name, FUJINET_SERIAL_DEVICE_NAME) == 0)
+        copy_debug_peek(response, response_capacity);
     if (result != FN_OK) session_flush_until_idle();
     if (serial_open) {
         serial_req->IOSer.io_Command = CMD_FLUSH;

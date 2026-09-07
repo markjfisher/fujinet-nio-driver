@@ -17,6 +17,7 @@
 #include "fujinet_nio_endian.h"
 #include "fujinet_nio_exchange_opts.h"
 #include "fujinet_nio_serial_config.h"
+#include "fujinet_nio_backend.h"
 #include "fujinet_disk_device.h"
 #include "fujinet-nio.h"
 #include "fn_protocol.h"
@@ -73,6 +74,8 @@ static void fill_exchange(struct FujiNetNIORequest *req, struct MsgPort *port,
     req->fn_response_data = response;
     req->fn_response_capacity = response_cap;
     req->fn_response_length = 0;
+    if (response != NULL && response_cap != 0)
+        memset(response, 0, response_cap);
     req->fn_nio_error = 0;
     req->fn_pad[0] = 0;
     req->fn_pad[1] = 0;
@@ -387,6 +390,25 @@ static void print_trial_log(const struct FujiNetNIORequest *req,
         return;
     }
     printf("%s\n", line);
+}
+
+static void print_wire_peek(const uint8_t *buf)
+{
+    unsigned n;
+    unsigned i;
+
+    if (buf == NULL) return;
+    n = buf[0];
+    if (n == 0 || n > 32) {
+        printf("peek=-\n");
+        return;
+    }
+    printf("peek=");
+    for (i = 0; i < n; ++i) {
+        if (i != 0) putchar(' ');
+        printf("%02x", (unsigned)buf[1 + i]);
+    }
+    printf("\n");
 }
 
 static void print_matrix_usage(void)
@@ -768,6 +790,12 @@ static int run_matrix(int argc, char **argv)
                 attach_open(&req, &open_request);
                 do_measured_exchange(&req, elapsed);
                 print_trial_log(&req, opts.backend, elapsed);
+                if (req.fn_pad[2] == FUJINET_NIO_DETAIL_SESSION_IO ||
+                    req.fn_pad[2] == FUJINET_NIO_DETAIL_TIMEOUT ||
+                    req.fn_pad[2] == FUJINET_NIO_DETAIL_SERIAL_READ ||
+                    req.fn_pad[2] ==
+                        FUJINET_NIO_DETAIL_FLUSH_DRAINED_THEN_READ_FAILED)
+                    print_wire_peek(matrix_response);
                 if (req.fn_io.io_Error != 0 || req.fn_nio_error != FN_OK)
                     step_failed = -1;
             } else {

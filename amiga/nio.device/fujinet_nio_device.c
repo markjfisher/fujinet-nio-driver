@@ -28,7 +28,7 @@
 
 #define DEVICE_NAME FUJINET_NIO_DEVICE_NAME
 #define DEVICE_VERSION 0
-#define DEVICE_REVISION 2
+#define DEVICE_REVISION 5
 /* Headroom for a later serial/SLIP wait; 2A does not allocate serial buffers. */
 #define WORKER_STACK_SIZE 16384
 
@@ -78,7 +78,7 @@ struct ExecBase *SysBase;
 #ifndef FUJINET_NIO_NATIVE_TEST
 static const char device_name[] = DEVICE_NAME;
 static const char device_id[] =
-    "$VER: " DEVICE_NAME " 0.2 (29.8.2026) \xa9 2026 Mark Fisher\r\n";
+    "$VER: " DEVICE_NAME " 0.5 (7.9.2026) \xa9 2026 Mark Fisher\r\n";
 #endif
 
 static uint8_t pad_nonzero(const struct FujiNetNIORequest *req)
