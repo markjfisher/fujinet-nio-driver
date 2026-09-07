@@ -58,8 +58,8 @@ C:fujinet-nio-exchange --type clock --backend cold --baud 38400 --trials 1
 ```
 
 (Use the baud the ESP is already on.) You want one `req_len=… backend=cold`
-line, teardown markers `[A]` through `[H]`, and `exit 0`. `--help` must print
-usage and return. CLI stack and OpenDevice-only `WaitIO` pitfalls:
+line and `exit 0`. `--help` must print usage and return. CLI stack and
+OpenDevice-only `WaitIO` pitfalls:
 [`docs/amiga/cli-stack-and-iorequest.md`](../../../../docs/amiga/cli-stack-and-iorequest.md).
 
 Do **not** run `C:fujinet-nio-exchange` with no arguments on PiStorm or real
