@@ -379,6 +379,10 @@ static void cmd_write(struct fujinet_serial_base *base, struct IOExtSer *req)
         return;
     }
     rearm_receive(base);
+    Disable();
+    drain_rbf_locked(base);
+    fujinet_paula_rx_clear(&base->rbf_data.rx);
+    Enable();
     Forbid();
     for (i = 0; i < length; ++i) {
         ULONG spin = 0;
@@ -450,10 +454,11 @@ static void cmd_flush(struct fujinet_serial_base *base, struct IOExtSer *req)
 
     Disable();
     pending = take_pending(base, READ_ABORTING);
-    paula.intena = (UWORD)INTF_RBF;
-    base->receive_armed = 0;
     drain_rbf_locked(base);
     fujinet_paula_rx_clear(&base->rbf_data.rx);
+    /* Stay armed. PiStorm 38400: first request after FLUSH-quiesce timed
+     * out with no RX (cause=4) even with 16/2000 pacing; later trials in
+     * the same command succeeded after timeout closed and reopened. */
     if (pending != NULL) {
         pending->IOSer.io_Actual = 0;
         base->read_state = READ_REPLIED;

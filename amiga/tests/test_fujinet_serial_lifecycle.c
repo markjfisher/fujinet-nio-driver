@@ -307,18 +307,18 @@ static void test_flush_rearm_and_close(void)
     CHECK("flush-read-aborted", lc.read_error == FN_SERIAL_LC_ABORTED);
     CHECK("flush-one-reply", lc.reply_count == 1);
     CHECK("flush-queue-cleared", fujinet_paula_rx_count(&lc.rx) == 0);
-    CHECK("flush-quiesced", lc.receive_armed == 0 && lc.rbf_intena == 0);
+    CHECK("flush-stays-armed", lc.receive_armed == 1 && lc.rbf_intena == 1);
     CHECK("flush-keeps-paula", lc.port_owned == 1 && lc.bits_owned == 1);
     CHECK("flush-keeps-vector", lc.rbf_vector == lc.fujinet_handler);
 
     fn_serial_lc_hw_rx(&lc, 0x5A, 0);
-    CHECK("rearm-pending-rbf", lc.rbf_intreq == 1);
-    CHECK("write-rearms", fn_serial_lc_write_byte(&lc, 0x42) == FN_SERIAL_LC_OK);
-    CHECK("rearm-before-tx", lc.receive_armed == 1 && lc.tx_while_masked == 0);
-    CHECK("rearm-sampled-pending",
-          fujinet_paula_rx_count(&lc.rx) == 1 && lc.rbf_intreq == 0);
+    CHECK("idle-byte-pending", lc.rbf_intreq == 1);
+    CHECK("write-keeps-armed", fn_serial_lc_write_byte(&lc, 0x42) == FN_SERIAL_LC_OK);
+    CHECK("write-not-masked", lc.receive_armed == 1 && lc.tx_while_masked == 0);
+    CHECK("write-discards-idle",
+          fujinet_paula_rx_count(&lc.rx) == 0 && lc.rbf_intreq == 0);
     CHECK("query-count", fn_serial_lc_query(&lc, &count, &overrun) == FN_SERIAL_LC_OK);
-    CHECK("query-retained-byte", count == 1U && overrun == 0);
+    CHECK("query-empty-after-write-clear", count == 0U && overrun == 0);
 
     fn_serial_lc_flush(&lc);
     CHECK("query-rearms", fn_serial_lc_query(&lc, &count, &overrun) == FN_SERIAL_LC_OK);

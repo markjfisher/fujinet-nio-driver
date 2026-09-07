@@ -76,18 +76,19 @@ rebooted the machine (power LED flash, no Guru). Isolation is already
 the requested byte count is available. The RBF handler only samples
 `SERDATR`, retains into the private ring, and acknowledges once per byte; a
 device-owned software interrupt completes a pending READ. `CMD_FLUSH` aborts
-a retained READ (`IOERR_ABORTED`), clears the software queue, and masks RBF
-without releasing Paula. The next `CMD_WRITE`, `CMD_READ`, or `SDCMD_QUERY`
-rearms RBF before the first new `SERDAT` byte, sampling a pending RBF first.
+a retained READ (`IOERR_ABORTED`) and clears the software queue **without**
+masking RBF. `CMD_WRITE` drains leftover `SERDATR` and discards the software
+queue immediately before TX so idle bytes are not parsed as the next frame.
 
-Always-armed receive is the documented PiStorm fallback if testing shows lost
-leading response bytes or unacceptable rearm latency. Do not switch to it
-without that evidence.
+PiStorm 38400: FLUSH-quiesce lost the first request after idle (`cause=4`,
+~13.7 s, FLS single-shot fail) with and without ESP 16/2000 pacing. Later
+trials in the same command succeeded. Always-armed is the production path.
 
 **CAP-5:** PiStorm is the sole hardware-stability gate. A 19200 cold clock
 through `fujinet-serial.device` must print `result=0` / `status=0` and return
 to the Shell with no power-LED flash and no PiStorm reboot screen. Amiberry
-does not prove that.
+does not prove that. 38400 FLS / first file-list after idle must not sit in
+the 5 s QUERY timeout.
 
 ## ESP response pacing (rank 2)
 

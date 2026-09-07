@@ -278,7 +278,6 @@ int fn_serial_lc_flush(fn_serial_lc_t *lc)
     int aborted = take_pending(lc, FN_SERIAL_LC_READ_ABORTING);
 
     if (aborted) reply_read(lc, FN_SERIAL_LC_ABORTED, 0);
-    quiesce_receive(lc);
     drain_rbf(lc);
     fujinet_paula_rx_clear(&lc->rx);
     return aborted ? FN_SERIAL_LC_ABORTED : FN_SERIAL_LC_OK;
@@ -300,6 +299,8 @@ int fn_serial_lc_write_byte(fn_serial_lc_t *lc, uint8_t byte)
     if (lc->open_cnt == 0U) return FN_SERIAL_LC_OPENFAIL;
     armed_before = lc->receive_armed;
     rearm_receive(lc);
+    drain_rbf(lc);
+    fujinet_paula_rx_clear(&lc->rx);
     if (!armed_before && !lc->receive_armed) lc->tx_while_masked = 1;
     if (!lc->receive_armed) lc->tx_while_masked = 1;
     lc->tx_count += 1;
