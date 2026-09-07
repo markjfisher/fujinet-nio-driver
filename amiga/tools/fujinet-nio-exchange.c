@@ -24,6 +24,13 @@
 #define MATRIX_PACKET_CAP 1024
 #define DISK_PROVOCATION_SECTOR 512
 
+/* clib2. Default Shell STACK is 4096; this binary's frames overflow that
+ * and Guru #80000006 (CHK). See docs/amiga/cli-stack-and-iorequest.md. */
+long __stack = 16384;
+
+static uint8_t matrix_request[MATRIX_PACKET_CAP];
+static uint8_t matrix_response[MATRIX_PACKET_CAP];
+
 #define COMPLETION_URI "host:/amiga-e2e-complete/nio-broker-isolated"
 
 struct exchange_job {
@@ -107,10 +114,7 @@ static LONG try_open_serial(void)
     }
     result = OpenDevice((CONST_STRPTR)probe_serial_name, probe_serial_unit,
                         (struct IORequest *)serial, 0);
-    if (result == 0) {
-        reclaim_io((struct IORequest *)serial);
-        CloseDevice((struct IORequest *)serial);
-    }
+    if (result == 0) CloseDevice((struct IORequest *)serial);
     DeleteExtIO((struct IORequest *)serial);
     DeletePort(port);
     return result;
@@ -591,7 +595,6 @@ static int run_disk_provocation(const struct fn_nio_exchange_opts *opts)
     if (OpenDevice((CONST_STRPTR)FUJINET_DISK_DEVICE_NAME,
                    (ULONG)(opts->slot - 1),
                    (struct IORequest *)&disk, 0) != 0) {
-        reclaim_io(&nio_open);
         CloseDevice(&nio_open);
         DeletePort(port);
         return RETURN_FAIL;
@@ -696,7 +699,6 @@ static int run_disk_provocation(const struct fn_nio_exchange_opts *opts)
     close_elapsed_timer();
     reclaim_io((struct IORequest *)&disk);
     CloseDevice((struct IORequest *)&disk);
-    reclaim_io(&nio_open);
     CloseDevice(&nio_open);
     DeletePort(port);
     return failures ? RETURN_FAIL : RETURN_OK;
@@ -728,8 +730,6 @@ static int run_matrix(int argc, char **argv)
     struct MsgPort *port;
     struct IORequest open_request;
     struct FujiNetNIORequest req;
-    uint8_t request[MATRIX_PACKET_CAP];
-    uint8_t response[MATRIX_PACKET_CAP];
     uint8_t clock_req[FN_HEADER_SIZE];
     uint8_t baud_bytes[4];
     int steps[5];
@@ -754,12 +754,14 @@ static int run_matrix(int argc, char **argv)
     clock_len = fn_nio_exchange_build_clock_get(clock_req, sizeof(clock_req));
     if (clock_len < 0) return RETURN_FAIL;
     if (opts.type == FN_NIO_EXCHANGE_TYPE_CLOCK) {
-        request_len = fn_nio_exchange_build_clock_get(request, sizeof(request));
+        request_len = fn_nio_exchange_build_clock_get(
+            matrix_request, sizeof(matrix_request));
     } else if (opts.type == FN_NIO_EXCHANGE_TYPE_HOST_GET) {
-        request_len = fn_nio_exchange_build_host_get(request, sizeof(request));
+        request_len = fn_nio_exchange_build_host_get(
+            matrix_request, sizeof(matrix_request));
     } else {
         request_len = fn_nio_exchange_build_file_list(
-            request, sizeof(request), opts.uri, opts.size);
+            matrix_request, sizeof(matrix_request), opts.uri, opts.size);
     }
     if (request_len < 0) return RETURN_FAIL;
 
@@ -802,11 +804,11 @@ static int run_matrix(int argc, char **argv)
                                                  opts.baud, baud_bytes);
             } else if (step == FN_NIO_EXCHANGE_STEP_WARMUP) {
                 step_failed = run_warmup(&req, port, &open_request, clock_req,
-                                         clock_len, response,
-                                         sizeof(response));
+                                         clock_len, matrix_response,
+                                         sizeof(matrix_response));
             } else if (step == FN_NIO_EXCHANGE_STEP_MEASURE) {
-                fill_exchange(&req, port, request, (UWORD)request_len,
-                              response, sizeof(response));
+                fill_exchange(&req, port, matrix_request, (UWORD)request_len,
+                              matrix_response, sizeof(matrix_response));
                 attach_open(&req, &open_request);
                 do_measured_exchange(&req, elapsed);
                 print_trial_log(&req, opts.backend, elapsed);
@@ -840,7 +842,6 @@ static int run_matrix(int argc, char **argv)
         mark('C');
     }
     mark('D');
-    reclaim_io(&open_request);
     CloseDevice(&open_request);
     mark('E'); /* command IORequest is stack; elapsed timer is the heap one */
     close_elapsed_timer();
@@ -851,7 +852,7 @@ static int run_matrix(int argc, char **argv)
     return status;
 }
 
-int main(int argc, char **argv)
+static int run_isolation_suite(void)
 {
     struct MsgPort *port;
     struct FujiNetNIORequest req;
@@ -867,11 +868,6 @@ int main(int argc, char **argv)
     struct Process *proc_b;
     int packet_len;
     int failures = 0;
-
-    /* Redirected logs must not sit in a full stdio buffer across a crash. */
-    setvbuf(stdout, NULL, _IONBF, 0);
-
-    if (argc >= 2) return run_matrix(argc, argv);
 
     if (!isolation_ok()) return RETURN_FAIL;
 
@@ -1042,4 +1038,19 @@ int main(int argc, char **argv)
     if (failures) return RETURN_FAIL;
     printf("PASS isolated-exchange\n");
     return RETURN_OK;
+}
+
+int main(int argc, char **argv)
+{
+    /* Redirected logs must not sit in a full stdio buffer across a crash. */
+    setvbuf(stdout, NULL, _IONBF, 0);
+
+    if (argc >= 2) {
+        if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
+            print_matrix_usage();
+            return RETURN_OK;
+        }
+        return run_matrix(argc, argv);
+    }
+    return run_isolation_suite();
 }

@@ -7,10 +7,13 @@
 #define FUJINET_NIO_DEVICE_UNIT    0
 
 /*
- * CloseDevice requires AbortIO/WaitIO first on this IORequest. The
- * device does not abort an in-progress exchange. A delayed expunge
- * (LIBF_DELEXP) completes when the last CloseDevice drops OpenCnt to 0
- * and the queue and in-progress slot are idle.
+ * If this IORequest was SendIO/BeginIO'd and CheckIO says it is still
+ * outstanding, AbortIO and WaitIO before CloseDevice. After DoIO, WaitIO
+ * has already run. Do not WaitIO an IORequest used only for OpenDevice:
+ * it is never ReplyMsg'd and the caller hangs. The device does not abort
+ * an in-progress exchange. A delayed expunge (LIBF_DELEXP) completes when
+ * the last CloseDevice drops OpenCnt to 0 and the queue and in-progress
+ * slot are idle. See docs/amiga/cli-stack-and-iorequest.md.
  */
 
 /* Broker commands. Control commands affect only its RS-232 backend. */
