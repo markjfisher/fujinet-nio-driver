@@ -415,7 +415,7 @@ static void print_matrix_usage(void)
 {
     fprintf(stderr,
             "Usage: fujinet-nio-exchange --type clock|host-get|file-list "
-            "--backend cold|warm [--baud 9600|19200|38400] "
+            "--backend cold|warm [--baud 300..230400] "
             "[--serial-device NAME] [--serial-unit 0..255] "
             "[--size 8|16|32|64|128|256|420|512 --uri URI] [--trials N]\n"
             "       fujinet-nio-exchange --type disk-read|disk-write "

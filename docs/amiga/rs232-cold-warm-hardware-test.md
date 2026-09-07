@@ -13,7 +13,10 @@ independent. An overrun here means the prior RX character was not serviced
 before the next one completed. See [`Serial-IO-Interface.md`](Serial-IO-Interface.md)
 if you want the hardware background.
 
-This pass covers 9600, 19200, and 38400 only. Do not use 57600 yet.
+This pass covers 9600, 19200, and 38400 as the product gate. `fujinet-nio-exchange
+--baud` now accepts the same 300..230400 range as `fujinet-nio-baud` and
+`fujinet-serial.device` so 57600+ can be tried on PiStorm. The ESP must already
+be at that rate. Disk-provocation stays 38400.
 
 Pacing matrix numbers and the 16/2000 product choice:
 [`rs232-38400-pacing-evidence.md`](rs232-38400-pacing-evidence.md).
@@ -134,8 +137,9 @@ each byte has shifted out, then idles. Chunk pacing (only if
 After a Paula overrun (`status=1`, `cause=7`), the broker drains RX until
 30 ms of idle (longer than the 2 ms chunk gap) then closes `serial.device`.
 That stops leftover ESP chunks from turning the next trial into `cause=3`
-(SESSION_IO). Do not treat CIA TX→RX as the mechanism. This pass is 38400
-only: no 57600, seven-wire, READY/GO, or a custom `serial.device`.
+(SESSION_IO). Do not treat CIA TX→RX as the mechanism. Product gate is 38400.
+57600+ is opt-in via `--baud` / `fujinet-nio-baud` with the ESP already there;
+no seven-wire, READY/GO, or a custom `serial.device`.
 
 ## Cold vs warm (what the flags actually do)
 
@@ -201,9 +205,10 @@ session-delivered bytes vs ring ingest from after `CMD_WRITE` until QUERY
 gave up (not serial.device errors). `fujinet-serial.device` 0.4–0.6 packed
 RBF-fire into `native`; a first-timeout `255/255` could not split the two
 cases below. Broker 0.4 still reports these counters on timeout; a first
-38400 pass is `result=0`. prints a second line `peek=..` (first 32 wire bytes) on `cause` 3, 4, 7, or 9.
-`peek=-` means none were captured. That dump does not grow `FujiNetNIORequest`;
-FLS still sees `fn_response_length=0` on error.
+38400 pass is `result=0`. On `cause` 3, 4, 7, or 9, `fujinet-nio-exchange`
+prints a second line `peek=..` (first 32 wire bytes). `peek=-` means none
+were captured. That dump does not grow `FujiNetNIORequest`; FLS still sees
+`fn_response_length=0` on error.
 
 | `native` (bytes to session) | `status` (ingested, or WRITE discards if ingested=0) | Meaning |
 | ---: | ---: | --- |
@@ -216,7 +221,7 @@ FLS still sees `fn_response_length=0` on error.
 
 ```text
 fujinet-nio-exchange --type clock|host-get|file-list --backend cold|warm
-    [--baud 9600|19200|38400]
+    [--baud 300..230400]
     [--serial-device NAME] [--serial-unit 0..255]
     [--size 8|16|32|64|128|256|420|512 --uri URI]
     [--trials N]
@@ -294,6 +299,6 @@ and whether the machine was idle.
 - No-arg `fujinet-nio-exchange` (prove / Amiberry isolation).
 - `FLS` / `FHOST` / `FIN` as the measured command (they share the broker and
   will not give you a controlled first EXCHANGE).
-- `fujinet-nio-baud 57600` or `--baud 57600` (usage error; no broker open).
+- `fujinet-nio-baud` / `--baud` outside 300..230400 (usage error; no broker open).
 - Inferring cold/warm from whether a CLI has exited. The resident broker
   keeps `serial.device` until a close/reconfigure.

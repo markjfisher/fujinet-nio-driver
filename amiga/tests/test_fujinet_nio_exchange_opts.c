@@ -182,9 +182,9 @@ static void test_warm_without_baud_skips_get(void)
 static void test_usage_errors(void)
 {
     struct fn_nio_exchange_opts opts;
-    char *baud57600[] = {
+    char *baud_too_high[] = {
         "fujinet-nio-exchange", "--type", "clock", "--backend", "cold",
-        "--baud", "57600", NULL
+        "--baud", "230401", NULL
     };
     char *size_on_clock[] = {
         "fujinet-nio-exchange", "--type", "clock", "--backend", "cold",
@@ -218,8 +218,8 @@ static void test_usage_errors(void)
         "--backend", "cold", "--baud", "19200", "--slot", "1", "--lba", "0", NULL
     };
 
-    CHECK("57600 is usage error",
-          fn_nio_exchange_opts_parse(7, baud57600, &opts) != 0);
+    CHECK("230401 is usage error",
+          fn_nio_exchange_opts_parse(7, baud_too_high, &opts) != 0);
     CHECK("size on clock is usage error",
           fn_nio_exchange_opts_parse(7, size_on_clock, &opts) != 0);
     CHECK("file-list without uri is usage error",
@@ -298,6 +298,24 @@ static void test_clock_cold_plan_and_packet(void)
           fn_nio_exchange_build_clock_get(buf, FN_HEADER_SIZE - 1) < 0);
     CHECK("clock GET rejects null buffer",
           fn_nio_exchange_build_clock_get(NULL, sizeof(buf)) < 0);
+}
+
+static void test_higher_test_bauds(void)
+{
+    struct fn_nio_exchange_opts opts;
+    char *baud57600[] = {
+        "fujinet-nio-exchange", "--type", "clock", "--backend", "cold",
+        "--baud", "57600", NULL
+    };
+    char *baud115200[] = {
+        "fujinet-nio-exchange", "--type", "clock", "--backend", "cold",
+        "--baud", "115200", NULL
+    };
+
+    CHECK("parse 57600", fn_nio_exchange_opts_parse(7, baud57600, &opts) == 0);
+    CHECK("57600 stored", opts.baud == 57600UL);
+    CHECK("parse 115200", fn_nio_exchange_opts_parse(7, baud115200, &opts) == 0);
+    CHECK("115200 stored", opts.baud == 115200UL);
 }
 
 static void test_clock_get_tz_packet(void)
@@ -547,6 +565,7 @@ int main(void)
     test_usage_errors();
     test_disk_provocation_packets();
     test_clock_cold_plan_and_packet();
+    test_higher_test_bauds();
     test_clock_get_tz_packet();
     test_host_get_packet();
     test_allowed_list_sizes();

@@ -6,6 +6,7 @@
 
 #include "fujinet_nio_endian.h"
 #include "fujinet_nio_serial_config.h"
+#include "fujinet_paula_uart.h"
 #include "fn_protocol.h"
 
 #define FN_NIO_EXCH_FILE_CMD_LIST 0x02
@@ -29,7 +30,7 @@ static int parse_ulong(const char *text, unsigned long *out)
 
 static int allowed_baud(unsigned long baud)
 {
-    return baud == 9600UL || baud == 19200UL || baud == 38400UL;
+    return baud >= FUJINET_SERIAL_BAUD_MIN && baud <= FUJINET_SERIAL_BAUD_MAX;
 }
 
 static int allowed_size(unsigned long size)
