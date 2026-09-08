@@ -96,8 +96,9 @@ then `SETPARAMS` jumped to 38400. 19200 first-open never took that jump.
 through `fujinet-serial.device` must print `result=0` / `status=0` and return
 to the Shell with no power-LED flash and no PiStorm reboot screen. Amiberry
 does not prove that. 38400 FLS / first file-list after idle must not sit in
-the 5 s QUERY timeout. Confirm the guest `fujinet-serial.device` is 0.6
-(`$VER`) and `fujinet-nio.device` is 0.5. Serial 0.5 polled `INTREQ` TBE
+the 5 s QUERY timeout. Confirm the guest `fujinet-serial.device` is 0.7
+(`$VER`) and `fujinet-nio.device` is 0.6. Serial 0.7 drains stacked RBF
+during TX (first-after-idle host-get was 1–7 bytes short). Serial 0.5 polled `INTREQ` TBE
 while that interrupt was masked; WRITE failed `SerErr_LineErr` (`cause=5
 native=6`), froze the mouse, and the ESP saw no request. Serial 0.6 waits
 for `SERDATR` TBE again and keeps any RBF byte from that same read. First
@@ -181,9 +182,15 @@ you asked for). The directory must be large enough to fill that cap or
 
 ### Pass vs fail on one line
 
-**Pass:** `result=0 cause=0 native=0 status=0` and a plausible `resp_len`
-(clock and host-get are small; file-list should grow with `--size` until the
-directory runs out).
+**Pass:** `result=0 cause=0 native=0 status=0`, no `fujibus=bad` line, and a
+plausible `resp_len` (clock and host-get are small; file-list should grow
+with `--size` until the directory runs out). A broker `result=0` is no
+longer enough: MEASURE now also requires the decoded bytes to be a FujiBus
+packet that echoes the request device/command, whose length field matches
+`resp_len`, and whose checksum is valid. That is the same bar `FLS` /
+`FHOST` apply in `fn_raw_call`. If the soak stays green and `FLS` still
+fails, the gap is the **request shape** (LIST `SORT_BY_NAME` / paging) or
+the CLI, not a silent corrupt frame.
 
 The process return code is `0` only if every measured trial on that command
 passed. Failures are still printed; there is no retry.
@@ -224,6 +231,7 @@ fujinet-nio-exchange --type clock|host-get|file-list --backend cold|warm
     [--baud 300..230400]
     [--serial-device NAME] [--serial-unit 0..255]
     [--size 8|16|32|64|128|256|420|512 --uri URI]
+    [--list-flags 0..255]
     [--trials N]
 ```
 
@@ -283,6 +291,26 @@ For each baud in **9600, then 19200, then 38400**:
    ```
 
 5. Repeat the file-list sizes as **warm** at the same baud.
+
+6. **FLS-shaped file-list** — same URI you use with `FLS`, `--size 420`,
+   `--list-flags 2` (sort-by-name, the extra flags byte `FLS` always sends).
+   This is the packet `FLS` sends, not the unsorted `--size 512` soak.
+
+   ```text
+   fujinet-nio-exchange --type file-list --backend cold --baud 38400 \
+       --size 420 --list-flags 2 --uri tnfs://HOST/path \
+       --serial-device fujinet-serial.device --trials 50
+   ```
+
+7. **Host-get soak** at the same baud as the file-list soak (20, then 200 if
+   clean). `FHOST` with no args is this packet; do not treat `HOST: (none)`
+   on an old binary as a listing-size problem.
+
+Only after those cells stay `result=0` with no `fujibus=bad`, copy the new
+`FLS` / `FHOST` and retry the CLI. Failures now print
+`broker stage=… result=… cause=… native=… status=… raw=…` so they can be
+compared to the exchange line. Then disk-read/write provocation
+(`--type disk-read|disk-write --provocation`, 38400, ESP pacing `0/0/0`).
 
 If 9600 is clean for clock and size 8 but 38400 fails as size grows, that is
 the result this diagnostic is for: burst length / service time, not “serial

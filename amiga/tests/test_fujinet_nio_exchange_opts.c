@@ -71,7 +71,7 @@ static void test_list_max_payload_bytes(void)
     unsigned uri_len = 5;
     unsigned max_off;
 
-    len = fn_nio_exchange_build_file_list(buf, sizeof(buf), "sd0:/", 8);
+    len = fn_nio_exchange_build_file_list(buf, sizeof(buf), "sd0:/", 8, -1);
     CHECK("list build 8 fits", len > (int)FN_HEADER_SIZE);
     CHECK("list device", buf[0] == FN_DEVICE_FILE);
     CHECK("list command", buf[1] == 0x02);
@@ -79,18 +79,18 @@ static void test_list_max_payload_bytes(void)
     CHECK("list maxPayloadBytes lo 8", buf[max_off] == 8);
     CHECK("list maxPayloadBytes hi 8", buf[max_off + 1] == 0);
 
-    len = fn_nio_exchange_build_file_list(buf, sizeof(buf), "sd0:/", 420);
+    len = fn_nio_exchange_build_file_list(buf, sizeof(buf), "sd0:/", 420, -1);
     CHECK("list build 420 fits", len > (int)FN_HEADER_SIZE);
     CHECK("list maxPayloadBytes lo 420", buf[max_off] == 0xA4);
     CHECK("list maxPayloadBytes hi 420", buf[max_off + 1] == 0x01);
 
-    len = fn_nio_exchange_build_file_list(buf, sizeof(buf), "sd0:/", 512);
+    len = fn_nio_exchange_build_file_list(buf, sizeof(buf), "sd0:/", 512, -1);
     CHECK("list build 512 fits", len > (int)FN_HEADER_SIZE);
     CHECK("list maxPayloadBytes lo 512", buf[max_off] == 0x00);
     CHECK("list maxPayloadBytes hi 512", buf[max_off + 1] == 0x02);
 
     CHECK("list rejects tiny cap",
-          fn_nio_exchange_build_file_list(buf, 8, "sd0:/", 8) < 0);
+          fn_nio_exchange_build_file_list(buf, 8, "sd0:/", 8, -1) < 0);
 }
 
 static void test_completion_marker_packet(void)
@@ -103,7 +103,7 @@ static void test_completion_marker_packet(void)
     int len;
 
     len = fn_nio_exchange_build_file_list(
-        buf, 57, COMPLETION_URI, 256);
+        buf, 57, COMPLETION_URI, 256, -1);
     CHECK("completion marker exact length", len == 57);
     CHECK("completion marker exact prefix",
           memcmp(buf, prefix, sizeof(prefix)) == 0);
@@ -115,9 +115,9 @@ static void test_completion_marker_packet(void)
                  suffix, sizeof(suffix)) == 0);
     CHECK("completion marker rejects one-byte-short cap",
           fn_nio_exchange_build_file_list(
-              buf, 56, COMPLETION_URI, 256) < 0);
+              buf, 56, COMPLETION_URI, 256, -1) < 0);
     CHECK("completion marker rejects null URI",
-          fn_nio_exchange_build_file_list(buf, sizeof(buf), NULL, 256) < 0);
+          fn_nio_exchange_build_file_list(buf, sizeof(buf), NULL, 256, -1) < 0);
 }
 
 static void test_warm_host_get_plan(void)
@@ -217,6 +217,10 @@ static void test_usage_errors(void)
         "fujinet-nio-exchange", "--type", "disk-write", "--provocation",
         "--backend", "cold", "--baud", "19200", "--slot", "1", "--lba", "0", NULL
     };
+    char *list_flags_on_clock[] = {
+        "fujinet-nio-exchange", "--type", "clock", "--backend", "cold",
+        "--list-flags", "2", NULL
+    };
 
     CHECK("230401 is usage error",
           fn_nio_exchange_opts_parse(7, baud_too_high, &opts) != 0);
@@ -236,6 +240,33 @@ static void test_usage_errors(void)
           fn_nio_exchange_opts_parse(11, disk_without_provocation, &opts) != 0);
     CHECK("disk provocation requires 38400",
           fn_nio_exchange_opts_parse(12, disk_wrong_baud, &opts) != 0);
+    CHECK("list-flags on clock is usage error",
+          fn_nio_exchange_opts_parse(7, list_flags_on_clock, &opts) != 0);
+}
+
+static void test_disk_provocation_parse(void)
+{
+    char *read_ok[] = {
+        "fujinet-nio-exchange", "--type", "disk-read", "--provocation",
+        "--backend", "cold", "--baud", "38400", "--slot", "1", "--lba", "0",
+        NULL
+    };
+    char *write_ok[] = {
+        "fujinet-nio-exchange", "--type", "disk-write", "--provocation",
+        "--backend", "cold", "--baud", "38400", "--slot", "2", "--lba", "9",
+        NULL
+    };
+    struct fn_nio_exchange_opts opts;
+
+    CHECK("parse disk-read provocation",
+          fn_nio_exchange_opts_parse(12, read_ok, &opts) == 0);
+    CHECK("disk-read type", opts.type == FN_NIO_EXCHANGE_TYPE_DISK_READ);
+    CHECK("disk-read slot", opts.slot == 1 && opts.lba == 0 &&
+          opts.provocation && opts.baud == 38400UL);
+    CHECK("parse disk-write provocation",
+          fn_nio_exchange_opts_parse(12, write_ok, &opts) == 0);
+    CHECK("disk-write type", opts.type == FN_NIO_EXCHANGE_TYPE_DISK_WRITE);
+    CHECK("disk-write slot", opts.slot == 2 && opts.lba == 9);
 }
 
 static void test_disk_provocation_packets(void)
@@ -554,6 +585,70 @@ static void test_argc1_is_not_matrix(void)
           fn_nio_exchange_opts_parse(1, argv, &opts) != 0);
 }
 
+static void test_list_flags_packet(void)
+{
+    char *argv[] = {
+        "fujinet-nio-exchange",
+        "--type", "file-list",
+        "--backend", "cold",
+        "--size", "420",
+        "--uri", "sd0:/",
+        "--list-flags", "2",
+        NULL
+    };
+    struct fn_nio_exchange_opts opts;
+    uint8_t plain[128];
+    uint8_t flagged[128];
+    int plain_len;
+    int flagged_len;
+    unsigned flags_off;
+
+    CHECK("parse list-flags 2",
+          fn_nio_exchange_opts_parse(11, argv, &opts) == 0);
+    CHECK("list-flags stored", opts.has_list_flags && opts.list_flags == 2);
+
+    plain_len = fn_nio_exchange_build_file_list(
+        plain, sizeof(plain), "sd0:/", 420, -1);
+    flagged_len = fn_nio_exchange_build_file_list(
+        flagged, sizeof(flagged), "sd0:/", 420, 2);
+    CHECK("flagged list is one byte longer",
+          plain_len > 0 && flagged_len == plain_len + 1);
+    flags_off = (unsigned)flagged_len - 1;
+    CHECK("FLS SORT_BY_NAME flag byte", flagged[flags_off] == 2);
+    CHECK("flagged length field",
+          (unsigned)(flagged[2] | (flagged[3] << 8)) ==
+              (unsigned)flagged_len);
+    CHECK("flagged checksum",
+          flagged[FN_CHECKSUM_OFFSET] ==
+              fn_calc_packet_checksum(flagged, (uint16_t)flagged_len));
+}
+
+static void test_verify_fujibus(void)
+{
+    uint8_t req[16];
+    uint8_t resp[16];
+    int len;
+
+    len = fn_nio_exchange_build_host_get(req, sizeof(req));
+    CHECK("host-get request built", len == (int)FN_HEADER_SIZE + 1);
+    memcpy(resp, req, (unsigned)len);
+    CHECK("echoed host-get verifies",
+          fn_nio_exchange_verify_fujibus(req, (unsigned)len, resp,
+                                         (unsigned)len) == 0);
+    resp[1] = 0x02;
+    CHECK("command mismatch fails verify",
+          fn_nio_exchange_verify_fujibus(req, (unsigned)len, resp,
+                                         (unsigned)len) != 0);
+    memcpy(resp, req, (unsigned)len);
+    resp[FN_CHECKSUM_OFFSET] ^= 1;
+    CHECK("checksum mismatch fails verify",
+          fn_nio_exchange_verify_fujibus(req, (unsigned)len, resp,
+                                         (unsigned)len) != 0);
+    memcpy(resp, req, (unsigned)len);
+    CHECK("short response fails verify",
+          fn_nio_exchange_verify_fujibus(req, (unsigned)len, resp, 5) != 0);
+}
+
 int main(void)
 {
     test_packet_checksum_modes();
@@ -563,6 +658,7 @@ int main(void)
     test_warm_host_get_plan();
     test_warm_without_baud_skips_get();
     test_usage_errors();
+    test_disk_provocation_parse();
     test_disk_provocation_packets();
     test_clock_cold_plan_and_packet();
     test_higher_test_bauds();
@@ -573,6 +669,8 @@ int main(void)
     test_serial_device_opts();
     test_elapsed_and_trial_log();
     test_argc1_is_not_matrix();
+    test_list_flags_packet();
+    test_verify_fujibus();
 
     if (failures) {
         fprintf(stderr, "%u exchange-opts tests failed\n", failures);

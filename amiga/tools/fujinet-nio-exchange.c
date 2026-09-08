@@ -392,6 +392,25 @@ static void print_trial_log(const struct FujiNetNIORequest *req,
     printf("%s\n", line);
 }
 
+static void print_fujibus_prefix(const uint8_t *buf, unsigned len)
+{
+    unsigned n;
+    unsigned i;
+
+    if (buf == NULL || len == 0) {
+        printf("fujibus=-\n");
+        return;
+    }
+    n = len;
+    if (n > 32) n = 32;
+    printf("fujibus=");
+    for (i = 0; i < n; ++i) {
+        if (i != 0) putchar(' ');
+        printf("%02x", (unsigned)buf[i]);
+    }
+    printf("\n");
+}
+
 static void print_wire_peek(const uint8_t *buf)
 {
     unsigned n;
@@ -417,7 +436,8 @@ static void print_matrix_usage(void)
             "Usage: fujinet-nio-exchange --type clock|host-get|file-list "
             "--backend cold|warm [--baud 300..230400] "
             "[--serial-device NAME] [--serial-unit 0..255] "
-            "[--size 8|16|32|64|128|256|420|512 --uri URI] [--trials N]\n"
+            "[--size 8|16|32|64|128|256|420|512 --uri URI] "
+            "[--list-flags 0..255] [--trials N]\n"
             "       fujinet-nio-exchange --type disk-read|disk-write "
             "--provocation --backend cold --baud 38400 --slot 1..8 "
             "--lba N [--serial-device NAME] [--serial-unit 0..255] "
@@ -740,7 +760,8 @@ static int run_matrix(int argc, char **argv)
             matrix_request, sizeof(matrix_request));
     } else {
         request_len = fn_nio_exchange_build_file_list(
-            matrix_request, sizeof(matrix_request), opts.uri, opts.size);
+            matrix_request, sizeof(matrix_request), opts.uri, opts.size,
+            opts.has_list_flags ? (int)opts.list_flags : -1);
     }
     if (request_len < 0) return RETURN_FAIL;
 
@@ -798,6 +819,15 @@ static int run_matrix(int argc, char **argv)
                     print_wire_peek(matrix_response);
                 if (req.fn_io.io_Error != 0 || req.fn_nio_error != FN_OK)
                     step_failed = -1;
+                else if (fn_nio_exchange_verify_fujibus(
+                             matrix_request, (unsigned)request_len,
+                             matrix_response,
+                             (unsigned)req.fn_response_length) != 0) {
+                    printf("fujibus=bad\n");
+                    print_fujibus_prefix(matrix_response,
+                                         (unsigned)req.fn_response_length);
+                    step_failed = -1;
+                }
             } else {
                 step_failed = -1;
             }
@@ -984,7 +1014,7 @@ static int run_isolation_suite(void)
     wait_spawned_tasks_gone();
 
     list_len = fn_nio_exchange_build_file_list(
-        list_req, sizeof(list_req), COMPLETION_URI, sizeof(response));
+        list_req, sizeof(list_req), COMPLETION_URI, sizeof(response), -1);
     if (list_len < 0) return RETURN_FAIL;
     port = CreatePort(NULL, 0);
     if (port == NULL) return RETURN_FAIL;

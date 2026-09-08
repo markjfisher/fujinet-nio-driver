@@ -67,6 +67,10 @@ int fn_nio_exchange_opts_parse(int argc, char **argv,
                 out->type = FN_NIO_EXCHANGE_TYPE_HOST_GET;
             else if (strcmp(value, "file-list") == 0)
                 out->type = FN_NIO_EXCHANGE_TYPE_FILE_LIST;
+            else if (strcmp(value, "disk-read") == 0)
+                out->type = FN_NIO_EXCHANGE_TYPE_DISK_READ;
+            else if (strcmp(value, "disk-write") == 0)
+                out->type = FN_NIO_EXCHANGE_TYPE_DISK_WRITE;
             else
                 return -1;
         } else if (strcmp(argv[i], "--backend") == 0) {
@@ -119,6 +123,12 @@ int fn_nio_exchange_opts_parse(int argc, char **argv,
                 return -1;
             out->serial_unit = parsed;
             out->has_serial_unit = 1;
+        } else if (strcmp(argv[i], "--list-flags") == 0) {
+            if (take_arg(argc, argv, &i, &value) != 0) return -1;
+            if (parse_ulong(value, &parsed) != 0 || parsed > 255UL)
+                return -1;
+            out->has_list_flags = 1;
+            out->list_flags = (unsigned)parsed;
         } else {
             return -1;
         }
@@ -134,6 +144,8 @@ int fn_nio_exchange_opts_parse(int argc, char **argv,
     } else if (out->provocation || out->slot != 0 || out->lba != 0) {
         return -1;
     }
+    if (out->has_list_flags && out->type != FN_NIO_EXCHANGE_TYPE_FILE_LIST)
+        return -1;
     if (out->type == FN_NIO_EXCHANGE_TYPE_FILE_LIST) {
         if (!out->has_size || out->uri == NULL || out->uri[0] == '\0')
             return -1;
@@ -278,22 +290,26 @@ int fn_nio_exchange_build_host_get(uint8_t *buf, unsigned cap)
 }
 
 int fn_nio_exchange_build_file_list(uint8_t *buf, unsigned cap,
-                                    const char *uri, unsigned max_payload_bytes)
+                                    const char *uri, unsigned max_payload_bytes,
+                                    int list_flags)
 {
     uint16_t uri_len;
     uint16_t payload;
     uint16_t total;
     uint16_t offset = 0;
+    uint16_t extra = 0;
     size_t n;
 
     if (buf == NULL || uri == NULL) return -1;
+    if (list_flags > 255) return -1;
     n = strlen(uri);
     if (n > 0xFFFFUL) return -1;
     uri_len = (uint16_t)n;
-    payload = (uint16_t)(1 + 2 + uri_len + 2 + 2);
+    if (list_flags >= 0) extra = 1;
+    payload = (uint16_t)(1 + 2 + uri_len + 2 + 2 + extra);
     total = (uint16_t)(FN_HEADER_SIZE + payload);
     if ((unsigned)total > cap ||
-        (size_t)FN_HEADER_SIZE + 1U + 2U + n + 2U + 2U > cap)
+        (size_t)FN_HEADER_SIZE + 1U + 2U + n + 2U + 2U + extra > cap)
         return -1;
 
     buf[offset++] = FN_DEVICE_FILE;
@@ -311,8 +327,26 @@ int fn_nio_exchange_build_file_list(uint8_t *buf, unsigned cap,
     offset += 2;
     fujinet_nio_put_le16(buf + offset, (uint16_t)max_payload_bytes);
     offset += 2;
+    if (list_flags >= 0)
+        buf[offset++] = (uint8_t)list_flags;
     buf[FN_CHECKSUM_OFFSET] = fn_calc_packet_checksum(buf, offset);
     return (int)offset;
+}
+
+int fn_nio_exchange_verify_fujibus(const uint8_t *request, unsigned req_len,
+                                   const uint8_t *response, unsigned resp_len)
+{
+    uint16_t pkt_len;
+
+    if (request == NULL || response == NULL) return -1;
+    if (req_len < FN_HEADER_SIZE || resp_len < FN_HEADER_SIZE) return -1;
+    if (response[0] != request[0] || response[1] != request[1]) return -1;
+    pkt_len = fujinet_nio_get_le16(response + 2);
+    if ((unsigned)pkt_len != resp_len) return -1;
+    if (fn_calc_packet_checksum(response, (uint16_t)resp_len) !=
+        response[FN_CHECKSUM_OFFSET])
+        return -1;
+    return 0;
 }
 
 static int build_disk_sector(uint8_t *buf, unsigned cap, unsigned slot,

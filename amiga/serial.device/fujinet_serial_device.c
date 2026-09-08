@@ -102,7 +102,7 @@ typedef char fn_rbf_off_ingest_ok[
 
 static const char device_name[] = DEVICE_NAME;
 static const char device_id[] =
-    "$VER: " DEVICE_NAME " 0.6 (7.9.2026) \xa9 2026 Mark Fisher\r\n";
+    "$VER: " DEVICE_NAME " 0.7 (7.9.2026) \xa9 2026 Mark Fisher\r\n";
 
 static int pal_display(void)
 {
@@ -161,13 +161,17 @@ static int wait_tbe(struct fujinet_serial_base *base)
     for (;;) {
         UWORD serdatr = paula.serdatr;
 
-        if ((serdatr & FUJINET_PAULA_SERDATR_RBF) != 0) {
+        /* Drain every stacked RBF before looking at TBE. One ingest per
+         * loop lost leading response bytes when ESP replied during TX
+         * (PiStorm first-after-idle: resp_len 40..43 vs 44). */
+        while ((serdatr & FUJINET_PAULA_SERDATR_RBF) != 0) {
             if (base->rbf_data.rbf_fire != 0xFFFFU)
                 base->rbf_data.rbf_fire += 1;
             if (base->rbf_data.ingest != 0xFFFFU)
                 base->rbf_data.ingest += 1;
             fujinet_paula_rx_ingest(&base->rbf_data.rx, serdatr);
             paula.intreq = (UWORD)INTF_RBF;
+            serdatr = paula.serdatr;
         }
         if ((serdatr & FUJINET_PAULA_SERDATR_TBE) != 0)
             return 0;
@@ -486,6 +490,7 @@ static void cmd_write(struct fujinet_serial_base *base, struct IOExtSer *req)
         }
         paula.serdat = fujinet_paula_serdat_word(data[i]);
     }
+    drain_rbf_locked(base);
     Enable();
     req->IOSer.io_Actual = length;
     finish(req, 0);

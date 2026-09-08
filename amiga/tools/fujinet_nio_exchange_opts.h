@@ -39,6 +39,8 @@ struct fn_nio_exchange_opts {
     const char *serial_device; /* NULL if --serial-device omitted */
     unsigned long serial_unit; /* 0 if omitted */
     int has_serial_unit;
+    int has_list_flags;
+    unsigned list_flags; /* FILE LIST optional flags byte; omitted if !has_list_flags */
 };
 
 int fn_nio_exchange_opts_parse(int argc, char **argv,
@@ -58,7 +60,10 @@ int fn_nio_exchange_build_clock_get(uint8_t *buf, unsigned cap);
 int fn_nio_exchange_build_clock_get_tz(uint8_t *buf, unsigned cap);
 int fn_nio_exchange_build_host_get(uint8_t *buf, unsigned cap);
 int fn_nio_exchange_build_file_list(uint8_t *buf, unsigned cap,
-                                    const char *uri, unsigned max_payload_bytes);
+                                    const char *uri, unsigned max_payload_bytes,
+                                    int list_flags);
+int fn_nio_exchange_verify_fujibus(const uint8_t *request, unsigned req_len,
+                                   const uint8_t *response, unsigned resp_len);
 int fn_nio_exchange_build_disk_read(uint8_t *buf, unsigned cap,
                                     unsigned slot, uint32_t lba);
 int fn_nio_exchange_build_disk_write(uint8_t *buf, unsigned cap,
