@@ -78,7 +78,7 @@ struct ExecBase *SysBase;
 #ifndef FUJINET_NIO_NATIVE_TEST
 static const char device_name[] = DEVICE_NAME;
 static const char device_id[] =
-    "$VER: " DEVICE_NAME " 0.6 (7.9.2026) \xa9 2026 Mark Fisher\r\n";
+    "$VER: " DEVICE_NAME " 0.7 (9.9.2026) \xa9 2026 Mark Fisher\r\n";
 #endif
 
 static uint8_t pad_nonzero(const struct FujiNetNIORequest *req)

@@ -16,7 +16,8 @@ if you want the hardware background.
 This pass covers 9600, 19200, and 38400 as the product gate. `fujinet-nio-exchange
 --baud` now accepts the same 300..230400 range as `fujinet-nio-baud` and
 `fujinet-serial.device` so 57600+ can be tried on PiStorm. The ESP must already
-be at that rate. Disk-provocation stays 38400.
+be at that rate. Disk-provocation uses the same `--baud` range; 38400 remains
+the product gate, 57600 is opt-in soak with ESP pacing `0/0/0`.
 
 Pacing matrix numbers and the 16/2000 product choice:
 [`rs232-38400-pacing-evidence.md`](rs232-38400-pacing-evidence.md).
@@ -97,7 +98,7 @@ through `fujinet-serial.device` must print `result=0` / `status=0` and return
 to the Shell with no power-LED flash and no PiStorm reboot screen. Amiberry
 does not prove that. 38400 FLS / first file-list after idle must not sit in
 the 5 s QUERY timeout. Confirm the guest `fujinet-serial.device` is 0.7
-(`$VER`) and `fujinet-nio.device` is 0.6. Serial 0.7 drains stacked RBF
+(`$VER`) and `fujinet-nio.device` is 0.7. Serial 0.7 drains stacked RBF
 during TX (first-after-idle host-get was 1–7 bytes short). Serial 0.5 polled `INTREQ` TBE
 while that interrupt was masked; WRITE failed `SerErr_LineErr` (`cause=5
 native=6`), froze the mouse, and the ESP saw no request. Serial 0.6 waits
@@ -213,9 +214,14 @@ gave up (not serial.device errors). `fujinet-serial.device` 0.4–0.6 packed
 RBF-fire into `native`; a first-timeout `255/255` could not split the two
 cases below. Broker 0.4 still reports these counters on timeout; a first
 38400 pass is `result=0`. On `cause` 3, 4, 7, or 9, `fujinet-nio-exchange`
-prints a second line `peek=..` (first 32 wire bytes). `peek=-` means none
-were captured. That dump does not grow `FujiNetNIORequest`; FLS still sees
-`fn_response_length=0` on error.
+prints `slip class=… raw=… decoded=… pkt=… c0=… first=… leftover=…` then
+`peek=` (first 32 captured SLIP bytes), and on file-list `mismatch=` against
+the last successful trial (or `c0 fe 02` if none yet). `ring=` is leftover
+RX still in the serial queue **before** drain. `class=prefix` is a discarded
+opening END; `extra-c0` closed on the wrong delimiter; `len-mismatch` is a
+short body with a plausible header. That dump does not grow
+`FujiNetNIORequest`; FLS still sees `fn_response_length=0` on error. Broker
+`$VER` 0.7.
 
 | `native` (bytes to session) | `status` (ingested, or WRITE discards if ingested=0) | Meaning |
 | ---: | ---: | --- |
@@ -310,7 +316,8 @@ Only after those cells stay `result=0` with no `fujibus=bad`, copy the new
 `FLS` / `FHOST` and retry the CLI. Failures now print
 `broker stage=… result=… cause=… native=… status=… raw=…` so they can be
 compared to the exchange line. Then disk-read/write provocation
-(`--type disk-read|disk-write --provocation`, 38400, ESP pacing `0/0/0`).
+(`--type disk-read|disk-write --provocation`, same `--baud` as the soak,
+ESP pacing `0/0/0`; product gate 38400, 57600 opt-in).
 
 If 9600 is clean for clock and size 8 but 38400 fails as size grows, that is
 the result this diagnostic is for: burst length / service time, not “serial

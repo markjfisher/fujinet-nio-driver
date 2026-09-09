@@ -21,6 +21,8 @@
 #include "fujinet_disk_device.h"
 #include "fujinet-nio.h"
 #include "fn_protocol.h"
+#include "fn_slip.h"
+#include "fujinet_nio_session_diag.h"
 
 #define MATRIX_PACKET_CAP 1024
 #define DISK_PROVOCATION_SECTOR 512
@@ -31,6 +33,9 @@ long __stack = 16384;
 
 static uint8_t matrix_request[MATRIX_PACKET_CAP];
 static uint8_t matrix_response[MATRIX_PACKET_CAP];
+static uint8_t list_golden[MATRIX_PACKET_CAP];
+static unsigned list_golden_len;
+static uint8_t list_expect_slip[(MATRIX_PACKET_CAP * 2) + 2];
 
 #define COMPLETION_URI "host:/amiga-e2e-complete/nio-broker-isolated"
 
@@ -411,23 +416,158 @@ static void print_fujibus_prefix(const uint8_t *buf, unsigned len)
     printf("\n");
 }
 
-static void print_wire_peek(const uint8_t *buf)
+static void print_hex_span(const char *label, const uint8_t *buf, unsigned n)
 {
+    unsigned i;
+
+    printf("%s", label);
+    if (buf == NULL || n == 0) {
+        printf("-\n");
+        return;
+    }
+    for (i = 0; i < n; ++i) {
+        if (i != 0) putchar(' ');
+        printf("%02x", (unsigned)buf[i]);
+    }
+    printf("\n");
+}
+
+static void print_mismatch_context(const uint8_t *got, unsigned got_len,
+                                   const uint8_t *exp, unsigned exp_len,
+                                   int mis)
+{
+    unsigned start;
+    unsigned i;
+    unsigned n;
+
+    if (mis < 0) return;
+    start = ((unsigned)mis >= 4U) ? (unsigned)mis - 4U : 0U;
+    printf("got@%u=", start);
+    n = (got_len > start) ? got_len - start : 0U;
+    if (n > 12U) n = 12U;
+    if (got == NULL || n == 0) {
+        printf("-\n");
+    } else {
+        for (i = 0; i < n; ++i) {
+            if (i != 0) putchar(' ');
+            printf("%02x", (unsigned)got[start + i]);
+        }
+        printf("\n");
+    }
+    printf("exp@%u=", start);
+    n = (exp_len > start) ? exp_len - start : 0U;
+    if (n > 12U) n = 12U;
+    if (exp == NULL || n == 0) {
+        printf("-\n");
+    } else {
+        for (i = 0; i < n; ++i) {
+            if (i != 0) putchar(' ');
+            printf("%02x", (unsigned)exp[start + i]);
+        }
+        printf("\n");
+    }
+}
+
+static void print_file_list_diff(const uint8_t *got, unsigned got_len)
+{
+    const uint8_t list_head[3] = { 0xC0, 0xFE, 0x02 };
+    const uint8_t *exp;
+    unsigned exp_len;
+    int mis;
+    unsigned exp_b;
+    unsigned got_b;
+
+    if (list_golden_len != 0) {
+        exp_len = fn_slip_encode(list_golden, (uint16_t)list_golden_len,
+                                 list_expect_slip);
+        exp = list_expect_slip;
+    } else {
+        exp = list_head;
+        exp_len = 3;
+        printf("golden=- (need one OK file-list for a full-byte diff)\n");
+    }
+
+    mis = fn_nio_session_diag_first_mismatch(got, got_len, exp, exp_len);
+    if (mis < 0) {
+        printf("mismatch=-\n");
+        return;
+    }
+    exp_b = ((unsigned)mis < exp_len) ? exp[mis] : 0U;
+    got_b = ((unsigned)mis < got_len) ? got[mis] : 0U;
+    printf("mismatch=%d exp=%02x got=%02x\n", mis, exp_b, got_b);
+    print_mismatch_context(got, got_len, exp, exp_len, mis);
+
+    /* Opening C0 FE is already gone: diff against FujiBus after that so a
+     * later hole (missing descriptor 0x01) is not hidden at offset 0. */
+    if (exp_len >= 3U && exp[0] == 0xC0U && exp[1] == 0xFEU &&
+        got_len >= 1U && got[0] == 0x02U) {
+        mis = fn_nio_session_diag_first_mismatch(got, got_len, exp + 2,
+                                                 exp_len - 2U);
+        if (mis < 0) {
+            printf("after_prefix mismatch=-\n");
+        } else {
+            exp_b = ((unsigned)mis < exp_len - 2U) ? exp[2U + (unsigned)mis] : 0U;
+            got_b = ((unsigned)mis < got_len) ? got[mis] : 0U;
+            printf("after_prefix mismatch=%d exp=%02x got=%02x\n",
+                   mis, exp_b, got_b);
+            print_mismatch_context(got, got_len, exp + 2, exp_len - 2U, mis);
+        }
+    }
+}
+
+static void print_wire_peek(const uint8_t *buf, int file_list)
+{
+    fn_nio_session_diag_t d;
+    const uint8_t *exp = NULL;
+    unsigned exp_len = 0;
+    unsigned show;
+    int align;
     unsigned n;
     unsigned i;
 
     if (buf == NULL) return;
-    n = buf[0];
-    if (n == 0 || n > 32) {
-        printf("peek=-\n");
+    if (fn_nio_session_diag_parse(buf, MATRIX_PACKET_CAP, &d) != 0) {
+        n = buf[0];
+        if (n == 0 || n > 32) {
+            printf("peek=-\n");
+            return;
+        }
+        printf("slip class=legacy-peek (fujinet-nio.device 0.7 not loaded)\n");
+        printf("peek=");
+        for (i = 0; i < n; ++i) {
+            if (i != 0) putchar(' ');
+            printf("%02x", (unsigned)buf[1 + i]);
+        }
+        printf("\n");
+        if (file_list)
+            print_file_list_diff(buf + 1, n);
         return;
     }
-    printf("peek=");
-    for (i = 0; i < n; ++i) {
-        if (i != 0) putchar(' ');
-        printf("%02x", (unsigned)buf[1 + i]);
+
+    printf("slip class=%s raw=%u copy=%u decoded=%u pkt=%u c0=%u last=%02x "
+           "first=%02x %02x %02x leftover=%u\n",
+           fn_nio_session_diag_class(&d), (unsigned)d.raw_len,
+           (unsigned)d.raw_copy_len, (unsigned)d.decoded_len,
+           (unsigned)d.pkt_len, (unsigned)d.c0_count,
+           (unsigned)d.last_byte, (unsigned)d.first3[0],
+           (unsigned)d.first3[1], (unsigned)d.first3[2],
+           (unsigned)d.leftover_len);
+    show = d.raw_copy_len;
+    if (show > 32U) show = 32U;
+    print_hex_span("peek=", d.raw, show);
+
+    if (file_list)
+        print_file_list_diff(d.raw, d.raw_copy_len);
+
+    print_hex_span("ring=", d.leftover, d.leftover_len);
+    if (file_list && list_golden_len != 0 && d.leftover_len != 0) {
+        exp_len = fn_slip_encode(list_golden, (uint16_t)list_golden_len,
+                                 list_expect_slip);
+        exp = list_expect_slip;
+        align = fn_nio_session_diag_ring_align(d.leftover, d.leftover_len, exp,
+                                               exp_len);
+        printf("ring_align=%d\n", align);
     }
-    printf("\n");
 }
 
 static void print_matrix_usage(void)
@@ -439,7 +579,7 @@ static void print_matrix_usage(void)
             "[--size 8|16|32|64|128|256|420|512 --uri URI] "
             "[--list-flags 0..255] [--trials N]\n"
             "       fujinet-nio-exchange --type disk-read|disk-write "
-            "--provocation --backend cold --baud 38400 --slot 1..8 "
+            "--provocation --backend cold --baud 300..230400 --slot 1..8 "
             "--lba N [--serial-device NAME] [--serial-unit 0..255] "
             "[--trials N]\n");
 }
@@ -572,9 +712,9 @@ static int run_disk_provocation(const struct fn_nio_exchange_opts *opts)
     int is_write = opts->type == FN_NIO_EXCHANGE_TYPE_DISK_WRITE;
     int failures = 0;
 
-    printf("PROVOCATION baud=38400 backend=cold pacing=tx_byte_gap_us:0 "
+    printf("PROVOCATION baud=%lu backend=cold pacing=tx_byte_gap_us:0 "
            "tx_chunk_size:0 tx_chunk_gap_us:0 op=%s slot=%u lba=%lu "
-           "trials=%u\n", is_write ? "WRITE" : "READ", opts->slot,
+           "trials=%u\n", opts->baud, is_write ? "WRITE" : "READ", opts->slot,
            (unsigned long)opts->lba, opts->trials);
     printf("PROVOCATION requires ESP uart.set tx_byte_gap_us=0 "
            "tx_chunk_size=0 tx_chunk_gap_us=0; restore 16/2000 after run\n");
@@ -667,11 +807,11 @@ static int run_disk_provocation(const struct fn_nio_exchange_opts *opts)
         }
         trace_index = trace.count - 1;
         for (attempt = 0; attempt < trace.exchange_attempts[trace_index]; ++attempt) {
-            printf("trial=%u baud=38400 cold=1 pacing=0/0/0 op=%s slot=%u "
+            printf("trial=%u baud=%lu cold=1 pacing=0/0/0 op=%s slot=%u "
                    "lba=%lu req_len=%u resp_len=%u elapsed_us=%s result=%u "
                    "cause=%u native=%u status=%u attempt=%u/%u io_Error=%d "
                    "io_Actual=%lu write_pattern= i^0x5a\n", trial + 1,
-                   is_write ? "WRITE" : "READ", opts->slot,
+                   opts->baud, is_write ? "WRITE" : "READ", opts->slot,
                    (unsigned long)opts->lba,
                    is_write ? 526U : 14U,
                    (unsigned)trace.exchange_response_lengths[trace_index][attempt],
@@ -742,6 +882,7 @@ static int run_matrix(int argc, char **argv)
         print_matrix_usage();
         return RETURN_ERROR;
     }
+    list_golden_len = 0;
 
     if (opts.type == FN_NIO_EXCHANGE_TYPE_DISK_READ ||
         opts.type == FN_NIO_EXCHANGE_TYPE_DISK_WRITE)
@@ -816,7 +957,8 @@ static int run_matrix(int argc, char **argv)
                     req.fn_pad[2] == FUJINET_NIO_DETAIL_SERIAL_READ ||
                     req.fn_pad[2] ==
                         FUJINET_NIO_DETAIL_FLUSH_DRAINED_THEN_READ_FAILED)
-                    print_wire_peek(matrix_response);
+                    print_wire_peek(matrix_response,
+                                    opts.type == FN_NIO_EXCHANGE_TYPE_FILE_LIST);
                 if (req.fn_io.io_Error != 0 || req.fn_nio_error != FN_OK)
                     step_failed = -1;
                 else if (fn_nio_exchange_verify_fujibus(
@@ -827,6 +969,12 @@ static int run_matrix(int argc, char **argv)
                     print_fujibus_prefix(matrix_response,
                                          (unsigned)req.fn_response_length);
                     step_failed = -1;
+                } else if (opts.type == FN_NIO_EXCHANGE_TYPE_FILE_LIST &&
+                           req.fn_response_length > 0 &&
+                           req.fn_response_length <= sizeof(list_golden)) {
+                    memcpy(list_golden, matrix_response,
+                           req.fn_response_length);
+                    list_golden_len = (unsigned)req.fn_response_length;
                 }
             } else {
                 step_failed = -1;

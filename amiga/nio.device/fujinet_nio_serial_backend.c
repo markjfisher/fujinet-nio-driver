@@ -10,6 +10,7 @@
 #include "fujinet_nio_backend.h"
 #include "fujinet_nio_serial_channel.h"
 #include "fujinet_nio_serial_config.h"
+#include "fujinet_nio_session_diag.h"
 #include "fujinet_serial_device.h"
 #include "fujinet-nio.h"
 #include "fn_protocol.h"
@@ -70,6 +71,8 @@ static uint16_t debug_bytes_got;
 #define DEBUG_PEEK_MAX 32
 static uint8_t debug_peek[DEBUG_PEEK_MAX];
 static uint8_t debug_peek_len;
+#define DIAG_LEFTOVER_MAX 128
+static uint8_t diag_leftover[DIAG_LEFTOVER_MAX];
 
 /*
  * Writes use synchronous DoIO(CMD_WRITE). timeout_ms is unused on purpose:
@@ -156,16 +159,64 @@ static void note_byte_got(uint8_t value)
         debug_peek[debug_peek_len++] = value;
 }
 
-static void copy_debug_peek(uint8_t *response, uint16_t capacity)
+static void copy_session_diag(uint8_t *response, uint16_t capacity,
+                              uint16_t pkt_len, const uint8_t *leftover,
+                              uint8_t leftover_len)
 {
-    uint8_t n;
+    const uint8_t *raw;
+    uint16_t raw_len;
 
-    if (response == NULL || capacity < 1U) return;
-    n = debug_peek_len;
-    if (n > DEBUG_PEEK_MAX) n = DEBUG_PEEK_MAX;
-    if ((uint16_t)n + 1U > capacity) n = (uint8_t)(capacity - 1U);
-    response[0] = n;
-    if (n != 0) memcpy(response + 1, debug_peek, n);
+    if (response == NULL) return;
+    raw = session.wire_buffer;
+    raw_len = session.last_raw_length;
+    if (raw_len == 0 && debug_peek_len != 0) {
+        raw = debug_peek;
+        raw_len = debug_peek_len;
+    }
+    (void)fn_nio_session_diag_fill(response, capacity, raw, raw_len,
+                                   session.last_decoded_length, pkt_len,
+                                   leftover, leftover_len);
+}
+
+static uint8_t capture_leftover(uint8_t *dst, uint8_t max, uint8_t *got)
+{
+    ULONG available;
+    uint8_t saved_detail = serial_failure_detail;
+    uint8_t saved_err = serial_failure_io_error;
+    uint16_t saved_st = serial_failure_status;
+    uint8_t rc;
+
+    *got = 0;
+    if (dst == NULL || max == 0 || !serial_open) return FN_OK;
+
+    serial_req->IOSer.io_Command = SDCMD_QUERY;
+    serial_req->IOSer.io_Data = NULL;
+    serial_req->IOSer.io_Length = 0;
+    serial_req->IOSer.io_Actual = 0;
+    if (DoIO((struct IORequest *)serial_req) != 0) {
+        serial_failure_detail = saved_detail;
+        serial_failure_io_error = saved_err;
+        serial_failure_status = saved_st;
+        return FN_OK;
+    }
+    available = serial_req->IOSer.io_Actual;
+    if (available == 0) {
+        serial_failure_detail = saved_detail;
+        serial_failure_io_error = saved_err;
+        serial_failure_status = saved_st;
+        return FN_OK;
+    }
+    if (available > max) available = max;
+    rc = serial_cmd_read(dst, available, 50);
+    if (rc == FN_OK) {
+        available = serial_req->IOSer.io_Actual;
+        if (available > max) available = max;
+        *got = (uint8_t)available;
+    }
+    serial_failure_detail = saved_detail;
+    serial_failure_io_error = saved_err;
+    serial_failure_status = saved_st;
+    return FN_OK;
 }
 
 static uint8_t serial_read_byte(uint8_t *byte_out, uint16_t timeout_ms)
@@ -660,9 +711,17 @@ uint8_t backend_exchange(
      * gaps), so drain until RX is idle before the worker CloseDevice. The
      * next EXCHANGE lazy-reopens a clean session.
      */
-    if (result != FN_OK && serial_open &&
-        strcmp(serial_device_name, FUJINET_SERIAL_DEVICE_NAME) == 0)
-        copy_debug_peek(response, response_capacity);
+    if (result != FN_OK && serial_open) {
+        uint16_t pkt_len = 0;
+        uint8_t leftover_len = 0;
+
+        if (session.last_decoded_length >= 4U)
+            pkt_len = (uint16_t)(response[2] | ((uint16_t)response[3] << 8));
+        if (strcmp(serial_device_name, FUJINET_SERIAL_DEVICE_NAME) == 0)
+            capture_leftover(diag_leftover, DIAG_LEFTOVER_MAX, &leftover_len);
+        copy_session_diag(response, response_capacity, pkt_len, diag_leftover,
+                          leftover_len);
+    }
     if (result != FN_OK) session_flush_until_idle();
     if (serial_open) {
         serial_req->IOSer.io_Command = CMD_FLUSH;

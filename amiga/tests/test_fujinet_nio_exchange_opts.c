@@ -1,5 +1,6 @@
 #include "fujinet_nio_exchange_opts.h"
 #include "fujinet_nio_serial_config.h"
+#include "fujinet_nio_session_diag.h"
 
 #include "fn_protocol.h"
 
@@ -213,9 +214,9 @@ static void test_usage_errors(void)
         "fujinet-nio-exchange", "--type", "disk-read", "--backend", "cold",
         "--baud", "38400", "--slot", "1", "--lba", "0", NULL
     };
-    char *disk_wrong_baud[] = {
+    char *disk_warm[] = {
         "fujinet-nio-exchange", "--type", "disk-write", "--provocation",
-        "--backend", "cold", "--baud", "19200", "--slot", "1", "--lba", "0", NULL
+        "--backend", "warm", "--baud", "38400", "--slot", "1", "--lba", "0", NULL
     };
     char *list_flags_on_clock[] = {
         "fujinet-nio-exchange", "--type", "clock", "--backend", "cold",
@@ -238,8 +239,8 @@ static void test_usage_errors(void)
           fn_nio_exchange_opts_parse(7, too_many_trials, &opts) != 0);
     CHECK("disk requires explicit provocation",
           fn_nio_exchange_opts_parse(11, disk_without_provocation, &opts) != 0);
-    CHECK("disk provocation requires 38400",
-          fn_nio_exchange_opts_parse(12, disk_wrong_baud, &opts) != 0);
+    CHECK("disk provocation requires cold",
+          fn_nio_exchange_opts_parse(12, disk_warm, &opts) != 0);
     CHECK("list-flags on clock is usage error",
           fn_nio_exchange_opts_parse(7, list_flags_on_clock, &opts) != 0);
 }
@@ -256,6 +257,11 @@ static void test_disk_provocation_parse(void)
         "--backend", "cold", "--baud", "38400", "--slot", "2", "--lba", "9",
         NULL
     };
+    char *read_57600[] = {
+        "fujinet-nio-exchange", "--type", "disk-read", "--provocation",
+        "--backend", "cold", "--baud", "57600", "--slot", "1", "--lba", "0",
+        NULL
+    };
     struct fn_nio_exchange_opts opts;
 
     CHECK("parse disk-read provocation",
@@ -267,6 +273,10 @@ static void test_disk_provocation_parse(void)
           fn_nio_exchange_opts_parse(12, write_ok, &opts) == 0);
     CHECK("disk-write type", opts.type == FN_NIO_EXCHANGE_TYPE_DISK_WRITE);
     CHECK("disk-write slot", opts.slot == 2 && opts.lba == 9);
+    CHECK("parse disk-read 57600 provocation",
+          fn_nio_exchange_opts_parse(12, read_57600, &opts) == 0);
+    CHECK("disk-read 57600 baud", opts.baud == 57600UL &&
+          opts.type == FN_NIO_EXCHANGE_TYPE_DISK_READ);
 }
 
 static void test_disk_provocation_packets(void)
@@ -649,6 +659,51 @@ static void test_verify_fujibus(void)
           fn_nio_exchange_verify_fujibus(req, (unsigned)len, resp, 5) != 0);
 }
 
+static void test_session_diag(void)
+{
+    uint8_t raw[8] = { 0xC0, 0xFE, 0x02, 0x01, 0x02, 0x00, 0x00, 0xC0 };
+    uint8_t leftover[3] = { 0xAE, 0x01, 0x01 };
+    uint8_t buf[64];
+    uint8_t prefix[8] = { 0x02, 0x01, 0x02, 0xAE, 0x01, 0x00, 0x01, 0xC0 };
+    unsigned n;
+    fn_nio_session_diag_t d;
+
+    n = fn_nio_session_diag_fill(buf, sizeof(buf), raw, sizeof(raw), 6, 513,
+                                 leftover, sizeof(leftover));
+    CHECK("fill size", n == FN_NIO_SESSION_DIAG_HDR + sizeof(raw) +
+                               sizeof(leftover));
+    CHECK("parse diag", fn_nio_session_diag_parse(buf, sizeof(buf), &d) == 0);
+    CHECK("raw_len", d.raw_len == 8 && d.decoded_len == 6 && d.pkt_len == 513);
+    CHECK("c0 count", d.c0_count == 2 && d.last_byte == 0xC0 &&
+          d.first3[0] == 0xC0 && d.first3[1] == 0xFE);
+    CHECK("class header", strcmp(fn_nio_session_diag_class(&d),
+                                 "len-mismatch") == 0);
+    CHECK("mismatch at 0 vs prefix",
+          fn_nio_session_diag_first_mismatch(prefix, sizeof(prefix), raw,
+                                             sizeof(raw)) == 0);
+    CHECK("mismatch none",
+          fn_nio_session_diag_first_mismatch(raw, sizeof(raw), raw,
+                                             sizeof(raw)) == -1);
+    CHECK("mismatch shorter",
+          fn_nio_session_diag_first_mismatch(raw, 3, raw, sizeof(raw)) == 3);
+    CHECK("ring align",
+          fn_nio_session_diag_ring_align(leftover, sizeof(leftover), raw,
+                                         sizeof(raw)) == -1);
+    CHECK("ring align hit",
+          fn_nio_session_diag_ring_align(raw + 1, 3, raw, sizeof(raw)) == 1);
+    CHECK("old peek is not diag",
+          fn_nio_session_diag_parse(prefix, sizeof(prefix), &d) != 0);
+    {
+        uint8_t eaten[8] = { 0x02, 0x01, 0x02, 0xAE, 0x01, 0x00, 0x01, 0xC0 };
+        n = fn_nio_session_diag_fill(buf, sizeof(buf), eaten, sizeof(eaten),
+                                     6, 0xAE02, NULL, 0);
+        CHECK("prefix fill", n != 0 &&
+              fn_nio_session_diag_parse(buf, sizeof(buf), &d) == 0);
+        CHECK("class prefix", strcmp(fn_nio_session_diag_class(&d),
+                                     "prefix") == 0);
+    }
+}
+
 int main(void)
 {
     test_packet_checksum_modes();
@@ -671,6 +726,7 @@ int main(void)
     test_argc1_is_not_matrix();
     test_list_flags_packet();
     test_verify_fujibus();
+    test_session_diag();
 
     if (failures) {
         fprintf(stderr, "%u exchange-opts tests failed\n", failures);

@@ -139,7 +139,7 @@ int fn_nio_exchange_opts_parse(int argc, char **argv,
     if (out->type == FN_NIO_EXCHANGE_TYPE_DISK_READ ||
         out->type == FN_NIO_EXCHANGE_TYPE_DISK_WRITE) {
         if (!out->provocation || out->backend != FN_NIO_EXCHANGE_BACKEND_COLD ||
-            out->baud != 38400UL || out->slot == 0) return -1;
+            out->baud == 0UL || out->slot == 0) return -1;
         if (out->has_size || out->uri != NULL) return -1;
     } else if (out->provocation || out->slot != 0 || out->lba != 0) {
         return -1;
