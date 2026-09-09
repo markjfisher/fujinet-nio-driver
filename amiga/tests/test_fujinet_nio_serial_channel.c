@@ -43,6 +43,26 @@ int main(void)
               FN_ERR_TRANSPORT);
 
     {
+        uint8_t seen = 0;
+
+        CHECK("overrun constant is bit 8",
+              FN_SERIAL_IO_STATF_OVERRUN == 0x0100U);
+        CHECK("io_Error skips hidden overrun",
+              fn_serial_note_hidden_overrun(6, FN_SERIAL_IO_STATF_OVERRUN,
+                                            &seen) == 0);
+        CHECK("io_Error leaves seen clear", seen == 0);
+        CHECK("clean status is not hidden overrun",
+              fn_serial_note_hidden_overrun(0, 0, &seen) == 0);
+        CHECK("OVRUN with io_Error=0 is hidden",
+              fn_serial_note_hidden_overrun(0, FN_SERIAL_IO_STATF_OVERRUN,
+                                            &seen) == 1);
+        CHECK("hidden overrun is sticky", seen == 1);
+        CHECK("null seen still reports",
+              fn_serial_note_hidden_overrun(0, FN_SERIAL_IO_STATF_OVERRUN,
+                                            NULL) == 1);
+    }
+
+    {
         uint16_t empty_ms = 0;
         uint16_t waited_ms = 0;
         unsigned i;

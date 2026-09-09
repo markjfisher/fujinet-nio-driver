@@ -97,9 +97,15 @@ then `SETPARAMS` jumped to 38400. 19200 first-open never took that jump.
 through `fujinet-serial.device` must print `result=0` / `status=0` and return
 to the Shell with no power-LED flash and no PiStorm reboot screen. Amiberry
 does not prove that. 38400 FLS / first file-list after idle must not sit in
-the 5 s QUERY timeout. Confirm the guest `fujinet-serial.device` is 0.7
-(`$VER`) and `fujinet-nio.device` is 0.7. Serial 0.7 drains stacked RBF
-during TX (first-after-idle host-get was 1–7 bytes short). Serial 0.5 polled `INTREQ` TBE
+the 5 s QUERY timeout. Confirm the guest `fujinet-serial.device` is 0.9
+(`$VER`) and `fujinet-nio.device` is 0.8. Serial 0.9 transmits via the
+TBE interrupt so RBF stays live during the request (first-trial opening
+`C0` was lost while `CMD_WRITE` polled `SERDATR` under `Disable()`).
+Serial 0.8 copies `CMD_READ`
+out of the ring with RBF still enabled, and the RBF drain keeps a live
+head pointer so `SERDATR` is emptied before the next character time.
+Serial 0.7 drained stacked RBF during TX (first-after-idle host-get was
+1–7 bytes short). Serial 0.5 polled `INTREQ` TBE
 while that interrupt was masked; WRITE failed `SerErr_LineErr` (`cause=5
 native=6`), froze the mouse, and the ESP saw no request. Serial 0.6 waits
 for `SERDATR` TBE again and keeps any RBF byte from that same read. First
@@ -198,15 +204,22 @@ passed. Failures are still printed; there is no retry.
 
 **Likely Paula receive overrun:** `status=1` and `cause` `7` or `9`.
 
+Broker 0.8 keeps delivering CMD_READ bytes when `IO_STATF_OVERRUN` is set
+and `io_Error` is 0, then classifies the exchange as `cause=7` so a mid-frame
+hole is not reported as `cause=3`. Reload `fujinet-nio.device` 0.8 (serial
+stays 0.7) and repeat the 57600 file-list soak. Holes that become
+`cause=7 status=1 native=0` were hidden Paula OVRUN. Holes that stay
+`cause=3 status=0` lost bytes without the OVRUN latch.
+
 | `cause` | Meaning |
 | ---: | --- |
 | 0 | No request-local serial detail. |
-| 7 | `CMD_READ` failed; flush never drained an overrun flag. |
+| 7 | `CMD_READ`/`QUERY` saw Paula OVRUN, or `CMD_READ` failed; flush never drained an overrun flag. `native=0 status=1` is hidden overrun (`io_Error` stayed 0). |
 | 9 | Flush saw and drained `IO_STATF_OVERRUN`, then the real `CMD_READ` still failed. |
 
-`native` is often `6` (`SerErr_LineErr`) on those rows. Other `cause` values
-(write, query, timeout, timer) are different faults; note them, but they are
-not the burst-overrun signature.
+`native` is often `6` (`SerErr_LineErr`) on rows where `CMD_READ` itself
+failed. Other `cause` values (write, query, timeout, timer) are different
+faults; note them, but they are not the burst-overrun signature.
 
 On **`cause=4`** with `fujinet-nio.device` 0.3+, read `native` / `status` as
 session-delivered bytes vs ring ingest from after `CMD_WRITE` until QUERY
@@ -221,7 +234,7 @@ RX still in the serial queue **before** drain. `class=prefix` is a discarded
 opening END; `extra-c0` closed on the wrong delimiter; `len-mismatch` is a
 short body with a plausible header. That dump does not grow
 `FujiNetNIORequest`; FLS still sees `fn_response_length=0` on error. Broker
-`$VER` 0.7.
+`$VER` 0.8.
 
 | `native` (bytes to session) | `status` (ingested, or WRITE discards if ingested=0) | Meaning |
 | ---: | ---: | --- |

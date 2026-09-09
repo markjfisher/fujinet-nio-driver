@@ -35,6 +35,26 @@ static inline uint8_t fn_serial_channel_map_session_result(
     return session_rc;
 }
 
+/* devices/serial.h IO_STATF_OVERRUN is (1<<8). Named here so host tests
+ * can cover the hidden-overrun check without NDK headers. */
+#define FN_SERIAL_IO_STATF_OVERRUN 0x0100U
+
+/*
+ * Paula overrun is latched in io_Status while CMD_READ/QUERY still
+ * complete with io_Error=0. Ignoring that bit made mid-frame holes look
+ * like SESSION_IO (cause=3). Return 1 and set *seen when a successful
+ * request carried IO_STATF_OVERRUN.
+ */
+static inline uint8_t fn_serial_note_hidden_overrun(unsigned io_error,
+                                                    unsigned io_status,
+                                                    uint8_t *seen)
+{
+    if (io_error != 0) return 0;
+    if ((io_status & FN_SERIAL_IO_STATF_OVERRUN) == 0) return 0;
+    if (seen != NULL) *seen = 1;
+    return 1;
+}
+
 /*
  * After CMD_READ overrun (cause=7), the ESP may still be transmitting the
  * rest of a paced response (16-byte bursts with 2 ms gaps). One empty

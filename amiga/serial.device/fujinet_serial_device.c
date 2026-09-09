@@ -46,16 +46,26 @@ struct fujinet_serial_rbf_data {
     uint16_t ingest;
 };
 
+struct fujinet_serial_tbe_data {
+    const uint8_t *buf;
+    ULONG remaining;
+    volatile UBYTE done;
+    UBYTE pad[3];
+};
+
 struct fujinet_serial_base {
     struct Device device;
     BPTR segment_list;
     struct Unit exec_unit;
     struct Interrupt rbf_int;
+    struct Interrupt tbe_int;
     struct Interrupt soft_int;
     uint8_t rx_buf[FUJINET_PAULA_RX_DEFAULT_SIZE];
     struct fujinet_serial_rbf_data rbf_data;
+    struct fujinet_serial_tbe_data tbe_data;
     uint32_t baud;
     struct Interrupt *old_rbf;
+    struct Interrupt *old_tbe;
     struct IOExtSer *pending_read;
     UBYTE read_state;
     UBYTE rbf_installed;
@@ -73,6 +83,7 @@ struct ExecBase *SysBase;
 struct Library *MiscBase;
 
 extern void fujinet_serial_rbf_server(void);
+extern void fujinet_serial_tbe_server(void);
 extern void fujinet_serial_softint(void);
 void fujinet_serial_complete_read(
     register struct fujinet_serial_base *base FN_REGISTER("a1"));
@@ -99,10 +110,16 @@ typedef char fn_rbf_off_fire_ok[
     offsetof(struct fujinet_serial_rbf_data, rbf_fire) == 24 ? 1 : -1];
 typedef char fn_rbf_off_ingest_ok[
     offsetof(struct fujinet_serial_rbf_data, ingest) == 26 ? 1 : -1];
+typedef char fn_tbe_off_buf_ok[
+    offsetof(struct fujinet_serial_tbe_data, buf) == 0 ? 1 : -1];
+typedef char fn_tbe_off_rem_ok[
+    offsetof(struct fujinet_serial_tbe_data, remaining) == 4 ? 1 : -1];
+typedef char fn_tbe_off_done_ok[
+    offsetof(struct fujinet_serial_tbe_data, done) == 8 ? 1 : -1];
 
 static const char device_name[] = DEVICE_NAME;
 static const char device_id[] =
-    "$VER: " DEVICE_NAME " 0.7 (7.9.2026) \xa9 2026 Mark Fisher\r\n";
+    "$VER: " DEVICE_NAME " 0.9 (9.9.2026) \xa9 2026 Mark Fisher\r\n";
 
 static int pal_display(void)
 {
@@ -116,17 +133,33 @@ static void apply_serper(struct fujinet_serial_base *base)
 
 static void drain_rbf_locked(struct fujinet_serial_base *base)
 {
+    uint16_t head = base->rbf_data.rx.head;
+    uint16_t mask = base->rbf_data.rx.mask;
+    uint16_t tail = base->rbf_data.rx.tail;
+    uint8_t *buf = base->rbf_data.rx.buf;
+
     while ((paula.intreqr & (UWORD)INTF_RBF) != 0) {
         UWORD serdatr = paula.serdatr;
 
         if (base->rbf_data.rbf_fire != 0xFFFFU)
             base->rbf_data.rbf_fire += 1;
-        if ((serdatr & FUJINET_PAULA_SERDATR_RBF) != 0 &&
-            base->rbf_data.ingest != 0xFFFFU)
-            base->rbf_data.ingest += 1;
-        fujinet_paula_rx_ingest(&base->rbf_data.rx, serdatr);
+        if ((serdatr & FUJINET_PAULA_SERDATR_OVRUN) != 0)
+            base->rbf_data.rx.hardware_overrun_latched = 1;
+        if ((serdatr & FUJINET_PAULA_SERDATR_RBF) != 0) {
+            uint16_t next = (uint16_t)((head + 1U) & mask);
+
+            if (next == tail) {
+                base->rbf_data.rx.software_ring_overflow_latched = 1;
+            } else {
+                buf[head] = (uint8_t)serdatr;
+                head = next;
+                if (base->rbf_data.ingest != 0xFFFFU)
+                    base->rbf_data.ingest += 1;
+            }
+        }
         paula.intreq = (UWORD)INTF_RBF;
     }
+    base->rbf_data.rx.head = head;
 }
 
 static uint32_t baud_from_open(const struct IOExtSer *req)
@@ -138,44 +171,15 @@ static uint32_t baud_from_open(const struct IOExtSer *req)
     return baud;
 }
 
-/* Read SERDATR for TSRE only while RBF is masked. A live RBF handler and a
- * task-level SERDATR poll would race over the same receive register. */
+/* Read SERDATR for TSRE only while RBF is masked (SETPARAMS settle).
+ * CMD_WRITE uses the TBE interrupt and must not poll SERDATR: a live RBF
+ * handler and a task-level SERDATR read race over the same receive byte. */
 static void wait_tx_idle(void)
 {
     ULONG spin = 0;
 
     while ((paula.serdatr & FUJINET_PAULA_SERDATR_TSRE) == 0) {
         if (++spin >= TBE_SPIN_MAX) return;
-    }
-}
-
-/* SERDATR TBE is the transmit-empty flag. The same read can also show a
- * received byte (RBF). Ingest that byte here; do not poll INTREQ TBE —
- * INTENA TBE is masked, and on PiStorm INTREQ TBE never latched, so TX
- * spun under Forbid and the ESP saw nothing. Call with Disable held so
- * the RBF handler does not also sample SERDATR. */
-static int wait_tbe(struct fujinet_serial_base *base)
-{
-    ULONG spin = 0;
-
-    for (;;) {
-        UWORD serdatr = paula.serdatr;
-
-        /* Drain every stacked RBF before looking at TBE. One ingest per
-         * loop lost leading response bytes when ESP replied during TX
-         * (PiStorm first-after-idle: resp_len 40..43 vs 44). */
-        while ((serdatr & FUJINET_PAULA_SERDATR_RBF) != 0) {
-            if (base->rbf_data.rbf_fire != 0xFFFFU)
-                base->rbf_data.rbf_fire += 1;
-            if (base->rbf_data.ingest != 0xFFFFU)
-                base->rbf_data.ingest += 1;
-            fujinet_paula_rx_ingest(&base->rbf_data.rx, serdatr);
-            paula.intreq = (UWORD)INTF_RBF;
-            serdatr = paula.serdatr;
-        }
-        if ((serdatr & FUJINET_PAULA_SERDATR_TBE) != 0)
-            return 0;
-        if (++spin >= TBE_SPIN_MAX) return -1;
     }
 }
 
@@ -209,6 +213,13 @@ static int rbf_vector_is_ours(struct fujinet_serial_base *base)
     return SysBase->IntVects[INTB_RBF].iv_Code ==
                (void (*)())fujinet_serial_rbf_server &&
            SysBase->IntVects[INTB_RBF].iv_Data == &base->rbf_data;
+}
+
+static int tbe_vector_is_ours(struct fujinet_serial_base *base)
+{
+    return SysBase->IntVects[INTB_TBE].iv_Code ==
+               (void (*)())fujinet_serial_tbe_server &&
+           SysBase->IntVects[INTB_TBE].iv_Data == &base->tbe_data;
 }
 
 static void rearm_receive(struct fujinet_serial_base *base)
@@ -264,7 +275,14 @@ void fujinet_serial_complete_read(
     length = req->IOSer.io_Length;
     data = (uint8_t *)req->IOSer.io_Data;
     if (length > 0xFFFFUL) length = 0xFFFFUL;
+    /* Copy with RBF live. Holding Disable() across the ring copy blocked
+     * the handler for several 57600 character times and latched OVRUN
+     * (io_Error=0, io_Status bit 8) mid-frame. take_pending already
+     * cleared pending_need so the handler will not Cause() this request
+     * again. */
+    Enable();
     copied = fujinet_paula_rx_read(&base->rbf_data.rx, data, (uint16_t)length);
+    Disable();
     req->IOSer.io_Actual = copied;
     req->io_Status = fujinet_paula_rx_public_overrun(&base->rbf_data.rx)
                          ? (UWORD)IO_STATF_OVERRUN
@@ -313,11 +331,16 @@ static void release_paula(struct fujinet_serial_base *base)
     Disable();
     base->closing = 1;
     pending = take_pending(base, READ_ABORTING);
-    paula.intena = (UWORD)INTF_RBF;
+    base->tbe_data.remaining = 0;
+    base->tbe_data.done = 1;
+    paula.intena = (UWORD)(INTF_RBF | INTF_TBE);
     base->receive_armed = 0;
     drain_rbf_locked(base);
-    if (base->rbf_installed && rbf_vector_is_ours(base)) {
-        SetIntVector(INTB_RBF, base->old_rbf);
+    if (base->rbf_installed) {
+        if (rbf_vector_is_ours(base))
+            SetIntVector(INTB_RBF, base->old_rbf);
+        if (tbe_vector_is_ours(base))
+            SetIntVector(INTB_TBE, base->old_tbe);
         if (base->rbf_was_enabled)
             paula.intena = (UWORD)(INTF_SETCLR | INTF_RBF);
         if (base->tbe_was_enabled)
@@ -325,6 +348,7 @@ static void release_paula(struct fujinet_serial_base *base)
     }
     base->rbf_installed = 0;
     base->old_rbf = NULL;
+    base->old_tbe = NULL;
     base->pending_read = NULL;
     base->rbf_data.pending_need = 0;
     if (pending != NULL) {
@@ -354,6 +378,9 @@ static BYTE claim_paula(struct fujinet_serial_base *base, uint32_t baud)
     base->rbf_data.ingest = 0;
     base->write_discard = 0;
     base->setparams_discard = 0;
+    base->tbe_data.buf = NULL;
+    base->tbe_data.remaining = 0;
+    base->tbe_data.done = 1;
     err = claim_misc(base);
     if (err != 0) return err;
 
@@ -373,6 +400,13 @@ static BYTE claim_paula(struct fujinet_serial_base *base, uint32_t baud)
     base->rbf_int.is_Data = &base->rbf_data;
     base->rbf_int.is_Code = (void (*)())fujinet_serial_rbf_server;
 
+    memset(&base->tbe_int, 0, sizeof(base->tbe_int));
+    base->tbe_int.is_Node.ln_Type = NT_INTERRUPT;
+    base->tbe_int.is_Node.ln_Pri = 0;
+    base->tbe_int.is_Node.ln_Name = (char *)device_name;
+    base->tbe_int.is_Data = &base->tbe_data;
+    base->tbe_int.is_Code = (void (*)())fujinet_serial_tbe_server;
+
     memset(&base->soft_int, 0, sizeof(base->soft_int));
     base->soft_int.is_Node.ln_Type = NT_INTERRUPT;
     base->soft_int.is_Node.ln_Pri = 0;
@@ -383,6 +417,7 @@ static BYTE claim_paula(struct fujinet_serial_base *base, uint32_t baud)
     base->rbf_data.soft_int = &base->soft_int;
     base->rbf_data.sys_base = SysBase;
     base->old_rbf = SetIntVector(INTB_RBF, &base->rbf_int);
+    base->old_tbe = SetIntVector(INTB_TBE, &base->tbe_int);
     base->rbf_installed = 1;
     base->receive_armed = 0;
     Enable();
@@ -467,7 +502,7 @@ static void cmd_write(struct fujinet_serial_base *base, struct IOExtSer *req)
 {
     ULONG length = req->IOSer.io_Length;
     const uint8_t *data = (const uint8_t *)req->IOSer.io_Data;
-    ULONG i;
+    ULONG spin;
 
     if (length != 0 && data == NULL) {
         req->IOSer.io_Actual = 0;
@@ -481,14 +516,36 @@ static void cmd_write(struct fujinet_serial_base *base, struct IOExtSer *req)
     fujinet_paula_rx_clear(&base->rbf_data.rx);
     base->rbf_data.rbf_fire = 0;
     base->rbf_data.ingest = 0;
-    for (i = 0; i < length; ++i) {
-        if (wait_tbe(base) != 0) {
-            Enable();
-            req->IOSer.io_Actual = i;
-            finish(req, SerErr_LineErr);
-            return;
-        }
-        paula.serdat = fujinet_paula_serdat_word(data[i]);
+    if (length == 0) {
+        Enable();
+        req->IOSer.io_Actual = 0;
+        finish(req, 0);
+        return;
+    }
+    /* RBF stays live. Polling SERDATR TBE under Disable() ate the opening
+     * SLIP END (0xC0) of every first 38400 response. TBE interrupt writes
+     * SERDAT without reading SERDATR. */
+    base->tbe_data.buf = data;
+    base->tbe_data.remaining = length;
+    base->tbe_data.done = 0;
+    paula.intena = (UWORD)(INTF_SETCLR | INTF_TBE);
+    paula.intreq = (UWORD)(INTF_SETCLR | INTF_TBE);
+    Enable();
+    spin = 0;
+    while (base->tbe_data.done == 0) {
+        if (++spin >= TBE_SPIN_MAX) break;
+    }
+    Disable();
+    paula.intena = (UWORD)INTF_TBE;
+    if (base->tbe_data.done == 0 && base->tbe_data.remaining != 0) {
+        ULONG sent = length - base->tbe_data.remaining;
+
+        base->tbe_data.remaining = 0;
+        drain_rbf_locked(base);
+        Enable();
+        req->IOSer.io_Actual = sent;
+        finish(req, SerErr_LineErr);
+        return;
     }
     drain_rbf_locked(base);
     Enable();

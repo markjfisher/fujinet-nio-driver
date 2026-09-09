@@ -67,6 +67,20 @@ int main(void)
     CHECK("kept-byte", fujinet_paula_rx_read(&rx, out, 1) == 1 && out[0] == 0xAB);
 
     fujinet_paula_rx_clear(&rx);
+    for (i = 0; i < 6; ++i)
+        fujinet_paula_rx_ingest(&rx, (uint16_t)(FUJINET_PAULA_SERDATR_RBF | (0xB0 + i)));
+    CHECK("wrap-read-prefix",
+          fujinet_paula_rx_read(&rx, out, 4) == 4 && out[0] == 0xB0 &&
+          out[3] == 0xB3);
+    fujinet_paula_rx_ingest(&rx, FUJINET_PAULA_SERDATR_RBF | 0xC0);
+    fujinet_paula_rx_ingest(&rx, FUJINET_PAULA_SERDATR_RBF | 0xC1);
+    fujinet_paula_rx_ingest(&rx, FUJINET_PAULA_SERDATR_RBF | 0xC2);
+    CHECK("wrap-read-span",
+          fujinet_paula_rx_read(&rx, out, 5) == 5 && out[0] == 0xB4 &&
+          out[1] == 0xB5 && out[2] == 0xC0 && out[4] == 0xC2);
+    CHECK("wrap-empty", fujinet_paula_rx_count(&rx) == 0);
+
+    fujinet_paula_rx_clear(&rx);
     fujinet_paula_rx_ingest(&rx, FUJINET_PAULA_SERDATR_TBE);
     CHECK("tbe-only-ignored", fujinet_paula_rx_count(&rx) == 0 &&
           fujinet_paula_rx_public_overrun(&rx) == 0);

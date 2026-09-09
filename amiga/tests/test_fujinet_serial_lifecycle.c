@@ -127,6 +127,66 @@ static void test_rbf_handler_register_contract(void)
     free(src);
 }
 
+static void test_complete_read_enables_before_copy(void)
+{
+    char *src;
+    char *fn;
+    char *enable;
+    char *copy;
+
+    src = read_file("../serial.device/fujinet_serial_device.c", NULL);
+    if (src == NULL)
+        src = read_file("serial.device/fujinet_serial_device.c", NULL);
+    CHECK("serial-c-readable", src != NULL);
+    if (src == NULL) return;
+    fn = strstr(src, "void fujinet_serial_complete_read(");
+    CHECK("complete-read-present", fn != NULL);
+    if (fn == NULL) {
+        free(src);
+        return;
+    }
+    copy = strstr(fn, "fujinet_paula_rx_read(");
+    CHECK("complete-read-copies", copy != NULL);
+    if (copy == NULL) {
+        free(src);
+        return;
+    }
+    enable = strstr(fn, "Enable();");
+    CHECK("complete-read-enables-before-copy",
+          enable != NULL && enable < copy);
+    free(src);
+}
+
+static void test_tbe_handler_register_contract(void)
+{
+    char *src;
+    char *start;
+
+    src = read_file("../serial.device/fujinet_serial_rbf.S", NULL);
+    if (src == NULL)
+        src = read_file("serial.device/fujinet_serial_rbf.S", NULL);
+    if (src == NULL)
+        src = read_file("fujinet_serial_rbf.S", NULL);
+    CHECK("tbe-asm-readable", src != NULL);
+    if (src == NULL) return;
+    start = strstr(src, "_fujinet_serial_tbe_server:");
+    CHECK("tbe-asm-label", start != NULL);
+    if (start == NULL) {
+        free(src);
+        return;
+    }
+    CHECK("tbe-rts-not-rte", strstr(start, "rts") != NULL &&
+          strstr(start, "rte") == NULL && strstr(start, "RTE") == NULL);
+    CHECK("tbe-writes-serdat", strstr(start, "SERDAT") != NULL);
+    CHECK("tbe-acks-tbe", strstr(start, "INTF_TBE") != NULL);
+    CHECK("tbe-no-serdatr", strstr(start, "SERDATR") == NULL);
+    CHECK("tbe-no-replymsg", strstr(start, "ReplyMsg") == NULL &&
+          strstr(start, "_LVOReplyMsg") == NULL);
+    CHECK("tbe-no-d2", !token_present(start, "%d2"));
+    CHECK("tbe-no-a2", !token_present(start, "%a2"));
+    free(src);
+}
+
 static void test_misc_resource(void)
 {
     fn_serial_lc_t lc;
@@ -421,6 +481,8 @@ static void test_open_baud_and_setparams_settle(void)
 int main(void)
 {
     test_rbf_handler_register_contract();
+    test_complete_read_enables_before_copy();
+    test_tbe_handler_register_contract();
     test_misc_resource();
     test_rbf_drain();
     test_read_cause_and_abort();

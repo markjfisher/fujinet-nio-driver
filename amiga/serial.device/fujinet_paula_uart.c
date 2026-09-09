@@ -1,6 +1,7 @@
 #include "fujinet_paula_uart.h"
 
 #include <stddef.h>
+#include <string.h>
 
 uint16_t fujinet_paula_serper(uint32_t baud, int pal)
 {
@@ -68,14 +69,23 @@ void fujinet_paula_rx_ingest(fujinet_paula_rx_t *rx, uint16_t serdatr)
 
 uint16_t fujinet_paula_rx_read(fujinet_paula_rx_t *rx, uint8_t *dst, uint16_t n)
 {
-    uint16_t copied = 0;
+    uint16_t available;
+    uint16_t first;
+    uint16_t size;
 
-    if (rx == NULL || (dst == NULL && n != 0)) return 0;
-    while (copied < n && rx->tail != rx->head) {
-        dst[copied++] = rx->buf[rx->tail];
-        rx->tail = (uint16_t)((rx->tail + 1U) & rx->mask);
-    }
-    return copied;
+    if (rx == NULL || n == 0) return 0;
+    if (dst == NULL) return 0;
+    available = (uint16_t)((rx->head - rx->tail) & rx->mask);
+    if (n > available) n = available;
+    if (n == 0) return 0;
+    size = (uint16_t)(rx->mask + 1U);
+    first = (uint16_t)(size - rx->tail);
+    if (first > n) first = n;
+    memcpy(dst, rx->buf + rx->tail, first);
+    if (first < n)
+        memcpy(dst + first, rx->buf, (size_t)(n - first));
+    rx->tail = (uint16_t)((rx->tail + n) & rx->mask);
+    return n;
 }
 
 uint8_t fujinet_paula_rx_public_overrun(const fujinet_paula_rx_t *rx)

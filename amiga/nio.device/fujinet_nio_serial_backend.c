@@ -62,6 +62,7 @@ static uint8_t serial_failure_detail;
 static uint8_t serial_failure_io_error;
 static uint16_t serial_failure_status;
 static uint8_t serial_flush_drained_overrun; /* set when session_flush drained IO_STATF_OVERRUN */
+static uint8_t serial_hidden_overrun; /* CMD_READ/QUERY io_Error=0 but IO_STATF_OVERRUN */
 static uint32_t serial_baud = FN_SERIAL_BACKEND_BAUD;
 /* Bytes serial_read_byte() actually returned to the session this EXCHANGE.
  * cause=4 used to pack RBF-fire/ingest, both saturating at 255, so a first
@@ -100,7 +101,8 @@ static uint8_t serial_write(const uint8_t *buf, uint16_t len)
     return FN_OK;
 }
 
-static uint8_t serial_cmd_read(APTR buf, ULONG length, uint16_t timeout_ms)
+static uint8_t serial_cmd_read(APTR buf, ULONG length, uint16_t timeout_ms,
+                               uint8_t record_hidden_overrun)
 {
     ULONG serial_mask;
     ULONG timer_mask;
@@ -148,6 +150,13 @@ static uint8_t serial_cmd_read(APTR buf, ULONG length, uint16_t timeout_ms)
         serial_failure_io_error = (uint8_t)serial_req->IOSer.io_Error;
         serial_failure_status = serial_req->io_Status;
         return FN_ERR_IO;
+    }
+    if (record_hidden_overrun &&
+        fn_serial_note_hidden_overrun(0, (unsigned)serial_req->io_Status,
+                                      &serial_hidden_overrun)) {
+        serial_failure_detail = FUJINET_NIO_DETAIL_SERIAL_READ;
+        serial_failure_io_error = 0;
+        serial_failure_status = serial_req->io_Status;
     }
     return FN_OK;
 }
@@ -207,7 +216,7 @@ static uint8_t capture_leftover(uint8_t *dst, uint8_t max, uint8_t *got)
         return FN_OK;
     }
     if (available > max) available = max;
-    rc = serial_cmd_read(dst, available, 50);
+    rc = serial_cmd_read(dst, available, 50, 0);
     if (rc == FN_OK) {
         available = serial_req->IOSer.io_Actual;
         if (available > max) available = max;
@@ -239,6 +248,12 @@ static uint8_t serial_read_byte(uint8_t *byte_out, uint16_t timeout_ms)
         serial_failure_status = serial_req->io_Status;
         return FN_ERR_IO;
     }
+    if (fn_serial_note_hidden_overrun(0, (unsigned)serial_req->io_Status,
+                                      &serial_hidden_overrun)) {
+        serial_failure_detail = FUJINET_NIO_DETAIL_SERIAL_READ;
+        serial_failure_io_error = 0;
+        serial_failure_status = serial_req->io_Status;
+    }
     available = serial_req->IOSer.io_Actual;
     if (available == 0) {
         uint16_t remaining = timeout_ms;
@@ -266,6 +281,12 @@ static uint8_t serial_read_byte(uint8_t *byte_out, uint16_t timeout_ms)
                 serial_failure_status = serial_req->io_Status;
                 return FN_ERR_IO;
             }
+            if (fn_serial_note_hidden_overrun(
+                    0, (unsigned)serial_req->io_Status, &serial_hidden_overrun)) {
+                serial_failure_detail = FUJINET_NIO_DETAIL_SERIAL_READ;
+                serial_failure_io_error = 0;
+                serial_failure_status = serial_req->io_Status;
+            }
             if (serial_req->IOSer.io_Actual != 0) {
                 available = serial_req->IOSer.io_Actual;
                 break;
@@ -277,7 +298,7 @@ static uint8_t serial_read_byte(uint8_t *byte_out, uint16_t timeout_ms)
     if (available > sizeof(read_buf)) available = sizeof(read_buf);
 
     {
-        uint8_t read_rc = serial_cmd_read(read_buf, available, timeout_ms);
+        uint8_t read_rc = serial_cmd_read(read_buf, available, timeout_ms, 1);
         if (read_rc != FN_OK) return read_rc;
     }
     read_pos = 1;
@@ -357,7 +378,7 @@ static uint8_t drain_query_and_read(uint8_t *saw_rx)
      * SDCMD_QUERY even when the software ring is empty. CMD_READ consumes it. */
     if (serial_req->io_Status & IO_STATF_OVERRUN) {
         uint8_t drain_rc = serial_cmd_read(&drain_byte, 1,
-                                          FN_SERIAL_BACKEND_TIMEOUT_MS);
+                                          FN_SERIAL_BACKEND_TIMEOUT_MS, 0);
         if (drain_rc != FN_OK) {
             if (channel_error == 0) channel_error = drain_rc;
             return drain_rc;
@@ -371,7 +392,7 @@ static uint8_t drain_query_and_read(uint8_t *saw_rx)
     if (available > sizeof(read_buf)) available = sizeof(read_buf);
     {
         uint8_t drain_rc = serial_cmd_read(read_buf, available,
-                                          FN_SERIAL_BACKEND_TIMEOUT_MS);
+                                          FN_SERIAL_BACKEND_TIMEOUT_MS, 0);
         if (drain_rc != FN_OK) {
             if (channel_error == 0) channel_error = drain_rc;
             return drain_rc;
@@ -603,7 +624,7 @@ uint8_t backend_open(void)
     DoIO((struct IORequest *)serial_req);
     if (serial_req->io_Status & IO_STATF_OVERRUN) {
         UBYTE drain_byte;
-        if (serial_cmd_read(&drain_byte, 1, FN_SERIAL_BACKEND_TIMEOUT_MS) !=
+        if (serial_cmd_read(&drain_byte, 1, FN_SERIAL_BACKEND_TIMEOUT_MS, 0) !=
             FN_OK) {
             backend_close();
             return FN_ERR_IO;
@@ -651,6 +672,7 @@ uint8_t backend_exchange(
     serial_failure_detail = FUJINET_NIO_DETAIL_NONE;
     serial_failure_io_error = 0;
     serial_failure_status = 0;
+    serial_hidden_overrun = 0;
     debug_bytes_got = 0;
     debug_peek_len = 0;
     session_result = fn_stream_session_request(
@@ -662,32 +684,39 @@ uint8_t backend_exchange(
         serial_req->IOSer.io_Data = NULL;
         serial_req->IOSer.io_Length = 0;
         serial_req->IOSer.io_Actual = 0;
-        if (DoIO((struct IORequest *)serial_req) == 0 &&
-            serial_failure_io_error == 0 && serial_failure_status == 0) {
-            uint16_t got = (uint16_t)serial_req->io_ExtFlags;
-            uint16_t disc_w = (uint16_t)(serial_req->io_CtlChar >> 16);
-            uint16_t shown = got != 0U ? got : disc_w;
-
-            if (debug_peek_len == 0 && serial_req->IOSer.io_Actual != 0) {
-                ULONG n = serial_req->IOSer.io_Actual;
-                uint8_t saved_detail = serial_failure_detail;
-                uint8_t saved_err = serial_failure_io_error;
-                uint16_t saved_st = serial_failure_status;
-
-                if (n > DEBUG_PEEK_MAX) n = DEBUG_PEEK_MAX;
-                if (serial_cmd_read(debug_peek, n, 50) == FN_OK) {
-                    n = serial_req->IOSer.io_Actual;
-                    if (n > DEBUG_PEEK_MAX) n = DEBUG_PEEK_MAX;
-                    debug_peek_len = (uint8_t)n;
-                }
-                serial_failure_detail = saved_detail;
-                serial_failure_io_error = saved_err;
-                serial_failure_status = saved_st;
+        if (DoIO((struct IORequest *)serial_req) == 0) {
+            if (fn_serial_note_hidden_overrun(
+                    0, (unsigned)serial_req->io_Status, &serial_hidden_overrun)) {
+                serial_failure_detail = FUJINET_NIO_DETAIL_SERIAL_READ;
+                serial_failure_io_error = 0;
+                serial_failure_status = serial_req->io_Status;
             }
-            serial_failure_io_error =
-                debug_bytes_got > 255U ? 255U : (uint8_t)debug_bytes_got;
-            serial_failure_status =
-                (UWORD)((shown > 255U ? 255U : (uint8_t)shown) << 8);
+            if (serial_failure_io_error == 0 && serial_failure_status == 0) {
+                uint16_t got = (uint16_t)serial_req->io_ExtFlags;
+                uint16_t disc_w = (uint16_t)(serial_req->io_CtlChar >> 16);
+                uint16_t shown = got != 0U ? got : disc_w;
+
+                if (debug_peek_len == 0 && serial_req->IOSer.io_Actual != 0) {
+                    ULONG n = serial_req->IOSer.io_Actual;
+                    uint8_t saved_detail = serial_failure_detail;
+                    uint8_t saved_err = serial_failure_io_error;
+                    uint16_t saved_st = serial_failure_status;
+
+                    if (n > DEBUG_PEEK_MAX) n = DEBUG_PEEK_MAX;
+                    if (serial_cmd_read(debug_peek, n, 50, 0) == FN_OK) {
+                        n = serial_req->IOSer.io_Actual;
+                        if (n > DEBUG_PEEK_MAX) n = DEBUG_PEEK_MAX;
+                        debug_peek_len = (uint8_t)n;
+                    }
+                    serial_failure_detail = saved_detail;
+                    serial_failure_io_error = saved_err;
+                    serial_failure_status = saved_st;
+                }
+                serial_failure_io_error =
+                    debug_bytes_got > 255U ? 255U : (uint8_t)debug_bytes_got;
+                serial_failure_status =
+                    (UWORD)((shown > 255U ? 255U : (uint8_t)shown) << 8);
+            }
         }
     }
     if (detail != NULL) {
@@ -705,6 +734,15 @@ uint8_t backend_exchange(
     if (native_status != NULL)
         *native_status = serial_failure_status;
     result = fn_serial_channel_map_session_result(session_result, &channel_error);
+    /* Paula OVRUN can complete CMD_READ/QUERY with io_Error=0. That used to
+     * surface as SESSION_IO (cause=3). Keep delivering bytes so SLIP can
+     * close, then classify the exchange as SERIAL_READ (cause=7) with
+     * status high byte 1. */
+    if (serial_hidden_overrun) {
+        result = FN_ERR_TRANSPORT;
+        if (detail != NULL)
+            *detail = FUJINET_NIO_DETAIL_SERIAL_READ;
+    }
     /*
      * Timeout, Paula overrun (cause=7), and leftover SLIP (cause=3) all leave
      * bytes on the wire. ESP chunk pacing can still be transmitting (2 ms

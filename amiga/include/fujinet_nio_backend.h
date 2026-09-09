@@ -17,7 +17,8 @@
 /* CMD_READ failed after session_flush drained IO_STATF_OVERRUN via a
  * sacrificial CMD_READ — the flag was visible to flush but the subsequent
  * CMD_READ still hit an error.  Distinguishes from SERIAL_READ (cause=7)
- * where the flush drain never triggered. */
+ * where the flush drain never triggered, or Paula OVRUN was latched in
+ * io_Status while io_Error stayed 0 (hidden overrun). */
 #define FUJINET_NIO_DETAIL_FLUSH_DRAINED_THEN_READ_FAILED 9
 
 uint8_t backend_open(void);
