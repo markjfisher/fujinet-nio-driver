@@ -26,13 +26,26 @@
 #define DEVICE_NAME FUJINET_SERIAL_DEVICE_NAME
 #define DEVICE_VERSION 0
 #define DEVICE_BAUD_DEFAULT 19200UL
-#define TBE_SPIN_MAX 2000000UL
+/* SETPARAMS only: RBF is masked while waiting TSRE. Not used for CMD_WRITE. */
+#define TSRE_WAIT_SPINS 2000000UL
 
 #define READ_IDLE 0
 #define READ_PENDING 1
 #define READ_COMPLETING 2
 #define READ_ABORTING 3
 #define READ_REPLIED 4
+
+#define WRITE_IDLE 0
+#define WRITE_PENDING 1
+#define WRITE_COMPLETING 2
+#define WRITE_ABORTING 3
+#define WRITE_REPLIED 4
+
+#define WRITE_OWNER_NONE 0
+#define WRITE_OWNER_TBE 1
+#define WRITE_OWNER_ABORT 2
+#define WRITE_OWNER_FLUSH 3
+#define WRITE_OWNER_CLOSE 4
 
 #define paula (*(volatile struct Custom *)0xdff000)
 
@@ -51,8 +64,12 @@ struct fujinet_serial_rbf_data {
 struct fujinet_serial_tbe_data {
     const uint8_t *buf;
     ULONG remaining;
-    volatile UBYTE done;
-    UBYTE pad[3];
+    ULONG committed;
+    ULONG length;
+    struct Interrupt *soft_int;
+    uint16_t tbe_fire;
+    UBYTE accepted;
+    UBYTE pad;
 };
 
 struct fujinet_serial_base {
@@ -62,6 +79,7 @@ struct fujinet_serial_base {
     struct Interrupt rbf_int;
     struct Interrupt tbe_int;
     struct Interrupt soft_int;
+    struct Interrupt write_soft_int;
     uint8_t rx_buf[FUJINET_PAULA_RX_DEFAULT_SIZE];
     struct fujinet_serial_rbf_data rbf_data;
     struct fujinet_serial_tbe_data tbe_data;
@@ -69,7 +87,15 @@ struct fujinet_serial_base {
     struct Interrupt *old_rbf;
     struct Interrupt *old_tbe;
     struct IOExtSer *pending_read;
+    struct IOExtSer *pending_write;
     UBYTE read_state;
+    UBYTE write_state;
+    UBYTE last_write_owner;
+    BYTE last_write_error;
+    ULONG last_write_length;
+    ULONG last_write_committed;
+    ULONG last_write_actual;
+    uint16_t last_tbe_fire;
     UBYTE rbf_installed;
     UBYTE rbf_was_enabled;
     UBYTE tbe_was_enabled;
@@ -89,7 +115,10 @@ struct Library *MiscBase;
 extern void fujinet_serial_rbf_server(void);
 extern void fujinet_serial_tbe_server(void);
 extern void fujinet_serial_softint(void);
+extern void fujinet_serial_write_softint(void);
 void fujinet_serial_complete_read(
+    register struct fujinet_serial_base *base FN_REGISTER("a1"));
+void fujinet_serial_complete_write(
     register struct fujinet_serial_base *base FN_REGISTER("a1"));
 
 typedef char fn_rbf_off_buf_ok[
@@ -122,12 +151,20 @@ typedef char fn_tbe_off_buf_ok[
     offsetof(struct fujinet_serial_tbe_data, buf) == 0 ? 1 : -1];
 typedef char fn_tbe_off_rem_ok[
     offsetof(struct fujinet_serial_tbe_data, remaining) == 4 ? 1 : -1];
-typedef char fn_tbe_off_done_ok[
-    offsetof(struct fujinet_serial_tbe_data, done) == 8 ? 1 : -1];
+typedef char fn_tbe_off_committed_ok[
+    offsetof(struct fujinet_serial_tbe_data, committed) == 8 ? 1 : -1];
+typedef char fn_tbe_off_len_ok[
+    offsetof(struct fujinet_serial_tbe_data, length) == 12 ? 1 : -1];
+typedef char fn_tbe_off_soft_ok[
+    offsetof(struct fujinet_serial_tbe_data, soft_int) == 16 ? 1 : -1];
+typedef char fn_tbe_off_fire_ok[
+    offsetof(struct fujinet_serial_tbe_data, tbe_fire) == 20 ? 1 : -1];
+typedef char fn_tbe_off_accepted_ok[
+    offsetof(struct fujinet_serial_tbe_data, accepted) == 22 ? 1 : -1];
 
 static const char device_name[] = DEVICE_NAME;
 static const char device_id[] =
-    "$VER: " DEVICE_NAME " 0.10 (9.9.2026) \xa9 2026 Mark Fisher\r\n";
+    "$VER: " DEVICE_NAME " 0.11 (10.9.2026) \xa9 2026 Mark Fisher\r\n";
 
 static int pal_display(void)
 {
@@ -192,7 +229,7 @@ static void wait_tx_idle(void)
     ULONG spin = 0;
 
     while ((paula.serdatr & FUJINET_PAULA_SERDATR_TSRE) == 0) {
-        if (++spin >= TBE_SPIN_MAX) return;
+        if (++spin >= TSRE_WAIT_SPINS) return;
     }
 }
 
@@ -243,6 +280,33 @@ static void rearm_receive(struct fujinet_serial_base *base)
     paula.intena = (UWORD)(INTF_SETCLR | INTF_RBF);
     base->receive_armed = 1;
     Enable();
+}
+
+static struct IOExtSer *take_pending_write(struct fujinet_serial_base *base,
+                                           UBYTE next, UBYTE owner)
+{
+    struct IOExtSer *req;
+
+    if (base->write_state != WRITE_PENDING || base->pending_write == NULL)
+        return NULL;
+    req = base->pending_write;
+    base->write_state = next;
+    base->pending_write = NULL;
+    base->last_write_owner = owner;
+    base->last_write_length = base->tbe_data.length;
+    base->last_write_committed = base->tbe_data.committed;
+    base->last_tbe_fire = base->tbe_data.tbe_fire;
+    paula.intena = (UWORD)INTF_TBE;
+    base->tbe_data.remaining = 0;
+    return req;
+}
+
+static void record_write_reply(struct fujinet_serial_base *base, ULONG actual,
+                               BYTE err)
+{
+    base->last_write_actual = actual;
+    base->last_write_error = err;
+    base->write_state = WRITE_REPLIED;
 }
 
 static struct IOExtSer *take_pending(struct fujinet_serial_base *base, UBYTE next)
@@ -311,6 +375,26 @@ void fujinet_serial_complete_read(
     reply_request(req, 0);
 }
 
+void fujinet_serial_complete_write(
+    register struct fujinet_serial_base *base FN_REGISTER("a1"))
+{
+    struct IOExtSer *req;
+    ULONG actual;
+
+    Disable();
+    req = take_pending_write(base, WRITE_COMPLETING, WRITE_OWNER_TBE);
+    if (req == NULL) {
+        Enable();
+        return;
+    }
+    actual = base->last_write_committed;
+    req->IOSer.io_Actual = actual;
+    base->fire_at_tx_queued = base->rbf_data.rbf_fire;
+    record_write_reply(base, actual, 0);
+    Enable();
+    reply_request(req, 0);
+}
+
 static BYTE claim_misc(struct fujinet_serial_base *base)
 {
     if (MiscBase == NULL) {
@@ -343,15 +427,15 @@ static void release_misc(struct fujinet_serial_base *base)
 
 static void release_paula(struct fujinet_serial_base *base)
 {
-    struct IOExtSer *pending;
+    struct IOExtSer *pending_read;
+    struct IOExtSer *pending_write;
 
     if (!base->port_claimed && !base->bits_claimed && !base->rbf_installed)
         return;
     Disable();
     base->closing = 1;
-    pending = take_pending(base, READ_ABORTING);
-    base->tbe_data.remaining = 0;
-    base->tbe_data.done = 1;
+    pending_write = take_pending_write(base, WRITE_ABORTING, WRITE_OWNER_CLOSE);
+    pending_read = take_pending(base, READ_ABORTING);
     paula.intena = (UWORD)(INTF_RBF | INTF_TBE);
     base->receive_armed = 0;
     drain_rbf_locked(base);
@@ -369,15 +453,23 @@ static void release_paula(struct fujinet_serial_base *base)
     base->old_rbf = NULL;
     base->old_tbe = NULL;
     base->pending_read = NULL;
+    base->pending_write = NULL;
     base->rbf_data.pending_need = 0;
-    if (pending != NULL) {
-        pending->IOSer.io_Actual = 0;
-        base->read_state = READ_REPLIED;
-        Enable();
-        reply_request(pending, IOERR_ABORTED);
-    } else {
-        Enable();
+    if (pending_write != NULL) {
+        ULONG actual = base->last_write_committed;
+
+        pending_write->IOSer.io_Actual = actual;
+        record_write_reply(base, actual, IOERR_ABORTED);
     }
+    if (pending_read != NULL) {
+        pending_read->IOSer.io_Actual = 0;
+        base->read_state = READ_REPLIED;
+    }
+    Enable();
+    if (pending_write != NULL)
+        reply_request(pending_write, IOERR_ABORTED);
+    if (pending_read != NULL)
+        reply_request(pending_read, IOERR_ABORTED);
     release_misc(base);
 }
 
@@ -391,7 +483,15 @@ static BYTE claim_paula(struct fujinet_serial_base *base, uint32_t baud)
     base->baud = baud;
     base->closing = 0;
     base->pending_read = NULL;
+    base->pending_write = NULL;
     base->read_state = READ_IDLE;
+    base->write_state = WRITE_IDLE;
+    base->last_write_owner = WRITE_OWNER_NONE;
+    base->last_write_error = 0;
+    base->last_write_length = 0;
+    base->last_write_committed = 0;
+    base->last_write_actual = 0;
+    base->last_tbe_fire = 0;
     base->rbf_data.pending_need = 0;
     base->rbf_data.rbf_fire = 0;
     base->rbf_data.ingest = 0;
@@ -404,7 +504,10 @@ static BYTE claim_paula(struct fujinet_serial_base *base, uint32_t baud)
     base->fire_at_tx_queued = 0;
     base->tbe_data.buf = NULL;
     base->tbe_data.remaining = 0;
-    base->tbe_data.done = 1;
+    base->tbe_data.committed = 0;
+    base->tbe_data.length = 0;
+    base->tbe_data.tbe_fire = 0;
+    base->tbe_data.accepted = 0;
     err = claim_misc(base);
     if (err != 0) return err;
 
@@ -438,7 +541,15 @@ static BYTE claim_paula(struct fujinet_serial_base *base, uint32_t baud)
     base->soft_int.is_Data = base;
     base->soft_int.is_Code = (void (*)())fujinet_serial_softint;
 
+    memset(&base->write_soft_int, 0, sizeof(base->write_soft_int));
+    base->write_soft_int.is_Node.ln_Type = NT_INTERRUPT;
+    base->write_soft_int.is_Node.ln_Pri = 0;
+    base->write_soft_int.is_Node.ln_Name = (char *)device_name;
+    base->write_soft_int.is_Data = base;
+    base->write_soft_int.is_Code = (void (*)())fujinet_serial_write_softint;
+
     base->rbf_data.soft_int = &base->soft_int;
+    base->tbe_data.soft_int = &base->write_soft_int;
     base->old_rbf = SetIntVector(INTB_RBF, &base->rbf_int);
     base->old_tbe = SetIntVector(INTB_TBE, &base->tbe_int);
     base->rbf_installed = 1;
@@ -523,8 +634,11 @@ static void cmd_write(struct fujinet_serial_base *base, struct IOExtSer *req)
 {
     ULONG length = req->IOSer.io_Length;
     const uint8_t *data = (const uint8_t *)req->IOSer.io_Data;
-    ULONG spin;
 
+    if (base->closing) {
+        finish(req, IOERR_OPENFAIL);
+        return;
+    }
     if (length != 0 && data == NULL) {
         req->IOSer.io_Actual = 0;
         finish(req, IOERR_BADADDRESS);
@@ -532,6 +646,11 @@ static void cmd_write(struct fujinet_serial_base *base, struct IOExtSer *req)
     }
     rearm_receive(base);
     Disable();
+    if (base->write_state == WRITE_PENDING) {
+        Enable();
+        finish(req, IOERR_UNITBUSY);
+        return;
+    }
     /* Leftover drain must not be recorded as the response's first byte. */
     base->rbf_data.capture_first = 0;
     drain_rbf_locked(base);
@@ -550,42 +669,37 @@ static void cmd_write(struct fujinet_serial_base *base, struct IOExtSer *req)
         finish(req, 0);
         return;
     }
-    /* RBF is already armed. Enable interrupts before TBE writes SERDAT so
-     * the opening response byte can preempt transmit. */
+    req->IOSer.io_Flags &= (UBYTE)~IOF_QUICK;
+    base->pending_write = req;
+    base->write_state = WRITE_PENDING;
+    base->last_write_owner = WRITE_OWNER_NONE;
+    base->last_write_length = length;
+    base->last_write_committed = 0;
+    base->last_write_actual = 0;
+    base->last_write_error = 0;
+    base->last_tbe_fire = 0;
     base->tbe_data.buf = data;
     base->tbe_data.remaining = length;
-    base->tbe_data.done = 0;
+    base->tbe_data.committed = 0;
+    base->tbe_data.length = length;
+    base->tbe_data.tbe_fire = 0;
+    base->tbe_data.accepted = 0;
+    /* RBF is armed. Enable CPU interrupts before TBE writes SERDAT so a
+     * response byte can preempt transmit. Do not wait here: TBE Causes a
+     * software interrupt when the extra TBE after the last SERDAT write
+     * shows the final byte has been accepted by Paula's transmit shift
+     * register. That is CMD_WRITE complete; it is not TSRE / wire-idle. */
     Enable();
     paula.intena = (UWORD)(INTF_SETCLR | INTF_TBE);
     paula.intreq = (UWORD)(INTF_SETCLR | INTF_TBE);
-    spin = 0;
-    while (base->tbe_data.done == 0) {
-        if (++spin >= TBE_SPIN_MAX) break;
-    }
-    Disable();
-    paula.intena = (UWORD)INTF_TBE;
-    base->fire_at_tx_queued = base->rbf_data.rbf_fire;
-    if (base->tbe_data.done == 0 && base->tbe_data.remaining != 0) {
-        ULONG sent = length - base->tbe_data.remaining;
-
-        base->tbe_data.remaining = 0;
-        drain_rbf_locked(base);
-        Enable();
-        req->IOSer.io_Actual = sent;
-        finish(req, SerErr_LineErr);
-        return;
-    }
-    drain_rbf_locked(base);
-    Enable();
-    req->IOSer.io_Actual = length;
-    finish(req, 0);
 }
 
 static void cmd_setparams(struct fujinet_serial_base *base, struct IOExtSer *req)
 {
     uint32_t baud = req->io_Baud;
 
-    if (base->read_state == READ_PENDING) {
+    if (base->read_state == READ_PENDING ||
+        base->write_state == WRITE_PENDING) {
         finish(req, SerErr_InvParam);
         return;
     }
@@ -608,20 +722,29 @@ static void cmd_setparams(struct fujinet_serial_base *base, struct IOExtSer *req
 
 static void cmd_clear(struct fujinet_serial_base *base, struct IOExtSer *req)
 {
-    struct IOExtSer *pending;
+    struct IOExtSer *pending_read;
+    struct IOExtSer *pending_write;
+    ULONG write_actual = 0;
 
     Disable();
-    pending = take_pending(base, READ_ABORTING);
+    pending_write = take_pending_write(base, WRITE_ABORTING, WRITE_OWNER_FLUSH);
+    if (pending_write != NULL) write_actual = base->last_write_committed;
+    pending_read = take_pending(base, READ_ABORTING);
     drain_rbf_locked(base);
     fujinet_paula_rx_clear(&base->rbf_data.rx);
-    if (pending != NULL) {
-        pending->IOSer.io_Actual = 0;
-        base->read_state = READ_REPLIED;
-        Enable();
-        reply_request(pending, IOERR_ABORTED);
-    } else {
-        Enable();
+    if (pending_write != NULL) {
+        pending_write->IOSer.io_Actual = write_actual;
+        record_write_reply(base, write_actual, IOERR_ABORTED);
     }
+    if (pending_read != NULL) {
+        pending_read->IOSer.io_Actual = 0;
+        base->read_state = READ_REPLIED;
+    }
+    Enable();
+    if (pending_write != NULL)
+        reply_request(pending_write, IOERR_ABORTED);
+    if (pending_read != NULL)
+        reply_request(pending_read, IOERR_ABORTED);
     req->IOSer.io_Actual = 0;
     req->io_Status = 0;
     finish(req, 0);
@@ -629,23 +752,32 @@ static void cmd_clear(struct fujinet_serial_base *base, struct IOExtSer *req)
 
 static void cmd_flush(struct fujinet_serial_base *base, struct IOExtSer *req)
 {
-    struct IOExtSer *pending;
+    struct IOExtSer *pending_read;
+    struct IOExtSer *pending_write;
+    ULONG write_actual = 0;
 
     Disable();
-    pending = take_pending(base, READ_ABORTING);
+    pending_write = take_pending_write(base, WRITE_ABORTING, WRITE_OWNER_FLUSH);
+    if (pending_write != NULL) write_actual = base->last_write_committed;
+    pending_read = take_pending(base, READ_ABORTING);
     drain_rbf_locked(base);
     fujinet_paula_rx_clear(&base->rbf_data.rx);
     /* Stay armed. PiStorm 38400: first request after FLUSH-quiesce timed
      * out with no RX (cause=4) even with 16/2000 pacing; later trials in
      * the same command succeeded after timeout closed and reopened. */
-    if (pending != NULL) {
-        pending->IOSer.io_Actual = 0;
-        base->read_state = READ_REPLIED;
-        Enable();
-        reply_request(pending, IOERR_ABORTED);
-    } else {
-        Enable();
+    if (pending_write != NULL) {
+        pending_write->IOSer.io_Actual = write_actual;
+        record_write_reply(base, write_actual, IOERR_ABORTED);
     }
+    if (pending_read != NULL) {
+        pending_read->IOSer.io_Actual = 0;
+        base->read_state = READ_REPLIED;
+    }
+    Enable();
+    if (pending_write != NULL)
+        reply_request(pending_write, IOERR_ABORTED);
+    if (pending_read != NULL)
+        reply_request(pending_read, IOERR_ABORTED);
     req->IOSer.io_Actual = 0;
     req->io_Status = 0;
     finish(req, 0);
@@ -785,6 +917,20 @@ static LONG device_abort_io(
     struct IOExtSer *taken;
 
     Disable();
+    if (base->pending_write == req) {
+        ULONG actual = base->tbe_data.committed;
+
+        taken = take_pending_write(base, WRITE_ABORTING, WRITE_OWNER_ABORT);
+        if (taken != NULL) {
+            taken->IOSer.io_Actual = actual;
+            record_write_reply(base, actual, IOERR_ABORTED);
+            Enable();
+            reply_request(taken, IOERR_ABORTED);
+            return 0;
+        }
+        Enable();
+        return 0;
+    }
     if (base->pending_read != req) {
         Enable();
         return 0;

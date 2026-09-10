@@ -28,9 +28,12 @@
 #define OFF_FIRST_BYTE  25
 #define OFF_FIRST_SER   26
 
-#define OFF_TX_BUF  0
-#define OFF_TX_REM  4
-#define OFF_TX_DONE 8
+#define OFF_TX_BUF        0
+#define OFF_TX_REM        4
+#define OFF_TX_COMMITTED  8
+#define OFF_TX_SOFTINT    16
+#define OFF_TBE_FIRE      20
+#define OFF_TX_ACCEPTED   22
 
         .text
         .align  2
@@ -105,12 +108,20 @@ _fujinet_serial_softint:
         movem.l (%sp)+,%d2-%d7/%a2-%a6
         rts
 
+        .globl  _fujinet_serial_write_softint
+_fujinet_serial_write_softint:
+        movem.l %d2-%d7/%a2-%a6,-(%sp)
+        jsr     _fujinet_serial_complete_write
+        movem.l (%sp)+,%d2-%d7/%a2-%a6
+        rts
+
         .globl  _fujinet_serial_tbe_server
 _fujinet_serial_tbe_server:
         btst    #INTB_TBE,%d1
         beq.s   .tbe_exit
 
         move.w  #INTF_TBE,INTREQ_OFF(%a0)
+        addq.w  #1,OFF_TBE_FIRE(%a1)
 
         move.l  OFF_TX_REM(%a1),%d0
         beq.s   .tbe_done
@@ -123,10 +134,18 @@ _fujinet_serial_tbe_server:
         move.l  %a5,OFF_TX_BUF(%a1)
         ori.w   #0x0100,%d0
         move.w  %d0,SERDAT_OFF(%a0)
+        addq.l  #1,OFF_TX_COMMITTED(%a1)
         rts
 
 .tbe_done:
+        /*
+         * Extra TBE: last byte has left SERDAT into the shift register.
+         * That is CMD_WRITE complete, not TSRE / wire-idle.
+         */
         move.w  #INTF_TBE,INTENA_OFF(%a0)
-        move.b  #1,OFF_TX_DONE(%a1)
+        move.b  #1,OFF_TX_ACCEPTED(%a1)
+        move.l  OFF_TX_SOFTINT(%a1),%a1
+        beq.s   .tbe_exit
+        jsr     _LVOCause(%a6)
 .tbe_exit:
         rts

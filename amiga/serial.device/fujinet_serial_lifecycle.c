@@ -20,6 +20,23 @@ static int take_pending(fn_serial_lc_t *lc, fn_serial_lc_read_state_t next)
     return 1;
 }
 
+static int take_pending_write(fn_serial_lc_t *lc,
+                              fn_serial_lc_write_state_t next, int owner)
+{
+    if (lc->write_state != FN_SERIAL_LC_WRITE_PENDING || !lc->pending_write)
+        return 0;
+    lc->write_state = next;
+    lc->pending_write = 0;
+    lc->last_write_owner = owner;
+    lc->last_write_length = lc->write_length;
+    lc->last_write_committed = lc->write_committed;
+    lc->last_tbe_fire = lc->tbe_fire;
+    lc->tbe_intena = 0;
+    lc->tbe_intreq = 0;
+    lc->write_remaining = 0;
+    return 1;
+}
+
 static void reply_read(fn_serial_lc_t *lc, int error, unsigned actual)
 {
     lc->read_error = error;
@@ -27,6 +44,16 @@ static void reply_read(fn_serial_lc_t *lc, int error, unsigned actual)
     lc->read_need = 0;
     lc->reply_count += 1;
     lc->read_state = FN_SERIAL_LC_READ_REPLIED;
+}
+
+static void reply_write(fn_serial_lc_t *lc, int error, unsigned actual)
+{
+    lc->write_error = error;
+    lc->write_actual = actual;
+    lc->last_write_actual = actual;
+    lc->last_write_error = error;
+    lc->reply_count += 1;
+    lc->write_state = FN_SERIAL_LC_WRITE_REPLIED;
 }
 
 static void ack_rbf_once(fn_serial_lc_t *lc)
@@ -95,10 +122,21 @@ static void release_resources(fn_serial_lc_t *lc)
 static void teardown_paula(fn_serial_lc_t *lc)
 {
     lc->closing = 1;
+    lc->write_resolved_before_vector = 0;
+    lc->write_pending_at_vector_restore = 0;
+    if (take_pending_write(lc, FN_SERIAL_LC_WRITE_ABORTING,
+                           FN_SERIAL_LC_WRITE_OWNER_CLOSE)) {
+        reply_write(lc, FN_SERIAL_LC_ABORTED, lc->last_write_committed);
+        lc->write_resolved_before_vector = 1;
+    }
     if (take_pending(lc, FN_SERIAL_LC_READ_ABORTING))
         reply_read(lc, FN_SERIAL_LC_ABORTED, 0);
+    lc->tbe_intena = 0;
+    lc->tbe_intreq = 0;
     quiesce_receive(lc);
     drain_rbf(lc);
+    if (lc->write_state == FN_SERIAL_LC_WRITE_PENDING)
+        lc->write_pending_at_vector_restore = 1;
     if (lc->rbf_vector == lc->fujinet_handler && lc->vector_installed) {
         lc->rbf_vector = lc->saved_vector;
         lc->rbf_intena = lc->rbf_was_enabled;
@@ -130,6 +168,7 @@ int fn_serial_lc_setparams(fn_serial_lc_t *lc, uint32_t baud, unsigned read_len,
 {
     if (lc->open_cnt == 0U) return FN_SERIAL_LC_OPENFAIL;
     if (lc->read_state == FN_SERIAL_LC_READ_PENDING) return FN_SERIAL_LC_NOCMD;
+    if (lc->write_state == FN_SERIAL_LC_WRITE_PENDING) return FN_SERIAL_LC_NOCMD;
     if (baud < FUJINET_SERIAL_BAUD_MIN || baud > FUJINET_SERIAL_BAUD_MAX)
         return FN_SERIAL_LC_NOCMD;
     if (!fujinet_serial_params_valid(baud, read_len, write_len, stop_bits,
@@ -186,6 +225,10 @@ int fn_serial_lc_open_at_baud(fn_serial_lc_t *lc, uint32_t baud)
     lc->vector_installed = 1;
     lc->rbf_intena = 1;
     lc->receive_armed = 1;
+    lc->tbe_intena = 0;
+    lc->tbe_intreq = 0;
+    lc->write_state = FN_SERIAL_LC_WRITE_IDLE;
+    lc->pending_write = 0;
     lc->closing = 0;
     lc->open_cnt = 1U;
     lc->lib_flags &= ~FN_SERIAL_LC_DELEXP;
@@ -281,9 +324,17 @@ int fn_serial_lc_abort(fn_serial_lc_t *lc)
 
 int fn_serial_lc_clear(fn_serial_lc_t *lc)
 {
-    int aborted = take_pending(lc, FN_SERIAL_LC_READ_ABORTING);
+    int aborted = 0;
 
-    if (aborted) reply_read(lc, FN_SERIAL_LC_ABORTED, 0);
+    if (take_pending_write(lc, FN_SERIAL_LC_WRITE_ABORTING,
+                           FN_SERIAL_LC_WRITE_OWNER_FLUSH)) {
+        reply_write(lc, FN_SERIAL_LC_ABORTED, lc->last_write_committed);
+        aborted = 1;
+    }
+    if (take_pending(lc, FN_SERIAL_LC_READ_ABORTING)) {
+        reply_read(lc, FN_SERIAL_LC_ABORTED, 0);
+        aborted = 1;
+    }
     drain_rbf(lc);
     fujinet_paula_rx_clear(&lc->rx);
     return aborted ? FN_SERIAL_LC_ABORTED : FN_SERIAL_LC_OK;
@@ -291,9 +342,17 @@ int fn_serial_lc_clear(fn_serial_lc_t *lc)
 
 int fn_serial_lc_flush(fn_serial_lc_t *lc)
 {
-    int aborted = take_pending(lc, FN_SERIAL_LC_READ_ABORTING);
+    int aborted = 0;
 
-    if (aborted) reply_read(lc, FN_SERIAL_LC_ABORTED, 0);
+    if (take_pending_write(lc, FN_SERIAL_LC_WRITE_ABORTING,
+                           FN_SERIAL_LC_WRITE_OWNER_FLUSH)) {
+        reply_write(lc, FN_SERIAL_LC_ABORTED, lc->last_write_committed);
+        aborted = 1;
+    }
+    if (take_pending(lc, FN_SERIAL_LC_READ_ABORTING)) {
+        reply_read(lc, FN_SERIAL_LC_ABORTED, 0);
+        aborted = 1;
+    }
     drain_rbf(lc);
     fujinet_paula_rx_clear(&lc->rx);
     return aborted ? FN_SERIAL_LC_ABORTED : FN_SERIAL_LC_OK;
@@ -307,19 +366,109 @@ int fn_serial_lc_query(fn_serial_lc_t *lc, unsigned *count, int *overrun)
     return FN_SERIAL_LC_OK;
 }
 
-int fn_serial_lc_write_byte(fn_serial_lc_t *lc, uint8_t byte)
+int fn_serial_lc_write(fn_serial_lc_t *lc, const uint8_t *data, unsigned length)
 {
     int armed_before;
 
-    (void)byte;
-    if (lc->open_cnt == 0U) return FN_SERIAL_LC_OPENFAIL;
+    if (lc->closing || lc->open_cnt == 0U) return FN_SERIAL_LC_OPENFAIL;
+    if (length != 0U && data == NULL) return FN_SERIAL_LC_NOCMD;
+    if (lc->write_state == FN_SERIAL_LC_WRITE_PENDING) return FN_SERIAL_LC_BUSY;
     armed_before = lc->receive_armed;
     rearm_receive(lc);
     drain_rbf(lc);
     fujinet_paula_rx_clear(&lc->rx);
     if (!armed_before && !lc->receive_armed) lc->tx_while_masked = 1;
     if (!lc->receive_armed) lc->tx_while_masked = 1;
+    if (length == 0U) {
+        lc->write_length = 0;
+        lc->write_committed = 0;
+        reply_write(lc, FN_SERIAL_LC_OK, 0);
+        return FN_SERIAL_LC_OK;
+    }
+    lc->write_buf = data;
+    lc->write_remaining = length;
+    lc->write_committed = 0;
+    lc->write_length = length;
+    lc->write_accepted = 0;
+    lc->write_softint_pending = 0;
+    lc->write_actual = 0;
+    lc->write_error = FN_SERIAL_LC_OK;
+    lc->last_write_owner = FN_SERIAL_LC_WRITE_OWNER_NONE;
+    lc->last_write_length = length;
+    lc->last_write_committed = 0;
+    lc->last_write_actual = 0;
+    lc->last_write_error = 0;
+    lc->tbe_fire = 0;
+    lc->pending_write = 1;
+    lc->write_state = FN_SERIAL_LC_WRITE_PENDING;
+    /* RBF is already armed. Kick TBE only after that. */
+    lc->tbe_intena = 1;
+    lc->tbe_intreq = 1;
+    return FN_SERIAL_LC_OK;
+}
+
+void fn_serial_lc_tbe_handler(fn_serial_lc_t *lc)
+{
+    if (!lc->inten_master || !lc->tbe_intena || !lc->tbe_intreq) return;
+    lc->tbe_intreq = 0;
+    lc->tbe_fire += 1U;
+    if (lc->write_remaining == 0U) {
+        /*
+         * Extra TBE: last byte has left SERDAT into the shift register.
+         * That is CMD_WRITE complete, not TSRE / wire-idle.
+         */
+        lc->tbe_intena = 0;
+        lc->write_accepted = 1;
+        lc->write_softint_pending = 1;
+        lc->cause_count += 1;
+        return;
+    }
+    lc->write_remaining -= 1U;
+    if (lc->write_buf != NULL) lc->write_buf += 1;
     lc->tx_count += 1;
+    lc->write_committed += 1U;
+    lc->tbe_intreq = 1;
+}
+
+int fn_serial_lc_write_softint(fn_serial_lc_t *lc)
+{
+    unsigned actual;
+
+    lc->write_softint_pending = 0;
+    if (!take_pending_write(lc, FN_SERIAL_LC_WRITE_COMPLETING,
+                            FN_SERIAL_LC_WRITE_OWNER_TBE))
+        return 0;
+    actual = lc->last_write_committed;
+    reply_write(lc, FN_SERIAL_LC_OK, actual);
+    return 1;
+}
+
+int fn_serial_lc_abort_write(fn_serial_lc_t *lc)
+{
+    unsigned actual;
+
+    if (!take_pending_write(lc, FN_SERIAL_LC_WRITE_ABORTING,
+                            FN_SERIAL_LC_WRITE_OWNER_ABORT))
+        return 0;
+    actual = lc->last_write_committed;
+    reply_write(lc, FN_SERIAL_LC_ABORTED, actual);
+    return 1;
+}
+
+int fn_serial_lc_write_byte(fn_serial_lc_t *lc, uint8_t byte)
+{
+    uint8_t one = byte;
+    int rc;
+    unsigned guard = 0;
+
+    rc = fn_serial_lc_write(lc, &one, 1U);
+    if (rc != FN_SERIAL_LC_OK) return rc;
+    while (lc->write_state == FN_SERIAL_LC_WRITE_PENDING && guard < 8U) {
+        fn_serial_lc_tbe_handler(lc);
+        if (lc->write_softint_pending)
+            (void)fn_serial_lc_write_softint(lc);
+        guard += 1U;
+    }
     return FN_SERIAL_LC_OK;
 }
 

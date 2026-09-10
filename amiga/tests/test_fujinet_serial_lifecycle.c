@@ -191,8 +191,17 @@ static void test_tbe_handler_register_contract(void)
     CHECK("tbe-no-serdatr", strstr(start, "SERDATR") == NULL);
     CHECK("tbe-no-replymsg", strstr(start, "ReplyMsg") == NULL &&
           strstr(start, "_LVOReplyMsg") == NULL);
+    CHECK("tbe-cause-via-a6", strstr(start, "_LVOCause(%a6)") != NULL);
+    CHECK("tbe-committed-after-serdat",
+          strstr(start, "OFF_TX_COMMITTED") != NULL);
+    CHECK("tbe-accepted-not-wire-idle",
+          strstr(start, "OFF_TX_ACCEPTED") != NULL &&
+          strstr(start, "OFF_TX_DONE") == NULL);
     CHECK("tbe-no-d2", !token_present(start, "%d2"));
     CHECK("tbe-no-a2", !token_present(start, "%a2"));
+    CHECK("write-softint-separate",
+          strstr(src, "_fujinet_serial_write_softint") != NULL &&
+          strstr(src, "_fujinet_serial_complete_write") != NULL);
     free(src);
 }
 
@@ -216,6 +225,8 @@ static void test_write_rearm_before_tx(void)
         free(src);
         return;
     }
+    CHECK("device-no-tbe-spin-max", strstr(src, "TBE_SPIN_MAX") == NULL);
+    CHECK("abort-io-owns-write", strstr(src, "pending_write == req") != NULL);
     {
         char *end = strstr(fn + 1, "\nstatic void ");
         if (end != NULL) *end = '\0';
@@ -235,6 +246,15 @@ static void test_write_rearm_before_tx(void)
     CHECK("write-tbe-present", tbe != NULL);
     CHECK("write-no-rx-clear-after-tbe",
           tbe != NULL && strstr(tbe, "rx_clear") == NULL);
+    CHECK("write-no-tbe-spin-max", strstr(fn, "TBE_SPIN_MAX") == NULL);
+    CHECK("write-no-spin-wait", strstr(fn, "while (") == NULL &&
+          strstr(fn, "spin++") == NULL);
+    CHECK("write-no-done-poll", strstr(fn, ".done") == NULL);
+    CHECK("write-clears-iof-quick", strstr(fn, "IOF_QUICK") != NULL);
+    CHECK("write-claims-pending", strstr(fn, "pending_write") != NULL);
+    CHECK("write-beginio-no-reply",
+          tbe != NULL && strstr(tbe, "finish(") == NULL &&
+          strstr(tbe, "ReplyMsg") == NULL);
     free(src);
 }
 
@@ -529,12 +549,173 @@ static void test_open_baud_and_setparams_settle(void)
     CHECK("setparams-rate-change-armed", lc.receive_armed == 1);
 }
 
+static void pump_write(fn_serial_lc_t *lc, unsigned max_steps)
+{
+    unsigned guard = 0;
+
+    while (lc->write_state == FN_SERIAL_LC_WRITE_PENDING && guard < max_steps) {
+        fn_serial_lc_tbe_handler(lc);
+        if (lc->write_softint_pending)
+            (void)fn_serial_lc_write_softint(lc);
+        guard += 1U;
+    }
+}
+
+static void test_write_async_lifecycle(void)
+{
+    fn_serial_lc_t lc;
+    uint8_t small[3] = { 0xC0, 0x01, 0x02 };
+    uint8_t sector[526];
+    unsigned i;
+    int abort_won;
+    int soft_won;
+
+    memset(sector, 0x5A, sizeof(sector));
+
+    fn_serial_lc_init(&lc);
+    CHECK("open-small-write", fn_serial_lc_open(&lc) == FN_SERIAL_LC_OK);
+    CHECK("small-write-starts",
+          fn_serial_lc_write(&lc, small, sizeof(small)) == FN_SERIAL_LC_OK);
+    CHECK("small-write-pending",
+          lc.write_state == FN_SERIAL_LC_WRITE_PENDING &&
+          lc.pending_write == 1 && lc.reply_count == 0);
+    CHECK("small-rbf-armed-before-tx",
+          lc.receive_armed == 1 && lc.rbf_intena == 1 &&
+          lc.tx_while_masked == 0 && lc.write_committed == 0);
+    pump_write(&lc, 16);
+    CHECK("small-write-completes",
+          lc.write_state == FN_SERIAL_LC_WRITE_REPLIED &&
+          lc.pending_write == 0 && lc.reply_count == 1);
+    CHECK("small-write-full-actual",
+          lc.write_actual == sizeof(small) && lc.write_error == FN_SERIAL_LC_OK &&
+          lc.write_committed == sizeof(small) && lc.write_accepted == 1);
+    CHECK("small-write-owner-tbe",
+          lc.last_write_owner == FN_SERIAL_LC_WRITE_OWNER_TBE);
+    CHECK("small-tbe-extra-event", lc.tbe_fire == sizeof(small) + 1U);
+
+    fn_serial_lc_init(&lc);
+    CHECK("open-sector-write", fn_serial_lc_open(&lc) == FN_SERIAL_LC_OK);
+    CHECK("sector-write-starts",
+          fn_serial_lc_write(&lc, sector, sizeof(sector)) == FN_SERIAL_LC_OK);
+    CHECK("sector-stays-pending-unpumped",
+          lc.write_state == FN_SERIAL_LC_WRITE_PENDING && lc.reply_count == 0 &&
+          lc.write_committed == 0);
+    for (i = 0; i < sizeof(sector); ++i)
+        fn_serial_lc_tbe_handler(&lc);
+    CHECK("sector-all-bytes-accepted-still-pending",
+          lc.write_committed == sizeof(sector) &&
+          lc.write_remaining == 0 &&
+          lc.write_state == FN_SERIAL_LC_WRITE_PENDING &&
+          lc.write_accepted == 0 && lc.reply_count == 0);
+    fn_serial_lc_tbe_handler(&lc);
+    CHECK("sector-extra-tbe-defers",
+          lc.write_accepted == 1 && lc.write_softint_pending == 1 &&
+          lc.write_state == FN_SERIAL_LC_WRITE_PENDING &&
+          lc.tbe_intena == 0);
+    CHECK("sector-softint-completes", fn_serial_lc_write_softint(&lc) == 1);
+    CHECK("sector-io-actual-full",
+          lc.write_actual == sizeof(sector) &&
+          lc.write_error == FN_SERIAL_LC_OK &&
+          lc.last_write_length == sizeof(sector) &&
+          lc.pending_write == 0);
+    CHECK("sector-not-truncated",
+          lc.write_actual == 526U && lc.write_committed == 526U);
+
+    fn_serial_lc_init(&lc);
+    CHECK("open-busy-write", fn_serial_lc_open(&lc) == FN_SERIAL_LC_OK);
+    CHECK("first-write-pending",
+          fn_serial_lc_write(&lc, small, sizeof(small)) == FN_SERIAL_LC_OK);
+    CHECK("second-write-busy",
+          fn_serial_lc_write(&lc, small, sizeof(small)) == FN_SERIAL_LC_BUSY);
+    CHECK("setparams-while-write",
+          fn_serial_lc_setparams(&lc, 9600UL, 8U, 8U, 1U, 0) != FN_SERIAL_LC_OK);
+    CHECK("first-still-pending-write",
+          lc.write_state == FN_SERIAL_LC_WRITE_PENDING && lc.reply_count == 0);
+
+    fn_serial_lc_init(&lc);
+    CHECK("open-abort-write", fn_serial_lc_open(&lc) == FN_SERIAL_LC_OK);
+    CHECK("abort-write-start",
+          fn_serial_lc_write(&lc, sector, sizeof(sector)) == FN_SERIAL_LC_OK);
+    fn_serial_lc_tbe_handler(&lc);
+    fn_serial_lc_tbe_handler(&lc);
+    CHECK("abort-partial-committed", lc.write_committed == 2U);
+    CHECK("abort-write-stops", fn_serial_lc_abort_write(&lc) == 1);
+    CHECK("abort-write-error",
+          lc.write_error == FN_SERIAL_LC_ABORTED &&
+          lc.write_actual == 2U &&
+          lc.last_write_owner == FN_SERIAL_LC_WRITE_OWNER_ABORT);
+    CHECK("abort-write-tbe-off", lc.tbe_intena == 0 && lc.pending_write == 0);
+    CHECK("abort-write-one-reply", lc.reply_count == 1);
+    CHECK("abort-then-write-softint-noop",
+          fn_serial_lc_write_softint(&lc) == 0);
+    CHECK("abort-write-still-one-reply", lc.reply_count == 1);
+    fn_serial_lc_tbe_handler(&lc);
+    CHECK("abort-no-further-serdat", lc.write_committed == 2U);
+
+    fn_serial_lc_init(&lc);
+    CHECK("open-write-race-abort", fn_serial_lc_open(&lc) == FN_SERIAL_LC_OK);
+    CHECK("race-write",
+          fn_serial_lc_write(&lc, small, sizeof(small)) == FN_SERIAL_LC_OK);
+    for (i = 0; i < sizeof(small); ++i)
+        fn_serial_lc_tbe_handler(&lc);
+    fn_serial_lc_tbe_handler(&lc);
+    CHECK("race-write-cause", lc.write_softint_pending == 1);
+    abort_won = fn_serial_lc_abort_write(&lc);
+    soft_won = fn_serial_lc_write_softint(&lc);
+    CHECK("race-write-one-owner", abort_won + soft_won == 1);
+    CHECK("race-write-one-reply", lc.reply_count == 1 && lc.pending_write == 0);
+    CHECK("race-write-terminal",
+          lc.write_state == FN_SERIAL_LC_WRITE_REPLIED);
+
+    fn_serial_lc_init(&lc);
+    CHECK("open-write-race-tbe", fn_serial_lc_open(&lc) == FN_SERIAL_LC_OK);
+    CHECK("race-tbe-write",
+          fn_serial_lc_write(&lc, small, sizeof(small)) == FN_SERIAL_LC_OK);
+    pump_write(&lc, 16);
+    abort_won = fn_serial_lc_abort_write(&lc);
+    CHECK("race-tbe-wins", abort_won == 0 &&
+          lc.write_error == FN_SERIAL_LC_OK && lc.reply_count == 1);
+
+    fn_serial_lc_init(&lc);
+    CHECK("open-flush-write", fn_serial_lc_open(&lc) == FN_SERIAL_LC_OK);
+    CHECK("flush-write-start",
+          fn_serial_lc_write(&lc, sector, 40U) == FN_SERIAL_LC_OK);
+    fn_serial_lc_tbe_handler(&lc);
+    CHECK("flush-cancels-write", fn_serial_lc_flush(&lc) == FN_SERIAL_LC_ABORTED);
+    CHECK("flush-write-aborted",
+          lc.write_error == FN_SERIAL_LC_ABORTED &&
+          lc.last_write_owner == FN_SERIAL_LC_WRITE_OWNER_FLUSH &&
+          lc.pending_write == 0);
+    CHECK("flush-write-tbe-off", lc.tbe_intena == 0);
+    CHECK("flush-write-one-reply", lc.reply_count == 1);
+    CHECK("flush-write-keeps-armed",
+          lc.receive_armed == 1 && lc.rbf_intena == 1);
+    CHECK("flush-write-keeps-paula", lc.port_owned == 1 && lc.bits_owned == 1);
+
+    fn_serial_lc_init(&lc);
+    CHECK("open-close-write", fn_serial_lc_open(&lc) == FN_SERIAL_LC_OK);
+    CHECK("close-write-start",
+          fn_serial_lc_write(&lc, sector, sizeof(sector)) == FN_SERIAL_LC_OK);
+    CHECK("close-with-pending-write", fn_serial_lc_close(&lc) == FN_SERIAL_LC_OK);
+    CHECK("close-write-resolved",
+          lc.write_state == FN_SERIAL_LC_WRITE_REPLIED &&
+          lc.write_error == FN_SERIAL_LC_ABORTED &&
+          lc.pending_write == 0);
+    CHECK("close-write-before-vector",
+          lc.write_resolved_before_vector == 1 &&
+          lc.write_pending_at_vector_restore == 0);
+    CHECK("close-write-tbe-off", lc.tbe_intena == 0);
+    CHECK("close-write-resources-free",
+          lc.port_owned == 0 && lc.bits_owned == 0);
+}
+
 int main(void)
 {
     test_rbf_handler_register_contract();
     test_complete_read_enables_before_copy();
     test_tbe_handler_register_contract();
     test_write_rearm_before_tx();
+    test_write_async_lifecycle();
     test_misc_resource();
     test_rbf_drain();
     test_read_cause_and_abort();

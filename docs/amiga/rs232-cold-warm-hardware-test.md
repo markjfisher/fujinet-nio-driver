@@ -83,6 +83,13 @@ device-owned software interrupt completes a pending READ. `CMD_FLUSH` aborts
 a retained READ (`IOERR_ABORTED`) and clears the software queue **without**
 masking RBF. `CMD_WRITE` drains leftover `SERDATR` and discards the software
 queue immediately before TX so idle bytes are not parsed as the next frame.
+`CMD_WRITE` is asynchronous: `BeginIO` claims `pending_write`, arms TBE, and
+returns without `ReplyMsg()`. The extra TBE after the last `SERDAT` write
+means the final byte has been accepted by Paula's transmit shift register
+(not TSRE / wire-idle). A device-owned write software interrupt replies
+once with `io_Actual` equal to bytes committed to `SERDAT`. Do not wait
+TBE with a CPU iteration limit.
+
 `OpenDevice` programs `SERPER` from the request `io_Baud` (the broker fills
 this before `OpenDevice`). `SETPARAMS` waits for TX idle, applies `SERPER`,
 discards RX garbage, and leaves RBF armed.
@@ -97,8 +104,10 @@ then `SETPARAMS` jumped to 38400. 19200 first-open never took that jump.
 through `fujinet-serial.device` must print `result=0` / `status=0` and return
 to the Shell with no power-LED flash and no PiStorm reboot screen. Amiberry
 does not prove that. 38400 FLS / first file-list after idle must not sit in
-the 5 s QUERY timeout. Confirm the guest `fujinet-serial.device` is 0.10
-(`$VER`) and `fujinet-nio.device` is 0.9. Serial 0.10 keeps `A0` as the
+the 5 s QUERY timeout. Confirm the guest `fujinet-serial.device` is 0.11
+(`$VER`) and `fujinet-nio.device` is 0.9. Serial 0.11 completes `CMD_WRITE`
+from TBE (no `TBE_SPIN_MAX` busy-wait) so a 526-byte WRITE_SECTOR packet is
+not truncated on PiStorm/Emu68. Serial 0.10 keeps `A0` as the
 custom-chip base, uses Exec `D1` at RBF/TBE entry, acknowledges RBF
 immediately after sampling `SERDATR`, and `Enable()`s before the first
 TBE/`SERDAT` write. Serial 0.9 transmits via the
@@ -107,6 +116,21 @@ TBE interrupt so RBF stays live during the request (first-trial opening
 Serial 0.8 copies `CMD_READ`
 out of the ring with RBF still enabled, and the RBF drain keeps a live
 head pointer so `SERDATR` is emptied before the next character time.
+
+Sector-write acceptance after serial 0.11 (PiStorm/Emu68, 38400):
+
+```text
+fin 0 amiga-wifitest.adf
+fmount 0 DN0: RW
+ls DN0:
+echo "More data" >DN0:more.txt
+type DN0:more.txt
+```
+
+Expect no disk error requester, one complete ~526-byte WRITE_SECTOR FujiBus
+packet on the ESP (advertised length matches decoded length), no ~230–250-byte
+truncated write frames, and `more.txt` reading back correctly. Existing
+read-only disk tests must still pass.
 Serial 0.7 drained stacked RBF during TX (first-after-idle host-get was
 1–7 bytes short). Serial 0.5 polled `INTREQ` TBE
 while that interrupt was masked; WRITE failed `SerErr_LineErr` (`cause=5
@@ -218,7 +242,7 @@ prints `isr_first=.. hw_ov=.. c0_class=A|B|C`:
 - **B** — first ISR byte is not `C0`, no hardware overrun (`C0` arrived before RBF was armed, or was cleared/discarded).
 - **C** — first ISR byte is not `C0`, hardware overrun set (servicing latency lost `C0`).
 
-Reload `fujinet-serial.device` 0.10 and `fujinet-nio.device` 0.9, then repeat
+Reload `fujinet-serial.device` 0.11 and `fujinet-nio.device` 0.9, then repeat
 the cold 38400 50-trial file-list. A mid-run `cause=7` still means Paula
 OVRUN; the `c0_class` line says whether the opening END was in the ISR.
 
