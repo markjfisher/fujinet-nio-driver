@@ -78,7 +78,7 @@ struct ExecBase *SysBase;
 #ifndef FUJINET_NIO_NATIVE_TEST
 static const char device_name[] = DEVICE_NAME;
 static const char device_id[] =
-    "$VER: " DEVICE_NAME " 0.8 (9.9.2026) \xa9 2026 Mark Fisher\r\n";
+    "$VER: " DEVICE_NAME " 0.9 (9.9.2026) \xa9 2026 Mark Fisher\r\n";
 #endif
 
 static uint8_t pad_nonzero(const struct FujiNetNIORequest *req)
@@ -181,8 +181,18 @@ static void process_exchange(struct fujinet_nio_device_base *base,
         req->fn_pad[0] = completion_stage;
         req->fn_pad[1] = nio_error;
         req->fn_pad[2] = detail;
-        req->fn_flags = (UWORD)(native_io_error |
-            ((native_status >> 8) << 8));
+        /* Success keeps native=0. On a fault, native is serial io_Error if
+         * set, otherwise the first ISR RX byte after WRITE (C0 diagnostics).
+         * status-hi remains IO_STATF_OVERRUN. */
+        if (nio_error == FN_OK) {
+            req->fn_flags = (UWORD)(native_io_error |
+                                    ((native_status >> 8) << 8));
+        } else {
+            req->fn_flags = (UWORD)((native_io_error != 0
+                                         ? native_io_error
+                                         : (uint8_t)(native_status & 0xFFU)) |
+                                    ((native_status >> 8) << 8));
+        }
         if (nio_error == FN_OK) req->fn_response_length = response_len;
         else req->fn_response_length = 0;
     }

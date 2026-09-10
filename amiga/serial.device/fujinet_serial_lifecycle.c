@@ -49,8 +49,8 @@ static void sample_retain_ack(fn_serial_lc_t *lc)
     if (lc->paula_len > 0U) serdatr = lc->paula_bytes[0];
     lc->sample_count += 1;
     lc->last_op_was_sample = 1;
-    fujinet_paula_rx_ingest(&lc->rx, serdatr);
     ack_rbf_once(lc);
+    fujinet_paula_rx_ingest(&lc->rx, serdatr);
 }
 
 static void drain_rbf(fn_serial_lc_t *lc)

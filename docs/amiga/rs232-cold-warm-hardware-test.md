@@ -97,8 +97,11 @@ then `SETPARAMS` jumped to 38400. 19200 first-open never took that jump.
 through `fujinet-serial.device` must print `result=0` / `status=0` and return
 to the Shell with no power-LED flash and no PiStorm reboot screen. Amiberry
 does not prove that. 38400 FLS / first file-list after idle must not sit in
-the 5 s QUERY timeout. Confirm the guest `fujinet-serial.device` is 0.9
-(`$VER`) and `fujinet-nio.device` is 0.8. Serial 0.9 transmits via the
+the 5 s QUERY timeout. Confirm the guest `fujinet-serial.device` is 0.10
+(`$VER`) and `fujinet-nio.device` is 0.9. Serial 0.10 keeps `A0` as the
+custom-chip base, uses Exec `D1` at RBF/TBE entry, acknowledges RBF
+immediately after sampling `SERDATR`, and `Enable()`s before the first
+TBE/`SERDAT` write. Serial 0.9 transmits via the
 TBE interrupt so RBF stays live during the request (first-trial opening
 `C0` was lost while `CMD_WRITE` polled `SERDATR` under `Disable()`).
 Serial 0.8 copies `CMD_READ`
@@ -179,7 +182,7 @@ req_len=6 resp_len=14 elapsed_us=4120 ttfb_us=- result=0 cause=0 native=0 status
 | `ttfb_us` | Always `-` in this build (no first-bit stamp). |
 | `result` | Broker result pad. `0` is a clean completion. |
 | `cause` | Where a transport fault was classified (see below). `0` is none. |
-| `native` | `serial.device` `io_Error`. `0` is none. **On `cause=4` with `fujinet-nio.device` 0.3 this is bytes `serial_read_byte` returned to the session (capped 255), not an io_Error. 0.4–0.6 packed RBF-fire here instead.** |
+| `native` | `serial.device` `io_Error` on success (`0`). **On broker 0.9 faults (`cause` 3/7/9), this is `io_Error` if set, otherwise the first ISR RX byte after WRITE.** On `cause=4` it remains session-delivered bytes (capped 255). |
 | `status` | High byte of `serial.device` `io_Status`. `1` is `IO_STATF_OVERRUN`. **On `cause=4` this is bytes ingested into the ring, or WRITE-discarded count if ingest was 0 (capped 255).** |
 | `backend` | `cold` or `warm` as requested, not inferred. |
 
@@ -204,17 +207,25 @@ passed. Failures are still printed; there is no retry.
 
 **Likely Paula receive overrun:** `status=1` and `cause` `7` or `9`.
 
-Broker 0.8 keeps delivering CMD_READ bytes when `IO_STATF_OVERRUN` is set
+Broker 0.8+ keeps delivering CMD_READ bytes when `IO_STATF_OVERRUN` is set
 and `io_Error` is 0, then classifies the exchange as `cause=7` so a mid-frame
-hole is not reported as `cause=3`. Reload `fujinet-nio.device` 0.8 (serial
-stays 0.7) and repeat the 57600 file-list soak. Holes that become
-`cause=7 status=1 native=0` were hidden Paula OVRUN. Holes that stay
-`cause=3 status=0` lost bytes without the OVRUN latch.
+hole is not reported as `cause=3`. Broker 0.9 leaves success `native=0
+status=0` unchanged. On a fault, `native` is serial `io_Error` if set,
+otherwise the first ISR RX byte after WRITE. `fujinet-nio-exchange` then
+prints `isr_first=.. hw_ov=.. c0_class=A|B|C`:
+
+- **A** — first ISR byte is `C0`, but the protocol later misses it (ring/READ lifecycle after RBF).
+- **B** — first ISR byte is not `C0`, no hardware overrun (`C0` arrived before RBF was armed, or was cleared/discarded).
+- **C** — first ISR byte is not `C0`, hardware overrun set (servicing latency lost `C0`).
+
+Reload `fujinet-serial.device` 0.10 and `fujinet-nio.device` 0.9, then repeat
+the cold 38400 50-trial file-list. A mid-run `cause=7` still means Paula
+OVRUN; the `c0_class` line says whether the opening END was in the ISR.
 
 | `cause` | Meaning |
 | ---: | --- |
 | 0 | No request-local serial detail. |
-| 7 | `CMD_READ`/`QUERY` saw Paula OVRUN, or `CMD_READ` failed; flush never drained an overrun flag. `native=0 status=1` is hidden overrun (`io_Error` stayed 0). |
+| 7 | `CMD_READ`/`QUERY` saw Paula OVRUN, or `CMD_READ` failed; flush never drained an overrun flag. `status=1` is hidden overrun (`io_Error` stayed 0). Broker 0.9 puts the first ISR byte in `native` on that path. |
 | 9 | Flush saw and drained `IO_STATF_OVERRUN`, then the real `CMD_READ` still failed. |
 
 `native` is often `6` (`SerErr_LineErr`) on rows where `CMD_READ` itself
@@ -234,7 +245,8 @@ RX still in the serial queue **before** drain. `class=prefix` is a discarded
 opening END; `extra-c0` closed on the wrong delimiter; `len-mismatch` is a
 short body with a plausible header. That dump does not grow
 `FujiNetNIORequest`; FLS still sees `fn_response_length=0` on error. Broker
-`$VER` 0.8.
+`$VER` 0.9. Serial QUERY `io_CtlChar` is RBF-fire at WRITE start (high 16)
+and RBF-fire when the final TX byte was queued (low 16).
 
 | `native` (bytes to session) | `status` (ingested, or WRITE discards if ingested=0) | Meaning |
 | ---: | ---: | --- |

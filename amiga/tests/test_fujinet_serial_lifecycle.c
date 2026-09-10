@@ -110,15 +110,21 @@ static void test_rbf_handler_register_contract(void)
     CHECK("rbf-no-a2", !token_present(body, "%a2"));
     CHECK("rbf-no-a3", !token_present(body, "%a3"));
     CHECK("rbf-no-a4", !token_present(body, "%a4"));
-    CHECK("rbf-no-a5", !token_present(body, "%a5"));
-    CHECK("rbf-inten-check", strstr(body, "INTENAR") != NULL);
-    CHECK("rbf-sample-serdatr", strstr(body, "SERDATR") != NULL);
+    CHECK("rbf-uses-a5", token_present(body, "%a5"));
+    CHECK("rbf-entry-d1", strstr(body, "btst    #INTB_RBF,%d1") != NULL);
+    CHECK("rbf-no-intenar", strstr(body, "INTENAR") == NULL);
+    CHECK("rbf-sample-serdatr", strstr(body, "SERDATR_OFF") != NULL);
+    CHECK("rbf-ack-after-sample",
+          strstr(body,
+                 "move.w  SERDATR_OFF(%a0),%d0\n"
+                 "        move.w  #INTF_RBF,INTREQ_OFF(%a0)") != NULL);
+    CHECK("rbf-no-serdatr-rbf", strstr(body, "SERDATR_RBF") == NULL);
+    CHECK("rbf-drain-intreqr", strstr(body, "INTREQR_OFF") != NULL);
     CHECK("rbf-cause", strstr(body, "_LVOCause") != NULL);
-    CHECK("rbf-no-a6", !token_present(body, "%a6") &&
-          strstr(body, "_LVOCause(%a6)") == NULL);
-    CHECK("rbf-cause-via-a0", strstr(body, "_LVOCause(%a0)") != NULL);
+    CHECK("rbf-cause-via-a6", strstr(body, "_LVOCause(%a6)") != NULL);
     CHECK("rbf-debug-fire", strstr(body, "OFF_RBF_FIRE") != NULL);
     CHECK("rbf-debug-ingest", strstr(body, "OFF_INGEST") != NULL);
+    CHECK("rbf-capture-first", strstr(body, "OFF_FIRST_BYTE") != NULL);
     CHECK("rbf-single-ack-pattern",
           strstr(body, "move.w  #INTF_RBF,INTREQ\n        move.w  #INTF_RBF,INTREQ") == NULL);
     CHECK("rbf-no-nop-rts", strstr(body, "nop") == NULL);
@@ -177,13 +183,58 @@ static void test_tbe_handler_register_contract(void)
     }
     CHECK("tbe-rts-not-rte", strstr(start, "rts") != NULL &&
           strstr(start, "rte") == NULL && strstr(start, "RTE") == NULL);
-    CHECK("tbe-writes-serdat", strstr(start, "SERDAT") != NULL);
+    CHECK("tbe-writes-serdat", strstr(start, "SERDAT_OFF") != NULL);
     CHECK("tbe-acks-tbe", strstr(start, "INTF_TBE") != NULL);
+    CHECK("tbe-entry-d1", strstr(start, "btst    #INTB_TBE,%d1") != NULL);
+    CHECK("tbe-uses-a5", token_present(start, "%a5"));
+    CHECK("tbe-quiesce-intena", strstr(start, "INTENA_OFF") != NULL);
     CHECK("tbe-no-serdatr", strstr(start, "SERDATR") == NULL);
     CHECK("tbe-no-replymsg", strstr(start, "ReplyMsg") == NULL &&
           strstr(start, "_LVOReplyMsg") == NULL);
     CHECK("tbe-no-d2", !token_present(start, "%d2"));
     CHECK("tbe-no-a2", !token_present(start, "%a2"));
+    free(src);
+}
+
+static void test_write_rearm_before_tx(void)
+{
+    char *src;
+    char *fn;
+    char *tbe;
+    char *capture_off;
+    char *drain;
+    char *capture_on;
+
+    src = read_file("../serial.device/fujinet_serial_device.c", NULL);
+    if (src == NULL)
+        src = read_file("serial.device/fujinet_serial_device.c", NULL);
+    CHECK("write-c-readable", src != NULL);
+    if (src == NULL) return;
+    fn = strstr(src, "static void cmd_write(");
+    CHECK("cmd-write-present", fn != NULL);
+    if (fn == NULL) {
+        free(src);
+        return;
+    }
+    {
+        char *end = strstr(fn + 1, "\nstatic void ");
+        if (end != NULL) *end = '\0';
+    }
+    capture_off = strstr(fn, "capture_first = 0;");
+    drain = strstr(fn, "drain_rbf_locked(base);");
+    capture_on = strstr(fn, "capture_first = 1;");
+    CHECK("write-capture-off-before-leftover",
+          capture_off != NULL && drain != NULL && capture_off < drain);
+    CHECK("write-capture-on-after-leftover",
+          capture_on != NULL && drain != NULL && capture_on > drain);
+    tbe = strstr(fn, "INTF_SETCLR | INTF_TBE");
+    CHECK("write-enable-before-tbe",
+          strstr(fn,
+                 "Enable();\n    paula.intena = (UWORD)(INTF_SETCLR | INTF_TBE)") !=
+              NULL);
+    CHECK("write-tbe-present", tbe != NULL);
+    CHECK("write-no-rx-clear-after-tbe",
+          tbe != NULL && strstr(tbe, "rx_clear") == NULL);
     free(src);
 }
 
@@ -483,6 +534,7 @@ int main(void)
     test_rbf_handler_register_contract();
     test_complete_read_enables_before_copy();
     test_tbe_handler_register_contract();
+    test_write_rearm_before_tx();
     test_misc_resource();
     test_rbf_drain();
     test_read_cause_and_abort();

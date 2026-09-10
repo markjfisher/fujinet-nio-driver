@@ -397,6 +397,32 @@ static void print_trial_log(const struct FujiNetNIORequest *req,
     printf("%s\n", line);
 }
 
+static void print_c0_diag(const struct FujiNetNIORequest *req)
+{
+    unsigned native = (unsigned)(req->fn_flags & 0xFF);
+    unsigned ov = (unsigned)(req->fn_flags >> 8);
+    const char *cls;
+
+    if (req->fn_pad[1] == 0) return;
+    if (req->fn_pad[2] != FUJINET_NIO_DETAIL_SESSION_IO &&
+        req->fn_pad[2] != FUJINET_NIO_DETAIL_SERIAL_READ &&
+        req->fn_pad[2] !=
+            FUJINET_NIO_DETAIL_FLUSH_DRAINED_THEN_READ_FAILED)
+        return;
+    /* io_Error values are small; SLIP END is 0xC0. */
+    if (native != 0 && native < 32U && ov == 0) {
+        printf("isr_native_io_error=%u\n", native);
+        return;
+    }
+    if (native == 0xC0U)
+        cls = "A";
+    else if (ov != 0)
+        cls = "C";
+    else
+        cls = "B";
+    printf("isr_first=%02x hw_ov=%u c0_class=%s\n", native, ov, cls);
+}
+
 static void print_fujibus_prefix(const uint8_t *buf, unsigned len)
 {
     unsigned n;
@@ -952,6 +978,8 @@ static int run_matrix(int argc, char **argv)
                 attach_open(&req, &open_request);
                 do_measured_exchange(&req, elapsed);
                 print_trial_log(&req, opts.backend, elapsed);
+                if (req.fn_pad[1] != 0)
+                    print_c0_diag(&req);
                 if (req.fn_pad[2] == FUJINET_NIO_DETAIL_SESSION_IO ||
                     req.fn_pad[2] == FUJINET_NIO_DETAIL_TIMEOUT ||
                     req.fn_pad[2] == FUJINET_NIO_DETAIL_SERIAL_READ ||

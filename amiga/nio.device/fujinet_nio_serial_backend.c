@@ -61,6 +61,7 @@ static uint8_t channel_error;
 static uint8_t serial_failure_detail;
 static uint8_t serial_failure_io_error;
 static uint16_t serial_failure_status;
+static uint16_t serial_rx_diag_status; /* last QUERY/READ io_Status (first byte + OVRUN) */
 static uint8_t serial_flush_drained_overrun; /* set when session_flush drained IO_STATF_OVERRUN */
 static uint8_t serial_hidden_overrun; /* CMD_READ/QUERY io_Error=0 but IO_STATF_OVERRUN */
 static uint32_t serial_baud = FN_SERIAL_BACKEND_BAUD;
@@ -87,6 +88,11 @@ static uint8_t diag_leftover[DIAG_LEFTOVER_MAX];
  * CloseDevice/DeleteExtIO/DeletePort of serial_req or timer_req must follow
  * CheckIO-complete or AbortIO+WaitIO so ownership is back on this task.
  */
+static void note_rx_diag(UWORD st)
+{
+    serial_rx_diag_status = st;
+}
+
 static uint8_t serial_write(const uint8_t *buf, uint16_t len)
 {
     serial_req->IOSer.io_Command = CMD_WRITE;
@@ -151,6 +157,7 @@ static uint8_t serial_cmd_read(APTR buf, ULONG length, uint16_t timeout_ms,
         serial_failure_status = serial_req->io_Status;
         return FN_ERR_IO;
     }
+    note_rx_diag(serial_req->io_Status);
     if (record_hidden_overrun &&
         fn_serial_note_hidden_overrun(0, (unsigned)serial_req->io_Status,
                                       &serial_hidden_overrun)) {
@@ -248,6 +255,7 @@ static uint8_t serial_read_byte(uint8_t *byte_out, uint16_t timeout_ms)
         serial_failure_status = serial_req->io_Status;
         return FN_ERR_IO;
     }
+    note_rx_diag(serial_req->io_Status);
     if (fn_serial_note_hidden_overrun(0, (unsigned)serial_req->io_Status,
                                       &serial_hidden_overrun)) {
         serial_failure_detail = FUJINET_NIO_DETAIL_SERIAL_READ;
@@ -281,6 +289,7 @@ static uint8_t serial_read_byte(uint8_t *byte_out, uint16_t timeout_ms)
                 serial_failure_status = serial_req->io_Status;
                 return FN_ERR_IO;
             }
+            note_rx_diag(serial_req->io_Status);
             if (fn_serial_note_hidden_overrun(
                     0, (unsigned)serial_req->io_Status, &serial_hidden_overrun)) {
                 serial_failure_detail = FUJINET_NIO_DETAIL_SERIAL_READ;
@@ -672,6 +681,7 @@ uint8_t backend_exchange(
     serial_failure_detail = FUJINET_NIO_DETAIL_NONE;
     serial_failure_io_error = 0;
     serial_failure_status = 0;
+    serial_rx_diag_status = 0;
     serial_hidden_overrun = 0;
     debug_bytes_got = 0;
     debug_peek_len = 0;
@@ -731,8 +741,14 @@ uint8_t backend_exchange(
     }
     if (native_io_error != NULL)
         *native_io_error = serial_failure_io_error;
-    if (native_status != NULL)
-        *native_status = serial_failure_status;
+    if (native_status != NULL) {
+        if (serial_failure_status != 0)
+            *native_status = serial_failure_status;
+        else if (session_result != FN_OK)
+            *native_status = serial_rx_diag_status;
+        else
+            *native_status = 0;
+    }
     result = fn_serial_channel_map_session_result(session_result, &channel_error);
     /* Paula OVRUN can complete CMD_READ/QUERY with io_Error=0. That used to
      * surface as SESSION_IO (cause=3). Keep delivering bytes so SLIP can
