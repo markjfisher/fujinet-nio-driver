@@ -266,10 +266,130 @@ static void test_recovered_write(void)
           memcmp(captured_requests[0], captured_requests[1],
                  NIO_DISK_WRITE_REQUEST_SIZE) == 0);
     CHECK("recovered write identical replay 3",
-          memcmp(captured_requests[0], captured_requests[2],
+                 memcmp(captured_requests[0], captured_requests[2],
                  NIO_DISK_WRITE_REQUEST_SIZE) == 0);
     CHECK("recovered write body",
           memcmp(captured_requests[0] + 14, data, sizeof(data)) == 0);
+}
+
+static void test_context_diagnostics_records_retry_attempts(void)
+{
+    fn_disk_client_context_t context;
+    fujinet_disk_retry_diagnostics_t diagnostics;
+    uint8_t payload[11 + FUJINET_DISK_BLOCK_SIZE];
+    uint8_t expected[FUJINET_DISK_BLOCK_SIZE];
+    uint8_t actual[FUJINET_DISK_BLOCK_SIZE];
+    uint16_t actual_length = 0;
+    uint16_t i;
+    uint8_t result;
+    uint16_t success_length;
+    uint16_t expected_response_length;
+
+    reset_harness();
+    for (i = 0; i < FUJINET_DISK_BLOCK_SIZE; ++i)
+        expected[i] = (uint8_t)(i + 0x10U);
+    memset(payload, 0, sizeof(payload));
+    payload[0] = FN_DISK_PROTOCOL_VERSION;
+    payload[4] = 1;
+    put_u32le(payload + 5, 0x01020304UL);
+    put_u16le(payload + 9, FUJINET_DISK_BLOCK_SIZE);
+    memcpy(payload + 11, expected, sizeof(expected));
+    build_success_response(NIO_DISK_READ_SECTOR, payload, sizeof(payload));
+    scripted_results[0] = FN_ERR_TRANSPORT;
+    scripted_failure_lengths[0] = 31;
+    scripted_results[1] = FN_ERR_TIMEOUT;
+    scripted_failure_lengths[1] = 45;
+    scripted_results[2] = FN_OK;
+
+    success_length = (uint16_t)(FN_HEADER_SIZE + sizeof(payload));
+    expected_response_length = FUJINET_DISK_BLOCK_SIZE;
+    CHECK("context diagnostics init",
+          fn_disk_context_init(&context, context_exchange, &diagnostics) == FN_OK);
+    result = fn_disk_read_sector_context(
+        &context, 1, 0x01020304UL, actual, sizeof(actual), &actual_length);
+
+    CHECK("diagnostics read result", result == FN_OK);
+    CHECK("diagnostics read length", actual_length == expected_response_length);
+    CHECK("diagnostics read body", memcmp(actual, expected, sizeof(actual)) == 0);
+    CHECK("diagnostics attempts", diagnostics.attempts == 3);
+    CHECK("diagnostics attempt 1", diagnostics.results[0] == FN_ERR_TRANSPORT);
+    CHECK("diagnostics attempt 2", diagnostics.results[1] == FN_ERR_TIMEOUT);
+    CHECK("diagnostics attempt 3", diagnostics.results[2] == FN_OK);
+    CHECK("diagnostics attempt 1 response len", diagnostics.response_lengths[0] == 31);
+    CHECK("diagnostics attempt 2 response len", diagnostics.response_lengths[1] == 45);
+    CHECK("diagnostics attempt 3 response len", diagnostics.response_lengths[2] == success_length);
+    CHECK("diagnostics attempt 1 inbound len", incoming_response_lengths[0] == 0);
+    CHECK("diagnostics attempt 2 inbound len", incoming_response_lengths[1] == 0);
+    CHECK("diagnostics attempt 3 inbound len", incoming_response_lengths[2] == 0);
+    CHECK("diagnostics request replayed", captured_request_lengths[0] == captured_request_lengths[1] &&
+                                            captured_request_lengths[1] == captured_request_lengths[2]);
+    CHECK("diagnostics request immutable", memcmp(captured_requests[0], captured_requests[2],
+                                                  captured_request_lengths[0]) == 0);
+}
+
+static void test_retry_outputs_are_request_local_per_call(void)
+{
+    fn_disk_client_context_t context;
+    fujinet_disk_retry_diagnostics_t diagnostics;
+    uint8_t first_request[NIO_DISK_READ_REQUEST_SIZE];
+    uint8_t second_request[NIO_DISK_READ_REQUEST_SIZE];
+    uint8_t first_payload[11 + FUJINET_DISK_BLOCK_SIZE];
+    uint8_t second_payload[11 + FUJINET_DISK_BLOCK_SIZE];
+    uint8_t first_expected[FUJINET_DISK_BLOCK_SIZE];
+    uint8_t second_expected[FUJINET_DISK_BLOCK_SIZE];
+    uint8_t first_response[FUJINET_DISK_BLOCK_SIZE];
+    uint8_t second_response[FUJINET_DISK_BLOCK_SIZE];
+    uint16_t first_length = 0;
+    uint16_t second_length = 0;
+    uint16_t i;
+    uint8_t result;
+
+    reset_harness();
+    for (i = 0; i < FUJINET_DISK_BLOCK_SIZE; ++i) {
+        first_expected[i] = (uint8_t)(0xAAU - i);
+        second_expected[i] = (uint8_t)(0x55U + i);
+    }
+    build_read_request(first_request, 2, 0x11111111UL, FUJINET_DISK_BLOCK_SIZE);
+    build_read_request(second_request, 3, 0x22222222UL, FUJINET_DISK_BLOCK_SIZE);
+
+    memset(first_payload, 0, sizeof(first_payload));
+    first_payload[0] = FN_DISK_PROTOCOL_VERSION;
+    first_payload[4] = 2;
+    put_u32le(first_payload + 5, 0x11111111UL);
+    put_u16le(first_payload + 9, FUJINET_DISK_BLOCK_SIZE);
+    memcpy(first_payload + 11, first_expected, sizeof(first_expected));
+    memset(second_payload, 0, sizeof(second_payload));
+    second_payload[0] = FN_DISK_PROTOCOL_VERSION;
+    second_payload[4] = 3;
+    put_u32le(second_payload + 5, 0x22222222UL);
+    put_u16le(second_payload + 9, FUJINET_DISK_BLOCK_SIZE);
+    memcpy(second_payload + 11, second_expected, sizeof(second_expected));
+
+    CHECK("request-local context init",
+          fn_disk_context_init(&context, context_exchange, &diagnostics) == FN_OK);
+
+    scripted_results[0] = FN_ERR_TRANSPORT;
+    scripted_failure_lengths[0] = 12;
+    scripted_results[1] = FN_OK;
+    build_success_response(NIO_DISK_READ_SECTOR, first_payload, sizeof(first_payload));
+    result = fn_disk_read_sector_context(
+        &context, 2, 0x11111111UL, first_response, sizeof(first_response),
+        &first_length);
+    CHECK("first call request-local result", result == FN_OK);
+    CHECK("first call own length", first_length == FUJINET_DISK_BLOCK_SIZE);
+    CHECK("first call own body", memcmp(first_response, first_expected, sizeof(first_expected)) == 0);
+
+    build_success_response(NIO_DISK_READ_SECTOR, second_payload, sizeof(second_payload));
+    scripted_results[0] = FN_ERR_TIMEOUT;
+    scripted_failure_lengths[0] = 9;
+    scripted_results[1] = FN_OK;
+    result = fn_disk_read_sector_context(
+        &context, 3, 0x22222222UL, second_response, sizeof(second_response),
+        &second_length);
+    CHECK("second call request-local result", result == FN_OK);
+    CHECK("second call own length", second_length == FUJINET_DISK_BLOCK_SIZE);
+    CHECK("second call owns own body", memcmp(second_response, second_expected, sizeof(second_expected)) == 0);
+    CHECK("second call did not reuse first buffer", memcmp(first_response, second_response, sizeof(first_response)) != 0);
 }
 
 static void test_persistent_fault(void)
@@ -476,6 +596,8 @@ int main(void)
 {
     test_recovered_read();
     test_recovered_write();
+    test_context_diagnostics_records_retry_attempts();
+    test_retry_outputs_are_request_local_per_call();
     test_persistent_fault();
     test_non_retryable_result();
     test_excluded_commands();

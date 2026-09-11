@@ -584,6 +584,58 @@ static void test_abort_in_progress(void)
     CHECK("in-progress one ReplyMsg", replies == 1);
 }
 
+static void test_abort_queued_middle_request_preserves_ownership(void)
+{
+    struct FujiNetNIORequest first;
+    struct FujiNetNIORequest middle;
+    struct FujiNetNIORequest last;
+    UBYTE first_request[1] = {1};
+    UBYTE middle_request[1] = {2};
+    UBYTE last_request[1] = {3};
+    UBYTE first_response[8];
+    UBYTE middle_response[8];
+    UBYTE last_response[8];
+
+    memset(first_response, 0xEE, sizeof(first_response));
+    memset(middle_response, 0xDD, sizeof(middle_response));
+    memset(last_response, 0xCC, sizeof(last_response));
+    reset_harness();
+    init_exchange(&first, first_request, sizeof(first_request), first_response,
+                  sizeof(first_response));
+    init_exchange(&middle, middle_request, sizeof(middle_request), middle_response,
+                  sizeof(middle_response));
+    init_exchange(&last, last_request, sizeof(last_request), last_response,
+                  sizeof(last_response));
+
+    open_unit0(&first);
+    fujinet_nio_native_test_open(&middle.fn_io, FUJINET_NIO_DEVICE_UNIT);
+    fujinet_nio_native_test_open(&last.fn_io, FUJINET_NIO_DEVICE_UNIT);
+    fujinet_nio_native_test_begin_io(&first.fn_io);
+    fujinet_nio_native_test_begin_io(&middle.fn_io);
+    fujinet_nio_native_test_begin_io(&last.fn_io);
+
+    CHECK("middle abort queued returns 0",
+          fujinet_nio_native_test_abort_io(&middle.fn_io) == 0);
+    CHECK("middle aborted io_Error", middle.fn_io.io_Error == IOERR_ABORTED);
+    CHECK("middle aborted FN_ERR_ABORTED", middle.fn_nio_error == FN_ERR_ABORTED);
+    CHECK("middle aborted zero length", middle.fn_response_length == 0);
+    CHECK("middle aborted still first response buffer", middle_response[0] == 0xDD);
+    CHECK("middle aborted one reply", replies == 1);
+
+    fujinet_nio_native_test_worker_step();
+    CHECK("first completed request", replies == 2);
+    CHECK("first still receives payload", first_response[0] == 1);
+    CHECK("first has own completion", first.fn_nio_error == FN_OK);
+
+    fujinet_nio_native_test_worker_step();
+    CHECK("last completed request", replies == 3);
+    CHECK("last receives own payload", last_response[0] == 3);
+    CHECK("last has own completion", last.fn_nio_error == FN_OK);
+
+    CHECK("middle not overwritten during first+last", middle_response[0] == 0xDD);
+    CHECK("backend did not run aborted request", backend_exchanges == 2);
+}
+
 static void test_opencnt_zero_keeps_backend(void)
 {
     struct FujiNetNIORequest req;
@@ -785,6 +837,45 @@ static void test_abort_in_progress_fatal_closes(void)
           fujinet_nio_native_test_backend_is_open() == 0);
 }
 
+static void test_transport_timeout_recover_and_retry_request(void)
+{
+    struct FujiNetNIORequest first;
+    struct FujiNetNIORequest retry;
+    UBYTE request_bytes[1] = {6};
+    UBYTE first_response[8];
+    UBYTE retry_response[8];
+
+    reset_harness();
+    init_exchange(&first, request_bytes, 1, first_response,
+                  sizeof(first_response));
+    init_exchange(&retry, request_bytes, 1, retry_response,
+                  sizeof(retry_response));
+    memset(first_response, 0, sizeof(first_response));
+    memset(retry_response, 0xCC, sizeof(retry_response));
+    open_unit0(&first);
+    fujinet_nio_native_test_begin_io(&first.fn_io);
+    backend_timeout = 1;
+    backend_failure_detail = FUJINET_NIO_DETAIL_TIMEOUT;
+
+    fujinet_nio_native_test_worker_step();
+    CHECK("timeout request still exchanges once", backend_exchanges == 1);
+    CHECK("timeout request returns timeout", first.fn_nio_error == FN_ERR_TIMEOUT);
+    CHECK("timeout request length clear", first.fn_response_length == 0);
+    CHECK("timeout closed backend", backend_closes == 1);
+    CHECK("timeout backend not open", fujinet_nio_native_test_backend_is_open() == 0);
+
+    fujinet_nio_native_test_open(&retry.fn_io, FUJINET_NIO_DEVICE_UNIT);
+    fujinet_nio_native_test_begin_io(&retry.fn_io);
+    backend_timeout = 0;
+    fujinet_nio_native_test_worker_step();
+    CHECK("retry reopens backend", backend_opens == 2);
+    CHECK("retry request returns OK", retry.fn_nio_error == FN_OK);
+    CHECK("retry request length", retry.fn_response_length == 1);
+    CHECK("retry owns its own response buffer", retry_response[0] == 6);
+    CHECK("retry does not overwrite unrelated bytes", retry_response[1] == 0xCC);
+    CHECK("retry exchange after timeout", backend_exchanges == 2);
+}
+
 static void test_delayed_expunge_on_final_close(void)
 {
     struct FujiNetNIORequest req;
@@ -829,6 +920,47 @@ static void test_backend_oversize_response_is_fn_err_io(void)
     CHECK("oversize backend length 0", req.fn_response_length == 0);
     CHECK("oversize backend still open",
           fujinet_nio_native_test_backend_is_open() == 1);
+}
+
+static void test_close_does_not_abort_in_progress_then_next_request(void)
+{
+    struct FujiNetNIORequest first;
+    struct FujiNetNIORequest next;
+    UBYTE first_request[1] = {7};
+    UBYTE next_request[1] = {8};
+    UBYTE first_response[8];
+    UBYTE next_response[8];
+
+    memset(first_response, 0, sizeof(first_response));
+    memset(next_response, 0, sizeof(next_response));
+    reset_harness();
+    init_exchange(&first, first_request, 1, first_response,
+                  sizeof(first_response));
+    init_exchange(&next, next_request, 1, next_response,
+                  sizeof(next_response));
+    open_unit0(&first);
+    fujinet_nio_native_test_begin_io(&first.fn_io);
+    delay_target = &first;
+    backend_delay_close = 1;
+    fujinet_nio_native_test_worker_step();
+
+    CHECK("in-progress close keeps first response", first.fn_nio_error == FN_OK);
+    CHECK("in-progress close keeps first payload", first_response[0] == 7);
+    CHECK("in-progress close does not abort first", first.fn_io.io_Error == 0);
+
+    CHECK("close in progress still keeps backend open",
+          backend_closes == 0);
+    CHECK("close hook did not force immediate backend close", backend_opens == 1);
+
+    fujinet_nio_native_test_open(&next.fn_io, FUJINET_NIO_DEVICE_UNIT);
+    fujinet_nio_native_test_begin_io(&next.fn_io);
+    CHECK("next request queued while first in progress closes",
+          fujinet_nio_native_test_queue_busy() == 1);
+    fujinet_nio_native_test_worker_step();
+    CHECK("next request still executes", next.fn_nio_error == FN_OK);
+    CHECK("next request payload", next_response[0] == 8);
+    CHECK("next request got its own buffer", next_response[1] == 0);
+    CHECK("next request adds one exchange", backend_exchanges == 2);
 }
 
 static void test_close_in_progress_does_not_abort(void)
@@ -891,7 +1023,10 @@ int main(void)
     test_abort_in_progress();
     test_abort_in_progress_fatal_closes();
     test_open_invalid_unit();
+    test_abort_queued_middle_request_preserves_ownership();
+    test_transport_timeout_recover_and_retry_request();
     test_opencnt_zero_keeps_backend();
+    test_close_does_not_abort_in_progress_then_next_request();
     test_fatal_backend();
     test_session_backend_detail();
     test_timeout_resets_backend();
