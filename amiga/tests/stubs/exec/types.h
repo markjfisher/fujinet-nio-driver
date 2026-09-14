@@ -10,6 +10,7 @@ typedef uint16_t UWORD;
 typedef uint32_t ULONG;
 typedef int32_t LONG;
 typedef void *APTR;
+typedef const char *CONST_STRPTR;
 typedef uintptr_t BPTR;
 
 #endif

@@ -337,14 +337,18 @@ static void test_retry_outputs_are_request_local_per_call(void)
     uint8_t second_payload[11 + FUJINET_DISK_BLOCK_SIZE];
     uint8_t first_expected[FUJINET_DISK_BLOCK_SIZE];
     uint8_t second_expected[FUJINET_DISK_BLOCK_SIZE];
-    uint8_t first_response[FUJINET_DISK_BLOCK_SIZE];
-    uint8_t second_response[FUJINET_DISK_BLOCK_SIZE];
+    uint8_t first_storage[FUJINET_DISK_BLOCK_SIZE + 2];
+    uint8_t *first_response = first_storage + 1;
+    uint8_t second_storage[FUJINET_DISK_BLOCK_SIZE + 2];
+    uint8_t *second_response = second_storage + 1;
     uint16_t first_length = 0;
     uint16_t second_length = 0;
     uint16_t i;
     uint8_t result;
 
     reset_harness();
+    memset(first_storage, 0xC7, sizeof(first_storage));
+    memset(second_storage, 0xD8, sizeof(second_storage));
     for (i = 0; i < FUJINET_DISK_BLOCK_SIZE; ++i) {
         first_expected[i] = (uint8_t)(0xAAU - i);
         second_expected[i] = (uint8_t)(0x55U + i);
@@ -373,23 +377,33 @@ static void test_retry_outputs_are_request_local_per_call(void)
     scripted_results[1] = FN_OK;
     build_success_response(NIO_DISK_READ_SECTOR, first_payload, sizeof(first_payload));
     result = fn_disk_read_sector_context(
-        &context, 2, 0x11111111UL, first_response, sizeof(first_response),
+        &context, 2, 0x11111111UL, first_response, FUJINET_DISK_BLOCK_SIZE,
         &first_length);
     CHECK("first call request-local result", result == FN_OK);
     CHECK("first call own length", first_length == FUJINET_DISK_BLOCK_SIZE);
     CHECK("first call own body", memcmp(first_response, first_expected, sizeof(first_expected)) == 0);
 
     build_success_response(NIO_DISK_READ_SECTOR, second_payload, sizeof(second_payload));
-    scripted_results[0] = FN_ERR_TIMEOUT;
-    scripted_failure_lengths[0] = 9;
-    scripted_results[1] = FN_OK;
+    CHECK("first absolute attempts", transport_calls == 2 && diagnostics.attempts == 2);
+    CHECK("first diagnostics", diagnostics.results[0] == FN_ERR_TRANSPORT && diagnostics.results[1] == FN_OK && diagnostics.response_lengths[0] == 12);
+    scripted_results[2] = FN_ERR_TIMEOUT;
+    scripted_failure_lengths[2] = 9;
+    scripted_results[3] = FN_OK;
     result = fn_disk_read_sector_context(
-        &context, 3, 0x22222222UL, second_response, sizeof(second_response),
+        &context, 3, 0x22222222UL, second_response, FUJINET_DISK_BLOCK_SIZE,
         &second_length);
     CHECK("second call request-local result", result == FN_OK);
     CHECK("second call own length", second_length == FUJINET_DISK_BLOCK_SIZE);
     CHECK("second call owns own body", memcmp(second_response, second_expected, sizeof(second_expected)) == 0);
-    CHECK("second call did not reuse first buffer", memcmp(first_response, second_response, sizeof(first_response)) != 0);
+    CHECK("second call did not reuse first buffer", memcmp(first_response, second_response, FUJINET_DISK_BLOCK_SIZE) != 0);
+    CHECK("second absolute attempts", transport_calls == 4 && diagnostics.attempts == 2);
+    CHECK("second diagnostics", diagnostics.results[0] == FN_ERR_TIMEOUT && diagnostics.results[1] == FN_OK && diagnostics.response_lengths[0] == 9);
+    CHECK("second replay bytes", memcmp(captured_requests[2], second_request, sizeof(second_request)) == 0 && memcmp(captured_requests[2], captured_requests[3], sizeof(second_request)) == 0);
+    CHECK("first replay bytes", memcmp(captured_requests[0], first_request, sizeof(first_request)) == 0 && memcmp(captured_requests[0], captured_requests[1], sizeof(first_request)) == 0);
+    CHECK("all attempt lengths reset", incoming_response_lengths[0] == 0 && incoming_response_lengths[1] == 0 && incoming_response_lengths[2] == 0 && incoming_response_lengths[3] == 0);
+    CHECK("first buffer independently preserved", memcmp(first_response, first_expected, sizeof(first_expected)) == 0);
+    CHECK("first sentinels", first_storage[0] == 0xC7 && first_storage[sizeof(first_storage)-1] == 0xC7);
+    CHECK("second sentinels", second_storage[0] == 0xD8 && second_storage[sizeof(second_storage)-1] == 0xD8);
 }
 
 static void test_persistent_fault(void)

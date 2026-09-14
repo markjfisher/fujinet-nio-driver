@@ -3,6 +3,9 @@
 
 #include <exec/io.h>
 
+LONG OpenDevice(CONST_STRPTR name, ULONG unit, struct IORequest *request, ULONG flags);
+void CloseDevice(struct IORequest *request);
+LONG DoIO(struct IORequest *request);
 void Disable(void);
 void Enable(void);
 void ReplyMsg(struct Message *message);

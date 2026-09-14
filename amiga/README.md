@@ -195,3 +195,74 @@ change-registration rules without requiring Exec or an Amiga emulator. It is
 not a substitute for the next native harness, which must validate real
 message ports, `AbortIO()`, `Cause()`, and task/request lifetimes inside
 Amiberry.
+
+## Undeployed whole-packet containment component
+
+`nio.device/fujinet_nio_packet_backend.[ch]` is a portable raw FujiBus backend
+guard for a future packet adapter. It is not linked into the deployed serial
+broker. It changes no public broker ABI, caller retry policy, or wire bytes.
+The native harness binds it behind the broker's existing backend callbacks.
+
+Initialize one guard per remote endpoint lifetime, with exclusive borrowed
+scratch storage and opaque packet-I/O callbacks. Scratch capacity is explicitly
+bounded (6–65535 bytes); this harness uses 1024 bytes, matching the broker and
+library packet limit, not a physical mailbox size. The same bound limits sent
+requests. Requests and caller output buffers must be disjoint from scratch.
+The adapter may borrow buffers only during a callback and must never write
+past capacity, even when reporting a larger received packet. Failed exchanges
+report zero length and never expose scratch bytes to caller output buffers.
+
+All operations belong to the same serialized worker ownership domain. The
+`active` flag rejects callback reentry; it is not a thread synchronization
+primitive. Adapter callbacks must finish in bounded time. The guard allocates
+no memory and performs no retries. An adapter reports one of three outcomes:
+
+- `FN_PACKET_REJECTED`: definite pre-send rejection, with no remote delivery.
+  Existing bounded caller retries remain safe.
+- `FN_PACKET_COMPLETE`: this exchange finished, with no further execution or
+  response delivery possible. The guard additionally validates whole-packet
+  size, encoded length, checksum, descriptor bounds, and device/command before
+  copying the unchanged response.
+- `FN_PACKET_UNKNOWN`: transmission may have occurred. Partial/local acceptance
+  is not completion. Unknown outcomes and invalid/oversized/mismatched responses
+  quarantine the endpoint before a retry can transmit.
+
+Quarantine survives backend close/open and transport close/open. Every local
+reset attempt enters quarantine, whether it succeeds or fails, including a reset
+from a healthy state. Initialization also starts quarantined: first use requires
+proof, so constructing a guard cannot silently assume a clean remote endpoint.
+Never reinitialize or discard its state to recover a live endpoint. Only
+`fn_packet_backend_recover()` clears quarantine after the adapter's independent
+quiescence callback proves that prior work cannot execute and old responses
+cannot arrive. Missing/failed proof keeps it quarantined. Local clears, reopen,
+timeouts, and elapsed time do not supply this guarantee. A future adapter must
+preserve uncertainty across unload/reload or establish this proof again.
+
+This contains **unknown transport completion**, not every application replay.
+The unchanged `fn_raw_call` still replays once after a fully valid matching
+response when its payload exceeds the application's `reply_capacity`. The
+transport receives into its own 1024-byte buffer and cannot observe that smaller
+application limit. Both valid exchanges can have effects; the guard correctly
+remains unquarantined. Likewise, an active abort is not rollback, and the raw
+caller may retry an aborted but completed exchange. Valid U8 remote statuses,
+including timeout/error and unknown values, pass through without status-driven
+backend replay. Disk service status mapping also stays in the unchanged caller.
+No promise of exactly-once application effects or hardware readiness is made.
+
+Run the focused integration test from the workspace root:
+
+```sh
+source scripts/env.sh && make -C repos/fujinet-nio-driver/amiga/tests build/test_fujinet_nio_packet_backend && repos/fujinet-nio-driver/amiga/tests/build/test_fujinet_nio_packet_backend
+```
+
+It links actual disk read/write callers and `fn_raw_call`, actual Amiga transport,
+and actual broker against an independent bounded peer. The peer accepts sends
+even while remote work remains pending; backend quarantine must prevent those
+calls. Tests separately count caller attempts, backend entries, transfer calls,
+transmissions, effects, remote replies, pending/max pending work and local
+ReplyMsg completions. Cases cover pre-send failures, delivered/unknown work,
+lost/corrupt/truncated/oversized/mismatched responses, lifecycle, late replies,
+failed/absent proof, explicit recovery, queued/active abort, FIFO ownership,
+request immutability, buffer sentinels, status preservation, and the known
+completed-response replay limit. Reset/quiescence are software callback
+contracts; physical implementation and validation remain future adapter work.
