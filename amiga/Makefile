@@ -12,6 +12,9 @@ RESIDENT_UNLOADER := $(BUILD_DIR)/fujinet-unload-resident
 TD_PROBE := $(BUILD_DIR)/fujinet-td-probe
 NIO_DEVICE := $(BUILD_DIR)/fujinet-nio.device
 NIO_DEVICE_MAP := $(NIO_DEVICE).map
+NIO_NATIVE_TEST_DEVICE := $(BUILD_DIR)/fujinet-nio-native-test.device
+NIO_NATIVE_TEST_DEVICE_MAP := $(NIO_NATIVE_TEST_DEVICE).map
+NIO_NATIVE_TEST_PROBE := $(BUILD_DIR)/fujinet-nio-native-test-probe
 SERIAL_DEVICE := $(BUILD_DIR)/fujinet-serial.device
 SERIAL_DEVICE_MAP := $(SERIAL_DEVICE).map
 NIO_EXCHANGE := $(BUILD_DIR)/fujinet-nio-exchange
@@ -22,6 +25,13 @@ NIO_OBJECTS := $(BUILD_DIR)/nio.device/fujinet_nio_device.o \
 	$(BUILD_DIR)/common/fujinet_io_queue.o \
 	$(BUILD_DIR)/nio-framing/fn_session.o \
 	$(BUILD_DIR)/nio-framing/fn_slip.o
+NIO_NATIVE_TEST_OBJECTS := $(BUILD_DIR)/nio.device/fujinet_nio_directory_device.o \
+	$(BUILD_DIR)/nio.device/fujinet_nio_directory_backend.o \
+	$(BUILD_DIR)/nio.device/fujinet_nio_packet_backend.o \
+	$(BUILD_DIR)/common/fujinet_io_queue.o \
+	$(BUILD_DIR)/nio-framing/fn_packet_checksum_packet.o \
+	$(BUILD_DIR)/nio-framing/fn_packet_checksum.o \
+	$(BUILD_DIR)/nio-framing/fn_checksum_fold.o
 SERIAL_OBJECTS := $(BUILD_DIR)/serial.device/fujinet_serial_device.o \
 	$(BUILD_DIR)/serial.device/fujinet_serial_rbf.o \
 	$(BUILD_DIR)/serial.device/fujinet_paula_uart.o
@@ -44,7 +54,8 @@ OBJECTS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SOURCES))
 all: tests native sdk
 
 native: library $(DEVICE) $(MOUNT_TOOL) $(RESIDENT_LOADER) $(RESIDENT_UNLOADER) $(TD_PROBE) \
-	$(NIO_DEVICE) $(SERIAL_DEVICE) $(NIO_EXCHANGE) $(NIO_BAUD) $(NIO_SERIAL)
+	$(NIO_DEVICE) $(SERIAL_DEVICE) $(NIO_EXCHANGE) $(NIO_BAUD) $(NIO_SERIAL) \
+	$(NIO_NATIVE_TEST_DEVICE) $(NIO_NATIVE_TEST_PROBE)
 
 sdk: $(SDK_LIBRARY) $(SDK_INCLUDE)/fujinet-amiga-disk/support.h $(SDK_INCLUDE)/fujinet-amiga-disk/device.h
 
@@ -71,6 +82,26 @@ $(DEVICE): $(OBJECTS) $(LIBRARY)
 
 $(NIO_DEVICE): $(NIO_OBJECTS)
 	$(CC) -nostartfiles -mcpu=68000 -msoft-float $^ -lamiga -Wl,-Map,$(NIO_DEVICE_MAP) -o $@
+
+$(NIO_NATIVE_TEST_DEVICE): $(NIO_NATIVE_TEST_OBJECTS)
+	$(CC) -nostartfiles -mcpu=68000 -msoft-float $^ -lamiga -Wl,-Map,$(NIO_NATIVE_TEST_DEVICE_MAP) -o $@
+
+$(BUILD_DIR)/nio.device/fujinet_nio_directory_device.o: nio.device/fujinet_nio_device.c \
+		include/fujinet_nio_endian.h include/fujinet_nio_serial_config.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DFUJINET_NIO_DIRECTORY_BACKEND -c $< -o $@
+
+$(BUILD_DIR)/nio-framing/fn_packet_checksum_packet.o: $(LIB_ROOT)/src/common/fn_packet_checksum_packet.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/nio-framing/fn_packet_checksum.o: $(LIB_ROOT)/src/common/fn_packet_checksum.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/nio-framing/fn_checksum_fold.o: $(LIB_ROOT)/src/common/fn_checksum_fold.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 $(SERIAL_DEVICE): $(SERIAL_OBJECTS)
 	$(CC) -nostartfiles -mcpu=68000 -msoft-float $^ -lamiga -Wl,-Map,$(SERIAL_DEVICE_MAP) -o $@
@@ -111,6 +142,11 @@ $(NIO_BAUD): tools/fujinet-nio-baud.c include/fujinet_nio_device.h \
 
 $(NIO_SERIAL): tools/fujinet-nio-serial.c include/fujinet_nio_device.h \
 		include/fujinet_nio_endian.h include/fujinet_nio_serial_config.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 $< -lamiga -o $@
+
+$(NIO_NATIVE_TEST_PROBE): tools/fujinet-nio-native-test-probe.c \
+		include/fujinet_nio_device.h include/fujinet_nio_endian.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 $< -lamiga -o $@
 

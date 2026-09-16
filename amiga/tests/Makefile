@@ -9,6 +9,7 @@ QUEUE_TEST := $(BUILD_DIR)/test_fujinet_io_queue
 EXEC_BOUNDARY_TEST := $(BUILD_DIR)/test_fujinet_exec_boundary
 RESIDENT_TEST := $(BUILD_DIR)/test_fujinet_disk_resident
 PACKET_BACKEND_TEST := $(BUILD_DIR)/test_fujinet_nio_packet_backend
+DIRECTORY_BACKEND_TEST := $(BUILD_DIR)/test_fujinet_nio_directory_backend
 NIO_DEVICE_TEST := $(BUILD_DIR)/test_fujinet_nio_device
 SERIAL_CHANNEL_TEST := $(BUILD_DIR)/test_fujinet_nio_serial_channel
 EXCHANGE_OPTS_TEST := $(BUILD_DIR)/test_fujinet_nio_exchange_opts
@@ -20,7 +21,8 @@ LIBRARY := $(LIB_ROOT)/build/fujinet-nio-linux.a
 .PHONY: all test library clean
 
 all: $(TEST) $(RETRY_TEST) $(QUEUE_TEST) $(EXEC_BOUNDARY_TEST) $(RESIDENT_TEST) \
-	$(NIO_DEVICE_TEST) $(PACKET_BACKEND_TEST) $(SERIAL_CHANNEL_TEST) $(EXCHANGE_OPTS_TEST) \
+	$(NIO_DEVICE_TEST) $(PACKET_BACKEND_TEST) $(DIRECTORY_BACKEND_TEST) \
+	$(SERIAL_CHANNEL_TEST) $(EXCHANGE_OPTS_TEST) \
 	$(PAULA_UART_TEST) $(LIFECYCLE_TEST)
 
 $(TEST): test_fujinet_disk_driver.c \
@@ -101,7 +103,8 @@ $(LIFECYCLE_TEST): test_fujinet_serial_lifecycle.c \
 		$(DRIVER_ROOT)/serial.device/fujinet_paula_uart.c -o $@
 
 test: $(TEST) $(RETRY_TEST) $(QUEUE_TEST) $(EXEC_BOUNDARY_TEST) $(RESIDENT_TEST) \
-		$(NIO_DEVICE_TEST) $(PACKET_BACKEND_TEST) $(SERIAL_CHANNEL_TEST) $(EXCHANGE_OPTS_TEST) \
+		$(NIO_DEVICE_TEST) $(PACKET_BACKEND_TEST) $(DIRECTORY_BACKEND_TEST) \
+		$(SERIAL_CHANNEL_TEST) $(EXCHANGE_OPTS_TEST) \
 		$(PAULA_UART_TEST) $(LIFECYCLE_TEST)
 	./$(TEST)
 	./$(RETRY_TEST)
@@ -110,6 +113,7 @@ test: $(TEST) $(RETRY_TEST) $(QUEUE_TEST) $(EXEC_BOUNDARY_TEST) $(RESIDENT_TEST)
 	./$(RESIDENT_TEST)
 	./$(NIO_DEVICE_TEST)
 	./$(PACKET_BACKEND_TEST)
+	./$(DIRECTORY_BACKEND_TEST)
 	./$(SERIAL_CHANNEL_TEST)
 	./$(EXCHANGE_OPTS_TEST)
 	./$(PAULA_UART_TEST)
@@ -140,3 +144,21 @@ $(PACKET_BACKEND_TEST): $(PACKET_SOURCES) $(PACKET_HEADERS)
 		-DFN_AMIGA_EXPLICIT_LIFECYCLE -D__AMIGA__ -I$(DRIVER_ROOT)/include \
 		-I$(DRIVER_ROOT)/public/include -I$(DRIVER_ROOT)/nio.device \
 		-I$(LIB_ROOT)/include -Istubs $(PACKET_SOURCES) -o $@
+
+DIRECTORY_SOURCES := test_fujinet_nio_directory_backend.c \
+	$(DRIVER_ROOT)/nio.device/fujinet_nio_directory_backend.c \
+	$(DRIVER_ROOT)/nio.device/fujinet_nio_packet_backend.c \
+	$(DRIVER_ROOT)/nio.device/fujinet_nio_device.c \
+	$(DRIVER_ROOT)/common/fujinet_io_queue.c \
+	$(LIB_ROOT)/src/common/fn_packet_checksum_packet.c \
+	$(LIB_ROOT)/src/common/fn_packet_checksum.c \
+	$(LIB_ROOT)/src/common/fn_checksum_fold.c
+
+$(DIRECTORY_BACKEND_TEST): $(DIRECTORY_SOURCES) $(EXEC_STUB_HEADERS) \
+		$(DRIVER_ROOT)/nio.device/fujinet_nio_directory_backend.h \
+		$(DRIVER_ROOT)/include/fujinet_nio_endian.h
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -Wno-unused-function -DFUJINET_NIO_NATIVE_TEST \
+		-DFUJINET_NIO_DIRECTORY_TRANSFER_TIMEOUT_MS=100 \
+		-I$(DRIVER_ROOT)/include -I$(DRIVER_ROOT)/nio.device \
+		-I$(LIB_ROOT)/include -Istubs $(DIRECTORY_SOURCES) -o $@

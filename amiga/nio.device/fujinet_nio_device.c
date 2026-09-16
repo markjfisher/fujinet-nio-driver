@@ -7,6 +7,10 @@
 #include <exec/tasks.h>
 #include <exec/types.h>
 #include <dos/dos.h>
+#ifdef FUJINET_NIO_DIRECTORY_BACKEND
+#include <dos/dostags.h>
+#include <proto/dos.h>
+#endif
 #include <proto/exec.h>
 
 #include <string.h>
@@ -64,6 +68,10 @@ struct fujinet_nio_device_base {
     struct Task worker_task;
     APTR worker_stack;
     BYTE worker_signal;
+#ifdef FUJINET_NIO_DIRECTORY_BACKEND
+    struct Process *worker_process;
+    UBYTE worker_stop;
+#endif
     fujinet_nio_backend_open_fn backend_open_fn;
     fujinet_nio_backend_close_fn backend_close_fn;
     fujinet_nio_backend_exchange_fn backend_exchange_fn;
@@ -74,11 +82,20 @@ struct fujinet_nio_device_base {
 };
 
 struct ExecBase *SysBase;
+#ifdef FUJINET_NIO_DIRECTORY_BACKEND
+extern struct DosLibrary *DOSBase;
+static struct fujinet_nio_device_base *directory_worker_base;
+#endif
 
 #ifndef FUJINET_NIO_NATIVE_TEST
 static const char device_name[] = DEVICE_NAME;
+#ifdef FUJINET_NIO_DIRECTORY_BACKEND
+static const char device_id[] =
+    "$VER: fujinet-nio-native-test.device 0.1 (16.9.2026) native-test \xa9 2026 Mark Fisher\r\n";
+#else
 static const char device_id[] =
     "$VER: " DEVICE_NAME " 0.9 (9.9.2026) \xa9 2026 Mark Fisher\r\n";
+#endif
 #endif
 
 static uint8_t pad_nonzero(const struct FujiNetNIORequest *req)
@@ -108,6 +125,27 @@ static void close_backend(struct fujinet_nio_device_base *base)
     if (base->backend_close_fn != NULL) base->backend_close_fn();
     base->backend_open = 0;
 }
+
+#if defined(FUJINET_NIO_DIRECTORY_BACKEND) && !defined(FUJINET_NIO_NATIVE_TEST)
+static void stop_directory_worker(struct fujinet_nio_device_base *base)
+{
+    unsigned spins;
+
+    if (base == NULL || base->worker_process == NULL)
+        return;
+    base->worker_stop = 1;
+    Signal((struct Task *)base->worker_process, SIGBREAKF_CTRL_C);
+    if (base->worker_signal >= 0)
+        Signal((struct Task *)base->worker_process,
+               1UL << base->worker_signal);
+    for (spins = 0; spins < 250 && base->worker_signal >= 0; ++spins)
+        Delay(1);
+    if (base->worker_signal < 0) {
+        base->worker_process = NULL;
+        directory_worker_base = NULL;
+    }
+}
+#endif
 
 static uint8_t ensure_backend_open(struct fujinet_nio_device_base *base)
 {
@@ -302,7 +340,9 @@ static void worker_pump(struct fujinet_nio_device_base *base)
     }
 }
 
+#ifndef FUJINET_NIO_NATIVE_TEST
 static void device_worker_entry(void);
+#endif
 static BPTR device_expunge(register struct fujinet_nio_device_base *base
                                FN_REGISTER("a6"));
 
@@ -318,6 +358,36 @@ static struct fujinet_nio_device_base *device_init(
     base->backend_open_fn = backend_open;
     base->backend_close_fn = backend_close;
     base->backend_exchange_fn = backend_exchange;
+#ifdef FUJINET_NIO_DIRECTORY_BACKEND
+    {
+        unsigned spins;
+
+        if (DOSBase == NULL) {
+            DOSBase = (struct DosLibrary *)OpenLibrary("dos.library", 37);
+        }
+        if (DOSBase == NULL) return NULL;
+        base->worker_signal = -1;
+        base->worker_stop = 0;
+        directory_worker_base = base;
+        base->worker_process = CreateNewProcTags(
+            NP_Entry, (ULONG)device_worker_entry,
+            NP_StackSize, WORKER_STACK_SIZE,
+            NP_Name, (ULONG)"fn-native-test",
+            TAG_DONE);
+        if (base->worker_process == NULL) {
+            directory_worker_base = NULL;
+            return NULL;
+        }
+        for (spins = 0; spins < 100 && base->worker_signal < 0; ++spins)
+            Delay(1);
+        if (base->worker_signal < 0) {
+            stop_directory_worker(base);
+            directory_worker_base = NULL;
+            base->worker_process = NULL;
+            return NULL;
+        }
+    }
+#else
     base->backend_set_baud_fn = backend_set_baud;
     base->backend_get_baud_fn = backend_get_baud;
     base->backend_set_serial_fn = backend_set_serial;
@@ -339,6 +409,7 @@ static struct fujinet_nio_device_base *device_init(
         FreeSignal(base->worker_signal);
         return NULL;
     }
+#endif
 #endif
     return base;
 }
@@ -421,6 +492,15 @@ static BPTR device_expunge(
     Enable();
 
 #ifndef FUJINET_NIO_NATIVE_TEST
+#ifdef FUJINET_NIO_DIRECTORY_BACKEND
+    if (base->worker_process != NULL) {
+        stop_directory_worker(base);
+        if (base->worker_process != NULL) {
+            base->device.dd_Library.lib_Flags |= LIBF_DELEXP;
+            return 0;
+        }
+    }
+#else
     if (base->worker_stack != NULL) {
         RemTask(&base->worker_task);
         FreeMem(base->worker_stack, WORKER_STACK_SIZE);
@@ -430,6 +510,7 @@ static BPTR device_expunge(
         FreeSignal(base->worker_signal);
         base->worker_signal = -1;
     }
+#endif
 #endif
     close_backend(base);
 #ifndef FUJINET_NIO_NATIVE_TEST
@@ -451,6 +532,25 @@ static ULONG device_reserved(void)
 #ifndef FUJINET_NIO_NATIVE_TEST
 static void device_worker_entry(void)
 {
+#ifdef FUJINET_NIO_DIRECTORY_BACKEND
+    struct fujinet_nio_device_base *base = directory_worker_base;
+    ULONG signal_mask;
+
+    if (base == NULL) return;
+    base->worker_signal = AllocSignal(-1);
+    if (base->worker_signal < 0) return;
+    signal_mask = (1UL << base->worker_signal) | SIGBREAKF_CTRL_C;
+    for (;;) {
+        ULONG got = Wait(signal_mask);
+        if (base->worker_stop || (got & SIGBREAKF_CTRL_C) != 0)
+            break;
+        worker_pump(base);
+    }
+    if (base->worker_signal >= 0) {
+        FreeSignal(base->worker_signal);
+        base->worker_signal = -1;
+    }
+#else
     struct fujinet_nio_device_base *base =
         (struct fujinet_nio_device_base *)FindTask(NULL)->tc_UserData;
     ULONG signal_mask = 1UL << base->worker_signal;
@@ -459,6 +559,7 @@ static void device_worker_entry(void)
         Wait(signal_mask);
         worker_pump(base);
     }
+#endif
 }
 #endif
 
@@ -541,7 +642,13 @@ static void device_begin_io(
                             req->fn_io.io_Command);
     base->io_processing = 1;
 #ifndef FUJINET_NIO_NATIVE_TEST
+#ifdef FUJINET_NIO_DIRECTORY_BACKEND
+    if (base->worker_process != NULL && base->worker_signal >= 0)
+        Signal((struct Task *)base->worker_process,
+               1UL << base->worker_signal);
+#else
     Signal(&base->worker_task, 1UL << base->worker_signal);
+#endif
 #endif
     Enable();
 }
