@@ -560,6 +560,22 @@ void backend_get_serial(uint32_t *unit, char *name, uint16_t name_cap)
     name[name_cap - 1U] = '\0';
 }
 
+static void set_serial_parameters(void)
+{
+    serial_req->io_Baud = serial_baud;
+    serial_req->io_ReadLen = 8;
+    serial_req->io_WriteLen = 8;
+    serial_req->io_StopBits = 1;
+    serial_req->io_RBufLen = FN_SERIAL_BACKEND_RBUF_SIZE;
+    /* SERF_RAD_BOOGIE skips extra serial.device checks under 8-bit, no-parity,
+     * no-XON/XOFF. It does not change Paula TX/RX direction, SERPER, or create
+     * a FIFO. Overrun remains a Paula RBF miss: the prior received character
+     * was not cleared before the next one completed. Detection via
+     * IO_STATF_OVERRUN / SerErr_LineErr is preserved. FujiBus uses SLIP
+     * framing and its own packet integrity rather than RS-232 line-status bits. */
+    serial_req->io_SerFlags = SERF_XDISABLED | SERF_RAD_BOOGIE;
+}
+
 uint8_t backend_open(void)
 {
     if (serial_open && timer_open && session_initialized) return FN_OK;
@@ -577,18 +593,7 @@ uint8_t backend_open(void)
     /* Fill IOExtSer before OpenDevice so fujinet-serial.device can program
      * SERPER at the requested rate on claim. Writing 19200 then SETPARAMS
      * 38400 garbled the first PiStorm request (QUERY timeout, cause=4). */
-    serial_req->io_Baud = serial_baud;
-    serial_req->io_ReadLen = 8;
-    serial_req->io_WriteLen = 8;
-    serial_req->io_StopBits = 1;
-    serial_req->io_RBufLen = FN_SERIAL_BACKEND_RBUF_SIZE;
-    /* SERF_RAD_BOOGIE skips extra serial.device checks under 8-bit, no-parity,
-     * no-XON/XOFF. It does not change Paula TX/RX direction, SERPER, or create
-     * a FIFO. Overrun remains a Paula RBF miss: the prior received character
-     * was not cleared before the next one completed. Detection via
-     * IO_STATF_OVERRUN / SerErr_LineErr is preserved. FujiBus uses SLIP
-     * framing and its own packet integrity rather than RS-232 line-status bits. */
-    serial_req->io_SerFlags = SERF_XDISABLED | SERF_RAD_BOOGIE;
+    set_serial_parameters();
     if (OpenDevice((CONST_STRPTR)serial_device_name, serial_unit,
                    (struct IORequest *)serial_req, 0) != 0) {
         backend_close();
@@ -596,6 +601,10 @@ uint8_t backend_open(void)
     }
     serial_open = 1;
 
+    /* Stock serial.device replaces IOExtSer settings with its defaults during
+     * OpenDevice. Restore our baud, receive buffer and binary 8N1 settings so
+     * SETPARAMS disables XON/XOFF rather than consuming FujiBus payload bytes. */
+    set_serial_parameters();
     serial_req->IOSer.io_Command = SDCMD_SETPARAMS;
     if (DoIO((struct IORequest *)serial_req) != 0) {
         backend_close();
@@ -760,7 +769,7 @@ uint8_t backend_exchange(
             *detail = FUJINET_NIO_DETAIL_SERIAL_READ;
     }
     /*
-     * Timeout, Paula overrun (cause=7), and leftover SLIP (cause=3) all leave
+     * Session framing failures, timeouts and overruns may leave unread
      * bytes on the wire. ESP chunk pacing can still be transmitting (2 ms
      * gaps), so drain until RX is idle before the worker CloseDevice. The
      * next EXCHANGE lazy-reopens a clean session.
