@@ -43,6 +43,9 @@ struct fn_nio_exchange_opts {
     unsigned slot;
     uint32_t lba;
     int provocation;
+    const char *fixture_uri;
+    int disposable_fixture;
+    int write_intent;
     unsigned trials;
     const char *serial_device; /* NULL if --serial-device omitted */
     unsigned long serial_unit; /* 0 if omitted */

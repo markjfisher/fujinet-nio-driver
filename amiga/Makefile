@@ -125,14 +125,14 @@ $(BUILD_DIR)/serial.device/fujinet_serial_rbf.o: serial.device/fujinet_serial_rb
 $(BUILD_DIR)/serial.device/fujinet_paula_uart.o: include/fujinet_paula_uart.h
 $(BUILD_DIR)/channels/rs232/fujinet_nio_client.o: include/fujinet_nio_endian.h
 
-$(NIO_EXCHANGE): tools/fujinet-nio-exchange.c tools/fujinet_nio_exchange_opts.c \
+$(NIO_EXCHANGE): tools/fujinet_nio_exchange_disk_adapter.c tools/fujinet_nio_exchange_disk_adapter.h tools/fujinet_nio_exchange_disk.c tools/fujinet_nio_exchange_disk.h tools/fujinet-nio-exchange.c tools/fujinet_nio_exchange_opts.c \
 		tools/fujinet_nio_exchange_opts.h include/fujinet_nio_device.h \
 		include/fujinet_disk_device.h include/fujinet_nio_backend.h \
 		include/fujinet_nio_endian.h include/fujinet_nio_serial_config.h \
 		$(LIBRARY)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 \
-		tools/fujinet-nio-exchange.c tools/fujinet_nio_exchange_opts.c \
+		tools/fujinet-nio-exchange.c tools/fujinet_nio_exchange_opts.c tools/fujinet_nio_exchange_disk.c tools/fujinet_nio_exchange_disk_adapter.c \
 		$(LIBRARY) -lamiga -o $@
 
 $(NIO_BAUD): tools/fujinet-nio-baud.c include/fujinet_nio_device.h \

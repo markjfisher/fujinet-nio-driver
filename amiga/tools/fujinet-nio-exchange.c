@@ -1,3 +1,4 @@
+#include <devices/trackdisk.h>
 #include <devices/serial.h>
 #include <devices/timer.h>
 #include <dos/dos.h>
@@ -16,6 +17,8 @@
 #include "fujinet_nio_device.h"
 #include "fujinet_nio_endian.h"
 #include "fujinet_nio_exchange_opts.h"
+#include "fujinet_nio_exchange_disk.h"
+#include "fujinet_nio_exchange_disk_adapter.h"
 #include "fujinet_nio_serial_config.h"
 #include "fujinet_nio_backend.h"
 #include "fujinet_disk_device.h"
@@ -611,8 +614,11 @@ static void print_matrix_usage(void)
             "[--trials N]\n"
             "Installed backend declares existing hardware; it does not detect or select it.\n"
             "Backend cold|warm controls lifecycle; installed backend defaults to serial.\n"
-            "Native requires warm clock or file-list; cold reset is unsupported.\n"
-            "Native rejects baud, serial, host-get, disk and provocation options.\n");
+            "Ordinary disk: --type disk-read|disk-write --backend warm --slot 1..8\n"
+            "  --lba N --fixture-uri URI --disposable-fixture [--write-intent] [--trials N]\n"
+            "Use isolated sessions; fixture remains mounted, including after failure.\n"
+            "Native requires warm clock, file-list or ordinary disk; cold is unsupported.\n"
+            "Native rejects baud, serial, host-get and provocation options.\n");
 }
 
 static int run_set_baud(struct FujiNetNIORequest *req, struct MsgPort *port,
@@ -726,6 +732,53 @@ static int cache_serial_probe(const struct IORequest *open_request,
     strcpy(probe_serial_name, name);
     probe_serial_unit = unit;
     return 0;
+}
+
+/* Ordinary diagnostics intentionally retain their mounted fixture. No eject or
+ * raw unmount: eject changes saved mappings. Run in an isolated session; the
+ * two occupancy checks are not atomic exclusion against competing clients. */
+static struct ordinary_disk_context ordinary;
+
+static int run_disk_ordinary(const struct fn_nio_exchange_opts *opts)
+{
+    struct ordinary_disk_context *c = &ordinary;
+    struct fn_exchange_disk_result result;
+    int status;
+    memset(c, 0, sizeof(*c));
+    c->opts = opts;
+    printf("ORDINARY isolated-session-required; occupancy checks are not atomic\n");
+    c->port = CreatePort(NULL, 0);
+    if (!c->port) return RETURN_FAIL;
+    if (OpenDevice((CONST_STRPTR)FUJINET_NIO_DEVICE_NAME, FUJINET_NIO_DEVICE_UNIT,
+                   &c->nio_open, 0) != 0) {
+        printf("ordinary broker open failed io_Error=%d\n", (int)c->nio_open.io_Error);
+        DeletePort(c->port); return RETURN_FAIL;
+    }
+    c->disk.iotd_Req.io_Message.mn_Node.ln_Type = NT_MESSAGE;
+    c->disk.iotd_Req.io_Message.mn_ReplyPort = c->port;
+    c->disk.iotd_Req.io_Message.mn_Length = sizeof(c->disk);
+    if (OpenDevice((CONST_STRPTR)FUJINET_DISK_DEVICE_NAME, opts->slot - 1,
+                   (struct IORequest *)&c->disk, 0) != 0) {
+        printf("ordinary disk open failed io_Error=%d\n", (int)c->disk.iotd_Req.io_Error);
+        CloseDevice(&c->nio_open); DeletePort(c->port); return RETURN_FAIL;
+    }
+    fn_disk_context_init(&c->codec, fn_exchange_disk_adapter_exchange, c);
+    status = fn_exchange_disk_run(opts, fn_exchange_disk_adapter_io, c, c->write_buffer,
+                                  c->read_buffer, &result);
+    printf("ORDINARY %s completed_trials=%u failure=%s\n",
+           status == 0 ? "PASS" : "FAIL", result.completed_trials,
+           result.failure ? result.failure : "none");
+    if (result.fixture_mounted)
+        printf("FIXTURE LEFT MOUNTED slot=%u uri=%s; saved mappings unchanged\n",
+               opts->slot, opts->fixture_uri);
+    else if (result.mount_attempted)
+        printf("FIXTURE STATE UNKNOWN slot=%u uri=%s; may remain mounted; "
+               "no retry or unmount attempted\n", opts->slot, opts->fixture_uri);
+    /* All commands were synchronous; no WaitIO on the OpenDevice request. */
+    CloseDevice((struct IORequest *)&c->disk);
+    CloseDevice(&c->nio_open);
+    DeletePort(c->port);
+    return status == 0 ? RETURN_OK : RETURN_FAIL;
 }
 
 static int run_disk_provocation(const struct fn_nio_exchange_opts *opts)
@@ -921,7 +974,7 @@ static int run_matrix(int argc, char **argv)
 
     if (opts.type == FN_NIO_EXCHANGE_TYPE_DISK_READ ||
         opts.type == FN_NIO_EXCHANGE_TYPE_DISK_WRITE)
-        return run_disk_provocation(&opts);
+        return opts.provocation ? run_disk_provocation(&opts) : run_disk_ordinary(&opts);
 
     nsteps = fn_nio_exchange_opts_plan(&opts, steps, 5);
     if (nsteps < 0) return RETURN_FAIL;

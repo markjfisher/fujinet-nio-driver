@@ -1,6 +1,7 @@
 #include "fujinet_nio_exchange_opts.h"
 
 #include <errno.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +25,10 @@ static int parse_ulong(const char *text, unsigned long *out)
     char *end;
 
     if (text == NULL || text[0] == '\0') return -1;
+    /* strtoul accepts a minus and negates modulo ULONG_MAX+1. Reject it
+     * before conversion; retain legacy whitespace and explicit plus syntax. */
+    while (isspace((unsigned char)*text)) ++text;
+    if (*text == '-' || *text == '\0') return -1;
     errno = 0;
     *out = strtoul(text, &end, 10);
     if (*end != '\0' || errno == ERANGE) return -1;
@@ -49,8 +54,26 @@ static int take_arg(int argc, char **argv, int *i, const char **out)
     return 0;
 }
 
+static int ordinary_disk_ok(const struct fn_nio_exchange_opts *o)
+{
+    return (o->type == FN_NIO_EXCHANGE_TYPE_DISK_READ ||
+            o->type == FN_NIO_EXCHANGE_TYPE_DISK_WRITE) &&
+        o->backend == FN_NIO_EXCHANGE_BACKEND_WARM && !o->provocation &&
+        o->fixture_uri != NULL && o->fixture_uri[0] != '\0' &&
+        strlen(o->fixture_uri) < 512 && o->disposable_fixture &&
+        (o->type != FN_NIO_EXCHANGE_TYPE_DISK_WRITE || o->write_intent) &&
+        (o->type != FN_NIO_EXCHANGE_TYPE_DISK_READ || !o->write_intent) &&
+        o->has_slot && o->slot >= 1 && o->slot <= 8 && o->has_lba &&
+        o->lba <= 0x7FFFFFUL && !o->baud && !o->serial_device &&
+        !o->has_serial_unit && !o->serial_unit && !o->has_size && !o->size &&
+        !o->uri && !o->has_list_flags && !o->list_flags &&
+        o->trials >= 1 && o->trials <= 100000;
+}
+
 static int native_opts_ok(const struct fn_nio_exchange_opts *o)
 {
+    if (ordinary_disk_ok(o)) return 1;
+    if (o->fixture_uri || o->disposable_fixture || o->write_intent) return 0;
     if (o->backend != FN_NIO_EXCHANGE_BACKEND_WARM || o->baud != 0 ||
         o->serial_device != NULL || o->has_serial_unit || o->serial_unit != 0 ||
         o->provocation || o->has_slot || o->slot || o->has_lba || o->lba ||
@@ -132,6 +155,13 @@ int fn_nio_exchange_opts_parse(int argc, char **argv,
                 return -1;
             out->has_lba = 1;
             out->lba = (uint32_t)parsed;
+        } else if (strcmp(argv[i], "--fixture-uri") == 0) {
+            if (take_arg(argc, argv, &i, &value) != 0) return -1;
+            out->fixture_uri = value;
+        } else if (strcmp(argv[i], "--disposable-fixture") == 0) {
+            out->disposable_fixture = 1;
+        } else if (strcmp(argv[i], "--write-intent") == 0) {
+            out->write_intent = 1;
         } else if (strcmp(argv[i], "--provocation") == 0) {
             out->provocation = 1;
         } else if (strcmp(argv[i], "--trials") == 0) {
@@ -167,12 +197,16 @@ int fn_nio_exchange_opts_parse(int argc, char **argv,
     if (out->has_serial_unit && out->serial_device == NULL) return -1;
     if (out->type == FN_NIO_EXCHANGE_TYPE_DISK_READ ||
         out->type == FN_NIO_EXCHANGE_TYPE_DISK_WRITE) {
+        if (!out->provocation) return ordinary_disk_ok(out) ? 0 : -1;
+        if (out->fixture_uri || out->disposable_fixture || out->write_intent)
+            return -1;
         if (!out->provocation || out->backend != FN_NIO_EXCHANGE_BACKEND_COLD ||
             out->baud == 0UL || out->slot == 0) return -1;
         if (out->has_size || out->uri != NULL) return -1;
     } else if (out->provocation || out->slot != 0 || out->lba != 0) {
         return -1;
     }
+    if (out->fixture_uri || out->disposable_fixture || out->write_intent) return -1;
     if (out->has_list_flags && out->type != FN_NIO_EXCHANGE_TYPE_FILE_LIST)
         return -1;
     if (out->type == FN_NIO_EXCHANGE_TYPE_FILE_LIST) {
@@ -190,6 +224,14 @@ int fn_nio_exchange_opts_plan(const struct fn_nio_exchange_opts *opts,
     int count = 0;
 
     if (opts == NULL || steps == NULL || max_steps < 1) return -1;
+    if ((opts->type == FN_NIO_EXCHANGE_TYPE_DISK_READ ||
+         opts->type == FN_NIO_EXCHANGE_TYPE_DISK_WRITE) && !opts->provocation) {
+        if (!ordinary_disk_ok(opts) ||
+            (opts->installed_backend != FN_NIO_EXCHANGE_INSTALLED_NATIVE &&
+             opts->installed_backend != FN_NIO_EXCHANGE_INSTALLED_SERIAL)) return -1;
+        steps[0] = FN_NIO_EXCHANGE_STEP_MEASURE;
+        return 1;
+    }
     if (opts->installed_backend == FN_NIO_EXCHANGE_INSTALLED_NATIVE) {
         if (!native_opts_ok(opts) || max_steps < 2) return -1;
         steps[0] = FN_NIO_EXCHANGE_STEP_WARMUP;

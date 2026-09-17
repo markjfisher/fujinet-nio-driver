@@ -1,3 +1,4 @@
+#include <limits.h>
 #include "fujinet_nio_exchange_opts.h"
 #include "fujinet_nio_serial_config.h"
 #include "fujinet_nio_session_diag.h"
@@ -820,8 +821,66 @@ static void test_native_context(void)
           steps[0] == FN_NIO_EXCHANGE_STEP_SET_BAUD);
 }
 
+static void test_negative_wraparound(void)
+{
+    char negative[80];
+    char *args[] = {"tool", "--type", "clock", "--backend", "warm", "--trials", negative};
+    struct fn_nio_exchange_opts opts;
+    snprintf(negative, sizeof(negative), "-%lu", ULONG_MAX);
+    CHECK("negative ULONG_MAX cannot become one", fn_nio_exchange_opts_parse(7, args, &opts) != 0);
+    snprintf(negative, sizeof(negative), "  -%lu", ULONG_MAX - 16UL);
+    CHECK("negative whitespace cannot wrap", fn_nio_exchange_opts_parse(7, args, &opts) != 0);
+    strcpy(negative, " +2");
+    CHECK("legacy positive whitespace", fn_nio_exchange_opts_parse(7, args, &opts) == 0 && opts.trials == 2);
+}
+
+static void test_ordinary_disk(void)
+{
+    char *args[] = {"tool", "--type", "disk-write", "--backend", "warm",
+        "--slot", "8", "--lba", "17", "--fixture-uri", "host:/scratch.adf",
+        "--disposable-fixture", "--write-intent", "--installed-backend", "native",
+        "--trials", "2", "--baud", "9600"};
+    struct fn_nio_exchange_opts opts, bad;
+    int steps[3];
+    char uri[513];
+    CHECK("ordinary authorized", fn_nio_exchange_opts_parse(17, args, &opts) == 0);
+    CHECK("ordinary plan no serial", fn_nio_exchange_opts_plan(&opts, steps, 3) == 1 &&
+          steps[0] == FN_NIO_EXCHANGE_STEP_MEASURE);
+    CHECK("ordinary serial rejected", fn_nio_exchange_opts_parse(19, args, &bad) != 0);
+#define BAD_DISK(field, value) do { bad = opts; bad.field = value; \
+    CHECK("ordinary invalid " #field, fn_nio_exchange_opts_plan(&bad, steps, 3) < 0); } while (0)
+    BAD_DISK(fixture_uri, NULL); BAD_DISK(fixture_uri, "");
+    BAD_DISK(disposable_fixture, 0); BAD_DISK(write_intent, 0);
+    BAD_DISK(has_slot, 0); BAD_DISK(slot, 0); BAD_DISK(slot, 9);
+    BAD_DISK(has_lba, 0); BAD_DISK(lba, 0x800000UL);
+    BAD_DISK(backend, FN_NIO_EXCHANGE_BACKEND_COLD);
+    BAD_DISK(baud, 9600); BAD_DISK(serial_device, "serial.device");
+    BAD_DISK(has_serial_unit, 1); BAD_DISK(uri, "host:/");
+    BAD_DISK(has_size, 1); BAD_DISK(has_list_flags, 1);
+#undef BAD_DISK
+    memset(uri, 'x', 512); uri[512] = '\0';
+    args[10] = uri;
+    CHECK("ordinary URI 512 parse rejected", fn_nio_exchange_opts_parse(17, args, &bad) != 0);
+    bad = opts; bad.fixture_uri = uri;
+    CHECK("ordinary URI 512 rejected", fn_nio_exchange_opts_plan(&bad, steps, 3) < 0);
+    uri[511] = '\0';
+    CHECK("ordinary URI 511 accepted", fn_nio_exchange_opts_plan(&bad, steps, 3) == 1);
+    CHECK("ordinary URI 511 parse accepted", fn_nio_exchange_opts_parse(17, args, &bad) == 0);
+    args[10] = "host:/scratch.adf";
+    args[8] = "8388608";
+    CHECK("ordinary offset overflow", fn_nio_exchange_opts_parse(17, args, &bad) != 0);
+    args[8] = "17"; args[14] = "serial";
+    CHECK("ordinary serial installed", fn_nio_exchange_opts_parse(17, args, &opts) == 0);
+    args[2] = "disk-read";
+    CHECK("ordinary read write conflict", fn_nio_exchange_opts_parse(17, args, &bad) != 0);
+    CHECK("ordinary read authorized", fn_nio_exchange_opts_parse(12, args, &opts) == 0);
+    CHECK("ordinary missing declaration", fn_nio_exchange_opts_parse(11, args, &bad) != 0);
+}
+
 int main(void)
 {
+    test_negative_wraparound();
+    test_ordinary_disk();
     test_native_context();
     test_packet_checksum_modes();
     test_parse_file_list_cold();

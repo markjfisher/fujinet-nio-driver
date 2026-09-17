@@ -152,7 +152,8 @@ Omitting `--serial-device` uses whatever `fujinet-nio-serial` last set.
 `--installed-backend serial|native` declares the already installed backend
 (default `serial`); it does not discover or switch hardware. `--backend
 cold|warm` remains the separate lifecycle choice. Native installations support
-warm clock and file-list operations using EXCHANGE only:
+warm clock and file-list operations using EXCHANGE only, plus ordinary resident
+disk diagnostics:
 
 ```text
 fujinet-nio-exchange --installed-backend native --backend warm --type clock --trials 2
@@ -160,10 +161,50 @@ fujinet-nio-exchange --installed-backend native --backend warm --type file-list 
 ```
 
 Native cold is unsupported because there is no generic reset command. Native
-commands reject baud, serial-device/unit, host-get, disk, provocation and explicit
-slot/LBA options (including zero) before opening the device. File-list requires a
+commands reject baud, serial-device/unit, host-get and provocation before opening
+the device. Clock/file-list reject explicit slot/LBA options (including zero). File-list requires a
 nonempty URI and supported size. The context/lifecycle line precedes unchanged
 trial fields; `native=` in a trial remains its historical error-detail field.
+
+
+Ordinary disk diagnostics require explicitly supplied disposable standard DD/HD
+ADF fixtures, warm lifecycle, slot 1–8 and LBA. Writing also requires
+`--write-intent`; a read rejects that flag. The slot maps to resident unit
+`slot - 1`. These commands work with the installed native or serial broker
+without baud, pacing or serial configuration:
+
+```text
+fujinet-nio-exchange --installed-backend native --backend warm --type disk-read --slot 1 --lba 17 --fixture-uri host:/disposable-read.adf --disposable-fixture
+fujinet-nio-exchange --installed-backend native --backend warm --type disk-write --slot 8 --lba 17 --fixture-uri host:/disposable-write.adf --disposable-fixture --write-intent --trials 3
+```
+
+Run only in an isolated diagnostic session. Local resident state and remote INFO
+must both report an unused slot before mount; these checks do not atomically
+exclude another client racing the mount. Existing mounted media is refused.
+Geometry bounds are checked before transfers. Each write uses a deterministic
+trial-distinct 512-byte pattern, flushes, then compares every read-back byte.
+The zero-based trial pattern byte `i` is
+`((i ^ 0x5a) ^ (trial >> ((i % 4) * 8))) & 255`. A failed operation or mismatch
+stops the command with nonzero status; the tool does not replay it. Exec errors
+and available broker/transport/service trace details are reported separately.
+Mount, geometry and flush have no exchange-detail trace; the tool reports their
+actual resident completion only.
+
+Reads report the one-based trial and a 32-bit FNV-1a checksum over all 512
+returned bytes so an independent fixture can verify what the tool received.
+
+The fixture remains mounted after success **and after any post-mount failure**.
+The tool prints `FIXTURE LEFT MOUNTED`. If mount itself fails, remote completion
+may be uncertain: it reports `FIXTURE STATE UNKNOWN` and that the fixture may
+remain mounted, without retrying or unmounting. It does not restore overwritten data, does
+not raw-unmount behind the resident, and does not change saved mappings.
+Automatic eject is deliberately absent because `TD_EJECT` changes saved mappings.
+When finished, end the disposable session or deliberately use the standard
+mount/eject workflow.
+
+Legacy serial provocation remains separate and explicitly selected with
+`--provocation --backend cold --baud ... --slot ... --lba ...`. It cannot be
+combined with ordinary fixture/declaration/write-intent flags.
 
 
 To separate cold vs warm serial and response size on real hardware, use
