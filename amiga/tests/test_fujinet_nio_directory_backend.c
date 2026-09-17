@@ -7,6 +7,8 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <signal.h>
+#include <sys/wait.h>
 
 #include <exec/errors.h>
 #include <exec/io.h>
@@ -67,24 +69,27 @@ void FreeMem(APTR memory, ULONG bytes)
 }
 
 static char temp_dir[256];
+static pid_t peer;
+static const char *self_path;
 
 static int write_file(const char *dir, const char *name, const void *data,
                       size_t size)
 {
-    char path[300];
+    char path[300], tmp[310];
     FILE *fp;
 
     if (snprintf(path, sizeof(path), "%s/%s", dir, name) >= (int)sizeof(path))
         return -1;
-    fp = fopen(path, "wb");
+    snprintf(tmp, sizeof(tmp), "%s.peer-tmp", path);
+    fp = fopen(tmp, "wb");
     if (fp == NULL)
         return -1;
     if (size > 0 && fwrite(data, 1, size, fp) != size) {
         fclose(fp);
         return -1;
     }
-    fclose(fp);
-    return 0;
+    if (fclose(fp) != 0) return -1;
+    return rename(tmp, path);
 }
 
 static int file_exists_at(const char *dir, const char *name)
@@ -141,6 +146,12 @@ static void remove_path(const char *dir, const char *name)
 
 static void rmdir_temp(void)
 {
+    if (peer > 0) { kill(peer, SIGTERM); waitpid(peer, NULL, 0); peer = 0; }
+    remove_path(temp_dir, "CHALLENGE");
+    remove_path(temp_dir, "ACK");
+    remove_path(temp_dir, "BARRIER");
+    remove_path(temp_dir, "AMBIGUOUS");
+    remove_path(temp_dir, "RECOVER");
     remove_path(temp_dir, FN_DIRECTORY_IDENTITY_NAME);
     remove_path(temp_dir, FN_DIRECTORY_TO_HOST_NAME);
     remove_path(temp_dir, FN_DIRECTORY_TO_GUEST_NAME);
@@ -151,6 +162,29 @@ static void rmdir_temp(void)
 
 static void write_identity(void)
 {
+    const char initial[] = "00000000000000000000000000000000\n";
+    CHECK("initial challenge", write_file(temp_dir, "CHALLENGE", initial, 33) == 0);
+    peer = fork();
+    CHECK("fork independent peer", peer >= 0);
+    if (peer == 0) {
+        unsigned generation = 1;
+        char request[33], next[34], barrier[41];
+        memcpy(next, initial, 33);
+        next[33] = '\0';
+        for (;;) {
+            snprintf(barrier, sizeof(barrier), "BARRIER.%.32s", next);
+            if (read_file(temp_dir, barrier, request, 33) == 0) {
+                remove_path(temp_dir, barrier);
+                remove_path(temp_dir, FN_DIRECTORY_TO_HOST_NAME);
+                remove_path(temp_dir, FN_DIRECTORY_TO_GUEST_NAME);
+                snprintf(next, sizeof(next), "%032x\n", generation++);
+                write_file(temp_dir, "CHALLENGE", next, 33);
+                write_file(temp_dir, "ACK", request, 33);
+            }
+            usleep(1000);
+        }
+    }
+
     CHECK("write IDENTITY",
           write_file(temp_dir, FN_DIRECTORY_IDENTITY_NAME,
                      FN_DIRECTORY_IDENTITY_BODY,
@@ -405,11 +439,200 @@ static void test_timeout_discards_to_host(void)
           backend_exchange(request, FN_HEADER_SIZE, response,
                            sizeof(response), &length, &detail, &native_err,
                            &native_status) == FN_ERR_TRANSPORT);
+    CHECK("ambiguity persists", file_exists_at(temp_dir, "AMBIGUOUS"));
+    backend_close();
+    CHECK("automatic reopen cannot recover", backend_open() == FN_ERR_TRANSPORT);
+    CHECK("automatic reopen retains ambiguity", file_exists_at(temp_dir, "AMBIGUOUS"));
+    {
+        pid_t fresh = fork();
+        int exit_status = -1;
+        CHECK("fork fresh adapter process", fresh >= 0);
+        if (fresh == 0) {
+            execl(self_path, self_path, "--expect-quarantine", (char *)NULL);
+            _exit(90);
+        }
+        if (fresh > 0) {
+            CHECK("wait fresh adapter", waitpid(fresh, &exit_status, 0) == fresh);
+            CHECK("reload cannot erase quarantine", WIFEXITED(exit_status) && WEXITSTATUS(exit_status) == 0);
+        }
+    }
+    {
+        char token[33];
+        CHECK("read recovery challenge", read_file(temp_dir, "CHALLENGE", token, 33) == 0);
+        CHECK("explicit operator authorization", write_file(temp_dir, "RECOVER", token, 33) == 0);
+        CHECK("independent barrier permits explicit recovery", backend_open() == FN_OK);
+        CHECK("authorization consumed", !file_exists_at(temp_dir, "RECOVER"));
+        CHECK("proven recovery clears ambiguity", !file_exists_at(temp_dir, "AMBIGUOUS"));
+    }
     CHECK("timeout discarded to-host",
           !file_exists_at(temp_dir, FN_DIRECTORY_TO_HOST_NAME));
     CHECK("timeout discarded to-host tmp",
           !file_exists_at(temp_dir, "to-host.pkt.tmp"));
     backend_close();
+    rmdir_temp();
+}
+
+static void test_late_reply_cannot_complete_next_call(void)
+{
+    uint8_t request[FN_HEADER_SIZE], response[16], stale[8] = {0x45, 1, 8, 0, 0, 1, 0, 0xa1};
+    uint16_t length, status;
+    uint8_t detail, native;
+    char token[33];
+    pid_t delivery;
+    int exit_status = -1;
+    unsigned i;
+    make_temp_dir();
+    write_identity();
+    CHECK("open before late reply", backend_open() == FN_OK);
+    make_clock(request);
+    CHECK("unknown first call", backend_exchange(request, sizeof(request), response,
+        sizeof(response), &length, &detail, &native, &status) == FN_ERR_TRANSPORT);
+    backend_close();
+    CHECK("reopen blocked", backend_open() == FN_ERR_TRANSPORT);
+    seal(stale, sizeof(stale));
+    CHECK("independent late same-command response", write_file(temp_dir, FN_DIRECTORY_TO_GUEST_NAME, stale, sizeof(stale)) == 0);
+    memset(response, 0x5a, sizeof(response));
+    CHECK("late response cannot satisfy later call", backend_exchange(request, sizeof(request), response,
+        sizeof(response), &length, &detail, &native, &status) == FN_ERR_TRANSPORT);
+    CHECK("blocked response length zero", length == 0);
+    for (i = 0; i < sizeof(response); ++i) CHECK("blocked buffer unchanged", response[i] == 0x5a);
+    CHECK("blocked caller did not send", !file_exists_at(temp_dir, FN_DIRECTORY_TO_HOST_NAME));
+    CHECK("fresh operator challenge", read_file(temp_dir, "CHALLENGE", token, 33) == 0);
+    CHECK("fresh operator consent", write_file(temp_dir, "RECOVER", token, 33) == 0);
+    CHECK("barrier recovery", backend_open() == FN_OK);
+    CHECK("old reply independently drained", !file_exists_at(temp_dir, FN_DIRECTORY_TO_GUEST_NAME));
+    delivery = fork();
+    CHECK("fork new delivery", delivery >= 0);
+    if (delivery == 0) {
+        for (i = 0; i < 2000; ++i) {
+            if (file_exists_at(temp_dir, FN_DIRECTORY_TO_HOST_NAME)) break;
+            usleep(1000);
+        }
+        if (i == 2000) _exit(2);
+        remove_path(temp_dir, FN_DIRECTORY_TO_HOST_NAME);
+        stale[7] = 0xb2;
+        seal(stale, sizeof(stale));
+        _exit(write_file(temp_dir, FN_DIRECTORY_TO_GUEST_NAME, stale, sizeof(stale)) != 0);
+    }
+    CHECK("fresh exchange after proof", backend_exchange(request, sizeof(request), response,
+        sizeof(response), &length, &detail, &native, &status) == FN_OK);
+    CHECK("fresh response not stale", length == 8 && response[7] == 0xb2);
+    if (delivery > 0) {
+        CHECK("delivery reaped", waitpid(delivery, &exit_status, 0) == delivery);
+        CHECK("delivery completed", WIFEXITED(exit_status) && WEXITSTATUS(exit_status) == 0);
+    }
+    backend_close();
+    rmdir_temp();
+}
+
+static void test_interrupted_recovery(void)
+{
+    char token[33], next[33];
+    unsigned poll;
+    int stopped;
+    make_temp_dir();
+    write_identity();
+    CHECK("initial barrier", backend_open() == FN_OK);
+    backend_close();
+    CHECK("current challenge", read_file(temp_dir, "CHALLENGE", token, 33) == 0);
+    CHECK("persist ambiguity", write_file(temp_dir, "AMBIGUOUS", token, 33) == 0);
+    CHECK("stale permission", write_file(temp_dir, "RECOVER", "ffffffffffffffffffffffffffffffff\n", 33) == 0);
+    CHECK("stale permission rejected", backend_open() == FN_ERR_TRANSPORT);
+    CHECK("stop independent peer", kill(peer, SIGSTOP) == 0);
+    CHECK("peer stopped", waitpid(peer, &stopped, WUNTRACED) == peer && WIFSTOPPED(stopped));
+    CHECK("authorize current challenge", write_file(temp_dir, "RECOVER", token, 33) == 0);
+    CHECK("missing ACK cannot recover", backend_open() == FN_ERR_TRANSPORT);
+    CHECK("permission consumed on interruption", !file_exists_at(temp_dir, "RECOVER"));
+    CHECK("interruption retains marker", file_exists_at(temp_dir, "AMBIGUOUS"));
+    CHECK("resume independent peer", kill(peer, SIGCONT) == 0);
+    for (poll = 0; poll < 2000; ++poll) {
+        if (read_file(temp_dir, "CHALLENGE", next, 33) == 0 && memcmp(next, token, 33)) break;
+        usleep(1000);
+    }
+    CHECK("late barrier rotates challenge", poll < 2000);
+    CHECK("late ACK alone cannot recover", backend_open() == FN_ERR_TRANSPORT);
+    CHECK("old consent still stale", write_file(temp_dir, "RECOVER", token, 33) == 0);
+    CHECK("stale consent with late ACK rejected", backend_open() == FN_ERR_TRANSPORT);
+    CHECK("new explicit consent", write_file(temp_dir, "RECOVER", next, 33) == 0);
+    CHECK("fresh barrier recovers", backend_open() == FN_OK);
+    CHECK("marker cleared only after proof", !file_exists_at(temp_dir, "AMBIGUOUS"));
+    backend_close();
+    rmdir_temp();
+}
+
+static void test_unreadable_marker(void)
+{
+    char path[300];
+    make_temp_dir();
+    write_identity();
+    snprintf(path, sizeof(path), "%s/AMBIGUOUS", temp_dir);
+    CHECK("dangling safety marker", symlink("missing-target", path) == 0);
+    CHECK("non-readable safety marker is not absence", backend_open() == FN_ERR_TRANSPORT);
+    CHECK("no packet with unreadable marker", !file_exists_at(temp_dir, FN_DIRECTORY_TO_HOST_NAME));
+    backend_close();
+    rmdir_temp();
+}
+
+static void test_early_consent_cannot_recover_later_failure(void)
+{
+    uint8_t request[FN_HEADER_SIZE], response[16], detail, native;
+    uint16_t length, status;
+    char token[33];
+    make_temp_dir(); write_identity();
+    CHECK("open healthy", backend_open() == FN_OK);
+    CHECK("healthy challenge", read_file(temp_dir, "CHALLENGE", token, 33) == 0);
+    CHECK("premature permit", write_file(temp_dir, "RECOVER", token, 33) == 0);
+    make_clock(request);
+    CHECK("later unknown completion", backend_exchange(request, sizeof(request), response,
+        sizeof(response), &length, &detail, &native, &status) == FN_ERR_TRANSPORT);
+    CHECK("healthy traffic retired permit", !file_exists_at(temp_dir, "RECOVER"));
+    backend_close();
+    CHECK("early consent cannot authorize replay", backend_open() == FN_ERR_TRANSPORT);
+    CHECK("ambiguity remains", file_exists_at(temp_dir, "AMBIGUOUS"));
+    backend_close(); rmdir_temp();
+}
+
+static void test_completed_reply_cleanup_failure(void)
+{
+    uint8_t request[FN_HEADER_SIZE], response[16], detail, native;
+    uint8_t expected[8] = {0x45, 1, 8, 0, 0, 1, 0, 0xc3};
+    uint16_t length, status;
+    pid_t delivery;
+    int exit_status;
+    unsigned i;
+    char marker[300];
+    make_temp_dir(); write_identity();
+    CHECK("open cleanup failure", backend_open() == FN_OK);
+    make_clock(request); seal(expected, sizeof(expected));
+    snprintf(marker, sizeof(marker), "%s/AMBIGUOUS.tmp", temp_dir);
+    delivery = fork();
+    CHECK("fork cleanup fault peer", delivery >= 0);
+    if (delivery == 0) {
+        for (i = 0; i < 2000; ++i) {
+            if (file_exists_at(temp_dir, FN_DIRECTORY_TO_HOST_NAME)) break;
+            usleep(1000);
+        }
+        if (i == 2000 || mkdir(marker, 0700) != 0) _exit(2);
+        remove_path(temp_dir, FN_DIRECTORY_TO_HOST_NAME);
+        _exit(write_file(temp_dir, FN_DIRECTORY_TO_GUEST_NAME, expected, sizeof(expected)) != 0);
+    }
+    CHECK("validated completion survives cleanup failure", backend_exchange(request, sizeof(request),
+        response, sizeof(response), &length, &detail, &native, &status) == FN_OK);
+    CHECK("exact successful reply retained", length == sizeof(expected) && !memcmp(response, expected, sizeof(expected)));
+    if (delivery > 0) {
+        CHECK("reap cleanup fault peer", waitpid(delivery, &exit_status, 0) == delivery);
+        CHECK("cleanup fault delivered", WIFEXITED(exit_status) && WEXITSTATUS(exit_status) == 0);
+    }
+    memset(response, 0x5a, sizeof(response));
+    CHECK("future calls blocked", backend_exchange(request, sizeof(request), response,
+        sizeof(response), &length, &detail, &native, &status) == FN_ERR_TRANSPORT);
+    CHECK("blocked call zero length", length == 0);
+    for (i = 0; i < sizeof(response); ++i) CHECK("blocked buffer preserved", response[i] == 0x5a);
+    CHECK("no replay after known completion", !file_exists_at(temp_dir, FN_DIRECTORY_TO_HOST_NAME));
+    backend_close();
+    CHECK("cleanup quarantine survives reopen", backend_open() == FN_ERR_TRANSPORT);
+    backend_close();
+    CHECK("remove injected obstruction", rmdir(marker) == 0);
     rmdir_temp();
 }
 
@@ -437,8 +660,11 @@ static void test_teardown(void)
     rmdir_temp();
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    if (argc == 2 && strcmp(argv[1], "--expect-quarantine") == 0)
+        return backend_open() == FN_ERR_TRANSPORT ? 0 : 1;
+    self_path = argv[0];
     test_identity_missing();
     test_identity_wrong();
     test_unsupported_controls();
@@ -448,6 +674,11 @@ int main(void)
     test_missing_peer();
     test_timeout_discards_to_host();
     test_teardown();
+    test_late_reply_cannot_complete_next_call();
+    test_interrupted_recovery();
+    test_unreadable_marker();
+    test_early_consent_cannot_recover_later_failure();
+    test_completed_reply_cleanup_failure();
     if (failures != 0) {
         fprintf(stderr, "%u directory-backend checks failed\n", failures);
         return 1;

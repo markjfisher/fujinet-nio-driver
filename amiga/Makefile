@@ -14,6 +14,7 @@ NIO_DEVICE := $(BUILD_DIR)/fujinet-nio.device
 NIO_DEVICE_MAP := $(NIO_DEVICE).map
 NIO_NATIVE_TEST_DEVICE := $(BUILD_DIR)/fujinet-nio-native-test.device
 NIO_NATIVE_TEST_DEVICE_MAP := $(NIO_NATIVE_TEST_DEVICE).map
+NIO_NATIVE_FAULT_PROBE := $(BUILD_DIR)/fujinet-nio-native-fault-probe
 NIO_NATIVE_TEST_PROBE := $(BUILD_DIR)/fujinet-nio-native-test-probe
 SERIAL_DEVICE := $(BUILD_DIR)/fujinet-serial.device
 SERIAL_DEVICE_MAP := $(SERIAL_DEVICE).map
@@ -55,7 +56,7 @@ all: tests native sdk
 
 native: library $(DEVICE) $(MOUNT_TOOL) $(RESIDENT_LOADER) $(RESIDENT_UNLOADER) $(TD_PROBE) \
 	$(NIO_DEVICE) $(SERIAL_DEVICE) $(NIO_EXCHANGE) $(NIO_BAUD) $(NIO_SERIAL) \
-	$(NIO_NATIVE_TEST_DEVICE) $(NIO_NATIVE_TEST_PROBE)
+	$(NIO_NATIVE_TEST_DEVICE) $(NIO_NATIVE_TEST_PROBE) $(NIO_NATIVE_FAULT_PROBE)
 
 sdk: $(SDK_LIBRARY) $(SDK_INCLUDE)/fujinet-amiga-disk/support.h $(SDK_INCLUDE)/fujinet-amiga-disk/device.h
 
@@ -176,3 +177,7 @@ tests:
 clean:
 	$(MAKE) -C tests clean
 	rm -rf $(BUILD_DIR)
+
+$(NIO_NATIVE_FAULT_PROBE): tools/fujinet-nio-native-fault-probe.c $(LIBRARY)
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 $< $(LIBRARY) -lamiga -o $@

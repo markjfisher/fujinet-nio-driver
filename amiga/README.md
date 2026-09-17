@@ -254,6 +254,54 @@ not a substitute for the next native harness, which must validate real
 message ports, `AbortIO()`, `Cause()`, and task/request lifetimes inside
 Amiberry.
 
+## Native-test directory recovery
+
+The native-test artifact requires the matching host test runner. It retains the
+public broker ABI and raw FujiBus packets; the following files are test harness
+controls, not a hardware bridge ABI or packet correlation fields.
+
+The host exclusively locks `PEER.lock`, creates a fresh 128-bit `CHALLENGE`, and
+publishes `IDENTITY`. The guest sends `BARRIER.<challenge>` containing that challenge. Between
+synchronous core ticks, the host drains old delivery, clears packet records,
+rotates the challenge, then publishes `ACK` with the requested value. The guest
+accepts only that invocation's exact acknowledgment and a rotated challenge.
+Missing/stale proof fails closed. Host restart changes the challenge and removes
+stale controls without clearing uncertainty.
+
+Before sending each request the guest publishes `AMBIGUOUS`. It clears this
+marker only after validated completion or proven pre-send rejection. Unknown
+completion therefore survives close/open, device reload and host process restart.
+This is process-lifecycle protection, not a host power-loss persistence claim. Ordinary retry
+callers cannot authorize recovery. If cleanup fails after a validated response,
+the current call keeps its known success and future calls stay quarantined;
+cleanup must not turn a completed write into a retry.
+
+For an isolated test session, wait for all affected calls and their retries to
+finish. Inspect independent backing state: a timed-out write may have happened.
+Then authorize one recovery from the guest Shell:
+
+```text
+Copy NATIVE:CHALLENGE NATIVE:RECOVER
+```
+
+The next new operation consumes this permission and requests a peer barrier.
+It does not replay an old operation. A failed/interrupted attempt requires fresh
+permission; never delete `AMBIGUOUS` manually to resume. Do not issue permission
+while old callers can still retry or while another client owns the directory.
+The isolated probe enforces this by joining every queued caller and waiting for
+the resident retry loop to finish before creating permission. The adapter cannot
+police an operator who violates this test-session precondition. Healthy traffic
+retires unused permission so it cannot authorize a later failure.
+
+The runner's optional `FAULT` controls (`hold` or `drop`, newline terminated)
+affect the next actual service response. `RELEASE` containing `release` plus
+newline publishes a held response; a completed barrier discards it instead.
+Startup and barriers retire fault/release controls, and an unused release is
+consumed immediately so it cannot release a future fault.
+These controls do not synthesize service replies. Software/guest evidence does
+not validate a physical Zorro bridge or guarantee exactly-once application
+semantics after a known-complete operation.
+
 ## Undeployed whole-packet containment component
 
 `nio.device/fujinet_nio_packet_backend.[ch]` is a portable raw FujiBus backend

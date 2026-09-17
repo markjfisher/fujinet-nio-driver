@@ -36,7 +36,7 @@
 #define FUJINET_NIO_DIRECTORY_POLL_MS 5
 #endif
 
-#define FN_DIR_PATH_MAX 280
+#define FN_DIR_PATH_MAX 320
 #define FN_DIR_DIR_MAX 256
 
 /* Version finds this; filename and token must say native-test. */
@@ -53,8 +53,11 @@ struct DosLibrary *DOSBase;
 
 static fn_packet_backend_t guard;
 static uint8_t scratch[FN_DIRECTORY_PACKET_CAPACITY];
+static uint8_t completed[FN_DIRECTORY_PACKET_CAPACITY];
 static uint8_t guard_inited;
 static char directory[FN_DIR_DIR_MAX];
+static uint8_t session_challenge[33];
+static uint8_t session_ready;
 
 static int join_path(char *out, unsigned out_cap, const char *dir,
                      const char *name)
@@ -138,7 +141,7 @@ static int file_exists(const char *path)
         return 0;
     lock = Lock((CONST_STRPTR)path, ACCESS_READ);
     if (lock == 0)
-        return 0;
+        return IoErr() == ERROR_OBJECT_NOT_FOUND ? 0 : 1;
     UnLock(lock);
     return 1;
 }
@@ -222,7 +225,8 @@ static int file_write_tmp(const char *tmp, const uint8_t *packet, uint32_t size)
         }
         put += (uint32_t)n;
     }
-    Close(fh);
+    if (!Flush(fh)) { Close(fh); return -1; }
+    if (!Close(fh)) return -1;
     return 0;
 }
 
@@ -265,7 +269,8 @@ static int file_exists(const char *path)
 
     if (path == NULL)
         return 0;
-    return stat(path, &st) == 0;
+    if (stat(path, &st) == 0) return 1;
+    return errno != ENOENT;
 }
 
 static int file_remove(const char *path)
@@ -461,7 +466,22 @@ static int named_absent(const char *name)
     if (strlen(tmp) + 4U >= sizeof(tmp))
         return 0;
     strcat(tmp, ".tmp");
-    return !file_exists(path) && !file_exists(tmp);
+#ifdef __AMIGA__
+    {
+        BPTR lock = Lock((CONST_STRPTR)path, ACCESS_READ);
+        if (lock) { UnLock(lock); return 0; }
+        if (IoErr() != ERROR_OBJECT_NOT_FOUND) return 0;
+        lock = Lock((CONST_STRPTR)tmp, ACCESS_READ);
+        if (lock) { UnLock(lock); return 0; }
+        return IoErr() == ERROR_OBJECT_NOT_FOUND;
+    }
+#else
+    {
+        struct stat st;
+        if (lstat(path, &st) == 0 || errno != ENOENT) return 0;
+        return lstat(tmp, &st) != 0 && errno == ENOENT;
+    }
+#endif
 }
 
 int fujinet_nio_directory_records_absent(void)
@@ -583,17 +603,70 @@ static uint8_t directory_local_reset(void *context)
     return FN_ERR_IO;
 }
 
+/* Sideband tokens never enter FujiBus. Only the independently running host
+ * can rotate CHALLENGE and acknowledge that synchronous work/delivery drained. */
+static int control_read(const char *name, uint8_t token[33])
+{
+    char path[FN_DIR_PATH_MAX];
+    uint32_t size;
+    unsigned i;
+    if (join_path(path, sizeof(path), directory, name) != 0 ||
+        file_size_of(path, &size) != 0 || size != 33 ||
+        file_read_all(path, token, size) != 0 || token[32] != '\n') return -1;
+    for (i = 0; i < 32; ++i)
+        if (!((token[i] >= '0' && token[i] <= '9') ||
+              (token[i] >= 'a' && token[i] <= 'f'))) return -1;
+    return 0;
+}
+
+static int control_write(const char *name, const uint8_t token[33])
+{
+    char path[FN_DIR_PATH_MAX], tmp[FN_DIR_PATH_MAX];
+    if (join_path(path, sizeof(path), directory, name) != 0 ||
+        strlen(path) + 4 >= sizeof(tmp)) return -1;
+    strcpy(tmp, path);
+    strcat(tmp, ".tmp");
+    if (file_write_tmp(tmp, token, 33) != 0) return -1;
+    /* The guest directory handler can cache a name consumed by the host.
+     * Delete our previous sideband name explicitly before publishing again;
+     * this is never used to erase ambiguity without the checks above. */
+    if (file_remove(path) != 0) return -1;
+    if (file_rename(tmp, path) != 0) return -1;
+    return 0;
+}
+
 static uint8_t directory_quiesce(void *context)
 {
+    uint8_t token[33], ack[33], next[33];
+    char barrier[41];
+    unsigned elapsed = 0;
     (void)context;
-    if (refresh_directory() != 0)
+    session_ready = 0;
+    if (refresh_directory() != 0 || control_read("CHALLENGE", token) != 0)
         return FN_ERR_TRANSPORT;
-    if (discard_records() != 0)
+    if (!named_absent("AMBIGUOUS")) {
+        /* Explicit operator consent only, issued after all old callers finish.
+         * Consume before requesting proof, so interruption remains closed. */
+        if (control_read("RECOVER", ack) != 0 || memcmp(ack, token, 33) != 0 ||
+            discard_named("RECOVER") != 0) return FN_ERR_TRANSPORT;
+    }
+    memcpy(barrier, "BARRIER.", 8);
+    memcpy(barrier + 8, token, 32);
+    barrier[40] = '\0';
+    if (discard_named("ACK") != 0 || control_write(barrier, token) != 0)
         return FN_ERR_TRANSPORT;
-    if (!named_absent(FN_DIRECTORY_TO_HOST_NAME) ||
-        !named_absent(FN_DIRECTORY_TO_GUEST_NAME))
-        return FN_ERR_TRANSPORT;
-    return FN_OK;
+    while (elapsed <= (unsigned)FUJINET_NIO_DIRECTORY_TRANSFER_TIMEOUT_MS) {
+        if (control_read("ACK", ack) == 0 && memcmp(ack, token, 33) == 0 &&
+            control_read("CHALLENGE", next) == 0 && memcmp(next, token, 33) != 0) {
+            if (discard_named("AMBIGUOUS") != 0) return FN_ERR_TRANSPORT;
+            memcpy(session_challenge, next, 33);
+            session_ready = 1;
+            return FN_OK;
+        }
+        sleep_poll();
+        elapsed += (unsigned)FN_DIR_SLEEP_MS;
+    }
+    return FN_ERR_TRANSPORT;
 }
 
 static fn_packet_outcome_t directory_transfer(void *context,
@@ -606,11 +679,26 @@ static fn_packet_outcome_t directory_transfer(void *context,
     (void)context;
     if (length != NULL)
         *length = 0;
+    {
+        uint8_t current[33];
+        if (!session_ready || control_read("CHALLENGE", current) != 0 ||
+            memcmp(current, session_challenge, 33) != 0 ||
+            !named_absent("AMBIGUOUS")) return FN_PACKET_UNKNOWN;
+        /* Consent deposited during healthy traffic cannot authorize recovery
+         * of a later failure. The operator must wait for affected callers. */
+        if (discard_named("RECOVER") != 0) return FN_PACKET_UNKNOWN;
+        /* Persist uncertainty before the peer can observe any request. */
+        if (control_write("AMBIGUOUS", session_challenge) != 0)
+            return FN_PACKET_UNKNOWN;
+    }
     sent = fujinet_nio_directory_client_send(request, request_length);
     if (sent == FN_DIR_BACKPRESSURE || sent == FN_DIR_EMPTY ||
         sent == FN_DIR_OVERSIZED || sent == FN_DIR_UNAVAILABLE ||
         sent == FN_DIR_FAILED)
+    {
+        if (discard_named("AMBIGUOUS") != 0) return FN_PACKET_UNKNOWN;
         return FN_PACKET_REJECTED;
+    }
 
     while (elapsed <= (unsigned)FUJINET_NIO_DIRECTORY_TRANSFER_TIMEOUT_MS) {
         uint16_t got = 0;
@@ -697,8 +785,24 @@ uint8_t backend_exchange(
         *native_io_error = 0;
     if (native_status != NULL)
         *native_status = 0;
-    return fn_packet_backend_exchange(&guard, request, request_len, response,
-                                      response_capacity, response_len);
+    {
+        uint8_t result;
+        if (response == NULL) {
+            if (response_len != NULL) *response_len = 0;
+            return FN_ERR_INVALID;
+        }
+        result = fn_packet_backend_exchange(&guard, request, request_len,
+            completed, response_capacity, response_len);
+        if (result == FN_OK && discard_named("AMBIGUOUS") != 0) {
+            guard.quarantined = 1;
+            /* This call completed and its validated reply was copied. Do not
+             * turn housekeeping failure into a retry of completed work; block
+             * all future work until explicit recovery instead. */
+            session_ready = 0;
+        }
+        if (result == FN_OK) memcpy(response, completed, *response_len);
+        return result;
+    }
 }
 
 uint8_t backend_set_baud(uint32_t baud)
