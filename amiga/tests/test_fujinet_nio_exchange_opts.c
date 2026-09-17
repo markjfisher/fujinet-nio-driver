@@ -704,8 +704,125 @@ static void test_session_diag(void)
     }
 }
 
+static void test_native_context(void)
+{
+    char *base[] = { "tool", "--type", "clock", "--backend", "warm",
+                     "--installed-backend", "native", NULL, NULL, NULL,
+                     NULL, NULL, NULL, NULL, NULL };
+    const char *bad[][2] = {
+        {"--baud", "38400"}, {"--serial-device", "serial.device"},
+        {"--serial-unit", "0"}, {"--slot", "1"}, {"--slot", "0"},
+        {"--lba", "0"}, {"--lba", "1"}, {"--provocation", NULL},
+        {"--trials", "0"}, {"--trials", "-1"},
+        {"--trials", "2x"},
+        {"--trials", "99999999999999999999999999999999999999"},
+        {"--backend", "cold"}, {"--backend", "unknown"},
+        {"--type", "host-get"}, {"--type", "disk-read"},
+        {"--type", "disk-write"}, {"--type", "unknown"},
+        {"--installed-backend", "unknown"}, {"--unknown", "value"},
+        {"--list-flags", "0"}, {"--type", "file-list"}
+    };
+    struct fn_nio_exchange_opts opts, valid;
+    int steps[3];
+    unsigned i;
+    CHECK("native clock parse", fn_nio_exchange_opts_parse(7, base, &opts) == 0);
+    valid = opts;
+    CHECK("native clock plan", fn_nio_exchange_opts_plan(&opts, steps, 3) == 2 &&
+          steps[0] == FN_NIO_EXCHANGE_STEP_WARMUP &&
+          steps[1] == FN_NIO_EXCHANGE_STEP_MEASURE);
+    steps[0] = steps[1] = 99;
+    CHECK("native short plan leaves buffer untouched",
+          fn_nio_exchange_opts_plan(&opts, steps, 1) < 0 && steps[0] == 99);
+    CHECK("native zero capacity", fn_nio_exchange_opts_plan(&opts, steps, 0) < 0);
+    CHECK("native null plan", fn_nio_exchange_opts_plan(&opts, NULL, 3) < 0);
+    for (i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+        char *first[] = {"tool", (char *)bad[i][0], (char *)bad[i][1],
+                         "--type", "clock", "--backend", "warm",
+                         "--installed-backend", "native"};
+        base[7] = (char *)bad[i][0];
+        base[8] = (char *)bad[i][1];
+        CHECK(bad[i][0], fn_nio_exchange_opts_parse(bad[i][1] ? 9 : 8, base, &opts) < 0);
+        /* Incompatible serial/disk flags reject even before context is supplied. */
+        if (i < 7)
+            CHECK("native option order", fn_nio_exchange_opts_parse(9, first, &opts) < 0);
+    }
+    base[7] = "--trials";
+    CHECK("missing numeric value", fn_nio_exchange_opts_parse(8, base, &opts) < 0);
+    base[7] = "--installed-backend";
+    CHECK("missing context", fn_nio_exchange_opts_parse(8, base, &opts) < 0);
+    base[2] = "file-list";
+    base[7] = "--size"; base[8] = "128";
+    CHECK("missing list URI", fn_nio_exchange_opts_parse(9, base, &opts) < 0);
+    base[9] = "--uri"; base[10] = "host:/";
+    base[11] = "--trials"; base[12] = "2";
+    CHECK("native list parse", fn_nio_exchange_opts_parse(13, base, &opts) == 0);
+    CHECK("native list plan", fn_nio_exchange_opts_plan(&opts, steps, 3) == 2 &&
+          steps[0] == FN_NIO_EXCHANGE_STEP_WARMUP &&
+          steps[1] == FN_NIO_EXCHANGE_STEP_MEASURE);
+    {
+        struct fn_nio_exchange_opts list = opts;
+        steps[0] = 99;
+        CHECK("native list bounded plan", fn_nio_exchange_opts_plan(&list, steps, 1) < 0 && steps[0] == 99);
+        list.size = 1;
+        CHECK("native list invalid size", fn_nio_exchange_opts_plan(&list, steps, 3) < 0);
+        list = opts; list.has_size = 0;
+        CHECK("native list absent size", fn_nio_exchange_opts_plan(&list, steps, 3) < 0);
+        list = opts; list.uri = "";
+        CHECK("native list empty URI", fn_nio_exchange_opts_plan(&list, steps, 3) < 0);
+        list = opts; list.has_list_flags = 1; list.list_flags = 256;
+        CHECK("native list invalid flags", fn_nio_exchange_opts_plan(&list, steps, 3) < 0);
+        list.list_flags = 2;
+        CHECK("native list valid flags", fn_nio_exchange_opts_plan(&list, steps, 3) == 2);
+        list.has_list_flags = 0;
+        CHECK("native list inconsistent flags", fn_nio_exchange_opts_plan(&list, steps, 3) < 0);
+    }
+    base[10] = "";
+    CHECK("empty list URI", fn_nio_exchange_opts_parse(13, base, &opts) < 0);
+#define BAD_NATIVE(field, value) do { \
+    opts = valid; opts.field = value; steps[0] = 99; \
+    CHECK("native struct " #field, fn_nio_exchange_opts_plan(&opts, steps, 3) < 0 && steps[0] == 99); \
+} while (0)
+    BAD_NATIVE(backend, FN_NIO_EXCHANGE_BACKEND_COLD);
+    BAD_NATIVE(type, FN_NIO_EXCHANGE_TYPE_DISK_READ);
+    BAD_NATIVE(type, FN_NIO_EXCHANGE_TYPE_DISK_WRITE);
+    BAD_NATIVE(type, FN_NIO_EXCHANGE_TYPE_HOST_GET);
+    BAD_NATIVE(type, FN_NIO_EXCHANGE_TYPE_FILE_LIST);
+    BAD_NATIVE(type, 99);
+    BAD_NATIVE(baud, 38400);
+    BAD_NATIVE(serial_device, "serial.device");
+    BAD_NATIVE(has_serial_unit, 1);
+    BAD_NATIVE(serial_unit, 1);
+    BAD_NATIVE(has_lba, 1);
+    BAD_NATIVE(lba, 1);
+    BAD_NATIVE(has_slot, 1);
+    BAD_NATIVE(slot, 1);
+    BAD_NATIVE(provocation, 1);
+    BAD_NATIVE(trials, 0);
+    BAD_NATIVE(trials, 100001);
+    BAD_NATIVE(size, 128);
+    BAD_NATIVE(list_flags, 2);
+    BAD_NATIVE(has_size, 1);
+    BAD_NATIVE(uri, "host:/");
+    BAD_NATIVE(has_list_flags, 1);
+    BAD_NATIVE(installed_backend, 99);
+#undef BAD_NATIVE
+    base[2] = "clock"; base[6] = "serial";
+    CHECK("explicit serial context", fn_nio_exchange_opts_parse(7, base, &opts) == 0 &&
+          opts.installed_backend == FN_NIO_EXCHANGE_INSTALLED_SERIAL);
+    CHECK("explicit serial warm plan", fn_nio_exchange_opts_plan(&opts, steps, 3) == 2);
+    base[7] = "--trials"; base[8] = "+2";
+    CHECK("serial signed positive trials", fn_nio_exchange_opts_parse(9, base, &opts) == 0 && opts.trials == 2);
+    base[8] = " 2";
+    CHECK("serial whitespace trials", fn_nio_exchange_opts_parse(9, base, &opts) == 0 && opts.trials == 2);
+    base[4] = "cold";
+    CHECK("explicit serial cold parse", fn_nio_exchange_opts_parse(7, base, &opts) == 0);
+    CHECK("explicit serial cold plan", fn_nio_exchange_opts_plan(&opts, steps, 3) == 2 &&
+          steps[0] == FN_NIO_EXCHANGE_STEP_SET_BAUD);
+}
+
 int main(void)
 {
+    test_native_context();
     test_packet_checksum_modes();
     test_parse_file_list_cold();
     test_list_max_payload_bytes();

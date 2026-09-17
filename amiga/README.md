@@ -149,6 +149,23 @@ fujinet-nio-exchange --type clock --backend cold --baud 38400 \
 
 Omitting `--serial-device` uses whatever `fujinet-nio-serial` last set.
 
+`--installed-backend serial|native` declares the already installed backend
+(default `serial`); it does not discover or switch hardware. `--backend
+cold|warm` remains the separate lifecycle choice. Native installations support
+warm clock and file-list operations using EXCHANGE only:
+
+```text
+fujinet-nio-exchange --installed-backend native --backend warm --type clock --trials 2
+fujinet-nio-exchange --installed-backend native --backend warm --type file-list --uri host:/ --size 128 --trials 2
+```
+
+Native cold is unsupported because there is no generic reset command. Native
+commands reject baud, serial-device/unit, host-get, disk, provocation and explicit
+slot/LBA options (including zero) before opening the device. File-list requires a
+nonempty URI and supported size. The context/lifecycle line precedes unchanged
+trial fields; `native=` in a trial remains its historical error-detail field.
+
+
 To separate cold vs warm serial and response size on real hardware, use
 `fujinet-nio-exchange` as described in
 [`docs/amiga/rs232-cold-warm-hardware-test.md`](../docs/amiga/rs232-cold-warm-hardware-test.md).

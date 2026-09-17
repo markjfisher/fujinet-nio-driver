@@ -16,6 +16,11 @@ enum fn_nio_exchange_backend {
     FN_NIO_EXCHANGE_BACKEND_WARM = 2
 };
 
+enum fn_nio_exchange_installed_backend {
+    FN_NIO_EXCHANGE_INSTALLED_SERIAL = 0,
+    FN_NIO_EXCHANGE_INSTALLED_NATIVE = 1
+};
+
 enum fn_nio_exchange_step {
     FN_NIO_EXCHANGE_STEP_GET_BAUD = 1,
     FN_NIO_EXCHANGE_STEP_SET_BAUD = 2,
@@ -27,7 +32,10 @@ enum fn_nio_exchange_step {
 
 struct fn_nio_exchange_opts {
     int type;
-    int backend;
+    int backend; /* cold/warm lifecycle */
+    int installed_backend; /* caller declaration, not hardware selection */
+    int has_slot;
+    int has_lba;
     unsigned long baud; /* 0 if --baud omitted */
     int has_size;
     unsigned size;

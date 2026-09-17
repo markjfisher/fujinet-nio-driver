@@ -600,14 +600,19 @@ static void print_matrix_usage(void)
 {
     fprintf(stderr,
             "Usage: fujinet-nio-exchange --type clock|host-get|file-list "
-            "--backend cold|warm [--baud 300..230400] "
+            "--backend cold|warm [--installed-backend serial|native] "
+            "[--baud 300..230400] "
             "[--serial-device NAME] [--serial-unit 0..255] "
             "[--size 8|16|32|64|128|256|420|512 --uri URI] "
             "[--list-flags 0..255] [--trials N]\n"
             "       fujinet-nio-exchange --type disk-read|disk-write "
             "--provocation --backend cold --baud 300..230400 --slot 1..8 "
             "--lba N [--serial-device NAME] [--serial-unit 0..255] "
-            "[--trials N]\n");
+            "[--trials N]\n"
+            "Installed backend declares existing hardware; it does not detect or select it.\n"
+            "Backend cold|warm controls lifecycle; installed backend defaults to serial.\n"
+            "Native requires warm clock or file-list; cold reset is unsupported.\n"
+            "Native rejects baud, serial, host-get, disk and provocation options.\n");
 }
 
 static int run_set_baud(struct FujiNetNIORequest *req, struct MsgPort *port,
@@ -908,6 +913,10 @@ static int run_matrix(int argc, char **argv)
         print_matrix_usage();
         return RETURN_ERROR;
     }
+    printf("installed_backend=%s lifecycle=%s\n",
+           opts.installed_backend == FN_NIO_EXCHANGE_INSTALLED_NATIVE ?
+               "native" : "serial",
+           opts.backend == FN_NIO_EXCHANGE_BACKEND_COLD ? "cold" : "warm");
     list_golden_len = 0;
 
     if (opts.type == FN_NIO_EXCHANGE_TYPE_DISK_READ ||
@@ -978,13 +987,15 @@ static int run_matrix(int argc, char **argv)
                 attach_open(&req, &open_request);
                 do_measured_exchange(&req, elapsed);
                 print_trial_log(&req, opts.backend, elapsed);
-                if (req.fn_pad[1] != 0)
+                if (opts.installed_backend == FN_NIO_EXCHANGE_INSTALLED_SERIAL &&
+                    req.fn_pad[1] != 0)
                     print_c0_diag(&req);
-                if (req.fn_pad[2] == FUJINET_NIO_DETAIL_SESSION_IO ||
+                if (opts.installed_backend == FN_NIO_EXCHANGE_INSTALLED_SERIAL &&
+                    (req.fn_pad[2] == FUJINET_NIO_DETAIL_SESSION_IO ||
                     req.fn_pad[2] == FUJINET_NIO_DETAIL_TIMEOUT ||
                     req.fn_pad[2] == FUJINET_NIO_DETAIL_SERIAL_READ ||
                     req.fn_pad[2] ==
-                        FUJINET_NIO_DETAIL_FLUSH_DRAINED_THEN_READ_FAILED)
+                        FUJINET_NIO_DETAIL_FLUSH_DRAINED_THEN_READ_FAILED))
                     print_wire_peek(matrix_response,
                                     opts.type == FN_NIO_EXCHANGE_TYPE_FILE_LIST);
                 if (req.fn_io.io_Error != 0 || req.fn_nio_error != FN_OK)
