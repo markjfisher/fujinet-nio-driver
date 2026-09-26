@@ -964,12 +964,14 @@ static const ULONG device_init_table[] = {
     (ULONG)device_init
 };
 
-static const char device_end;
-
+/* rt_EndSkip points just past the tag itself. A separate end-marker symbol
+ * gives no ordering guarantee: an uninitialised one lands in .bss, and an
+ * initialised one may be placed before the tag, and fujinet-load-resident
+ * rejects either. */
 const struct Resident device_resident __attribute__((used)) = {
     RTC_MATCHWORD,
     (struct Resident *)&device_resident,
-    (APTR)&device_end,
+    (APTR)(&device_resident + 1),
     RTF_AUTOINIT,
     DEVICE_VERSION,
     NT_DEVICE,
