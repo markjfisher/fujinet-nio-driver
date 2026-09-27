@@ -204,6 +204,17 @@ static struct fujinet_disk_device_base *device_init(
 {
     uint8_t i;
     SysBase = sys_base;
+#ifndef FUJINET_DISK_NATIVE_TEST
+    /* KS 1.3's InitResident leaves an RTF_AUTOINIT node's name, type,
+     * version and ID string unset (later Kickstarts fill them from the
+     * ROMTag). Unnamed, the device is added but OpenDevice cannot find it. */
+    base->device.dd_Library.lib_Node.ln_Type = NT_DEVICE;
+    base->device.dd_Library.lib_Node.ln_Name = (char *)device_name;
+    base->device.dd_Library.lib_Flags = LIBF_SUMUSED | LIBF_CHANGED;
+    base->device.dd_Library.lib_Version = DEVICE_VERSION;
+    base->device.dd_Library.lib_Revision = DEVICE_REVISION;
+    base->device.dd_Library.lib_IdString = (APTR)device_id;
+#endif
     base->segment_list = segment_list;
     base->worker_signal = -1;  /* -1 = no signal allocated */
     base->transport_closed = 0;
@@ -1003,14 +1014,14 @@ static const ULONG device_init_table[] = {
     (ULONG)device_init
 };
 
-#ifndef FUJINET_DISK_NATIVE_TEST
-static const char device_end;
-#endif
-
+/* rt_EndSkip points just past the tag itself. A separate end-marker symbol
+ * gives no ordering guarantee: an uninitialised one lands in .bss, and an
+ * initialised one may be placed before the tag, and fujinet-load-resident
+ * rejects either. */
 const struct Resident device_resident __attribute__((used)) = {
     RTC_MATCHWORD,
     (struct Resident *)&device_resident,
-    (APTR)&device_end,
+    (APTR)(&device_resident + 1),
     RTF_AUTOINIT,
     DEVICE_VERSION,
     NT_DEVICE,
@@ -1121,5 +1132,3 @@ uint8_t fujinet_disk_native_test_change_int_count(uint8_t unit)
     return count;
 }
 #endif
-
-static const char device_end = 0;
