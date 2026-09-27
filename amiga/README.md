@@ -42,6 +42,33 @@ FUMOUNT DN0:
 selected drive, and updates the shared `config-nio/mappings` record.
 `FUMOUNT` performs the driver-mediated eject and removes the mapping.
 
+### Mounting more than one image
+
+Give images that will be mounted at the same time different Amiga volume
+labels. The label belongs to the image; `FMOUNT` does not change it.
+
+Good: slot 11 contains an image labelled `WORK` and slot 13 contains one
+labelled `ARCHIVE`:
+
+```text
+FMOUNT 11 DN0: RO
+FMOUNT 13 DN2: RW
+FUMOUNT DN2:
+FUMOUNT DN0:
+```
+
+Bad: both images are labelled `NIOADF`:
+
+```text
+FMOUNT 11 DN0: RO
+FMOUNT 13 DN2: RW
+FUMOUNT DN0:
+```
+
+FastFileSystem 47.4 can refuse that final unmount with
+`ACTION_DIE refused (IoErr=202)`. Do not force eject; change one image label
+before mounting both images again.
+
 The separately built `fujinet-mount` program is diagnostic-only. It remains
 available for private driver tests such as status and geometry inspection,
 boundary and malformed-request checks, direct URI injection, and explicit
