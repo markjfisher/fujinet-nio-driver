@@ -27,6 +27,32 @@
 #include "fn_slip.h"
 #include "fujinet_nio_session_diag.h"
 
+/* NDK 1.3 correctly omits these V36 CreateNewProcTags declarations. The
+ * isolated no-argument diagnostic still uses them when run on newer Kickstart;
+ * the WB1.3 matrix path never calls them. Keep the V36 declarations local so
+ * this command can link against the 1.3-compatible libnix CRT. */
+#ifdef __KICK13__
+#ifndef TAG_DONE
+#define TAG_DONE 0UL
+#endif
+#ifndef TAG_USER
+#define TAG_USER ((ULONG)(1UL << 31))
+#endif
+#ifndef NP_Dummy
+#define NP_Dummy (TAG_USER + 1000)
+#endif
+#ifndef NP_Entry
+#define NP_Entry (NP_DUMMY + 3)
+#endif
+#ifndef NP_StackSize
+#define NP_StackSize (NP_DUMMY + 11)
+#endif
+#ifndef NP_Name
+#define NP_Name (NP_DUMMY + 12)
+#endif
+extern struct Process *CreateNewProcTags(ULONG tag1type, ...);
+#endif
+
 #define MATRIX_PACKET_CAP 1024
 #define DISK_PROVOCATION_SECTOR 512
 

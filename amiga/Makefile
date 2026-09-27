@@ -2,6 +2,7 @@ LIB_ROOT ?= ../../fujinet-nio-lib
 CC := m68k-amigaos-gcc
 CFLAGS := -std=c99 -Wall -Wextra -Werror -O2 -mcpu=68000 -msoft-float
 CPPFLAGS := -Iinclude -Ipublic/include -I$(LIB_ROOT)/include
+KICK13_CRT := -mcrt=nix13
 BUILD_DIR := ../build/amiga
 LIBRARY := $(LIB_ROOT)/build/fujinet-nio-amiga-driver.a
 DEVICE := $(BUILD_DIR)/fujinet-disk.device
@@ -143,7 +144,7 @@ $(NIO_EXCHANGE): tools/fujinet_nio_exchange_disk_adapter.c tools/fujinet_nio_exc
 		include/fujinet_nio_endian.h include/fujinet_nio_serial_config.h \
 		$(LIBRARY)
 	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 \
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(KICK13_CRT) \
 		tools/fujinet-nio-exchange.c tools/fujinet_nio_exchange_opts.c tools/fujinet_nio_exchange_disk.c tools/fujinet_nio_exchange_disk_adapter.c \
 		$(LIBRARY) -lamiga -o $@
 
@@ -172,7 +173,7 @@ $(MOUNT_TOOL): tools/fujinet-mount.c include/fujinet_disk_device.h $(LIBRARY)
 
 $(RESIDENT_LOADER): tools/fujinet-load-resident.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 $< -lamiga -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(KICK13_CRT) $< -lamiga -o $@
 
 $(RESIDENT_UNLOADER): tools/fujinet-unload-resident.c
 	@mkdir -p $(dir $@)
