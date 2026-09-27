@@ -620,10 +620,15 @@ static void device_worker_entry(void)
     }
 #else
     struct fujinet_nio_device_base *base = serial_worker_base;
-    ULONG signal_mask = 1UL << base->worker_signal;
+    ULONG signal_mask;
+
+    if (base == NULL) return;
+    base->worker_signal = AllocSignal(-1);
+    if (base->worker_signal < 0) return;
+    signal_mask = (1UL << base->worker_signal) | SIGBREAKF_CTRL_C;
 
     for (;;) {
-        ULONG got = Wait(signal_mask | SIGBREAKF_CTRL_C);
+        ULONG got = Wait(signal_mask);
         if (base->worker_stop || (got & SIGBREAKF_CTRL_C) != 0) break;
         worker_pump(base);
     }
