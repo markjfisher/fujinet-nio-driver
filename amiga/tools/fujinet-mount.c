@@ -100,7 +100,7 @@ int main(int argc, char **argv)
                 "       fujinet-mount --uri DRIVE URI [RW|RO]\n"
                 "       fujinet-mount URI | --writable URI\n"
                 "       fujinet-mount --eject [DRIVE] | --update DRIVE\n"
-                "       fujinet-mount --status DRIVE | --geometry DRIVE | --trace | --read LBA [RESULT]\n"
+                "       fujinet-mount --status DRIVE | --geometry DRIVE | --trace | --trace-clear | --read LBA [RESULT]\n"
                 "       fujinet-mount --boundary | --malformed [DRIVE]\n");
         return 10;
     }
@@ -169,14 +169,18 @@ int main(int argc, char **argv)
         return 20;
     }
 
-    if (strcmp(argv[1], "--trace") == 0) {
+    if (strcmp(argv[1], "--trace") == 0 || strcmp(argv[1], "--trace-clear") == 0) {
         UWORD i;
         memset(&trace, 0, sizeof(trace));
-        request->iotd_Req.io_Command = FUJINET_DISK_CMD_TRACE;
-        request->iotd_Req.io_Data = &trace;
-        request->iotd_Req.io_Length = sizeof(trace);
+        request->iotd_Req.io_Command = strcmp(argv[1], "--trace-clear") == 0
+                                       ? FUJINET_DISK_CMD_TRACE_CLEAR
+                                       : FUJINET_DISK_CMD_TRACE;
+        request->iotd_Req.io_Data = request->iotd_Req.io_Command == FUJINET_DISK_CMD_TRACE
+                                    ? &trace : NULL;
+        request->iotd_Req.io_Length = request->iotd_Req.io_Command == FUJINET_DISK_CMD_TRACE
+                                      ? sizeof(trace) : 0;
         result = DoIO((struct IORequest *)request);
-        if (result == 0) {
+        if (result == 0 && request->iotd_Req.io_Command == FUJINET_DISK_CMD_TRACE) {
             printf("TRACE");
             for (i = 0; i < trace.count; ++i) {
                 printf(" %04lx/%lu/%lu/%lu/%ld",
@@ -187,6 +191,8 @@ int main(int argc, char **argv)
                        (long)trace.errors[i]);
             }
             printf("\n");
+        } else if (result == 0) {
+            printf("TRACE CLEARED\n");
         }
         CloseDevice((struct IORequest *)request);
         DeleteExtIO((struct IORequest *)request);
