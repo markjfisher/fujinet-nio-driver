@@ -44,13 +44,17 @@ selected drive, and updates the shared `config-nio/mappings` record.
 
 ### Workbench 1.3
 
-The WB1.3 package has a permanent `DEVS:MountList` entry for each `DNx:` unit.
-It supports the same simple command sequence:
+The WB1.3 installer appends permanent static `DN0:` through `DN7:` entries to
+the existing `DEVS:MountList`. The corresponding startup setup starts those
+static handlers after loading the resident disk device; `FMOUNT` then changes
+media in the selected unit. It supports the same simple command sequence:
 
 ```text
 FMOUNT 11 DN0: RO
 Dir DN0:
+FMOUNT 13 DN2: RW
 FUMOUNT DN0:
+FUMOUNT DN2:
 FMOUNT 11 DN0: RO
 ```
 
