@@ -3,7 +3,7 @@ CC := m68k-amigaos-gcc
 CFLAGS := -std=c99 -Wall -Wextra -Werror -O2 -mcpu=68000 -msoft-float
 CPPFLAGS := -Iinclude -Ipublic/include -I$(LIB_ROOT)/include
 KICK13_CRT := -mcrt=nix13
-BUILD_DIR := ../build/amiga
+BUILD_DIR ?= ../build/amiga
 LIBRARY := $(LIB_ROOT)/build/fujinet-nio-amiga-driver.a
 DEVICE := $(BUILD_DIR)/fujinet-disk.device
 DEVICE_MAP := $(DEVICE).map
