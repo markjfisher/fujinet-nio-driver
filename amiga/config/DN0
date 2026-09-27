@@ -13,4 +13,3 @@ DN0:
     DosType = 0x444F5300
     StackSize = 32768
     Priority = 5
-    GlobVec = -1

@@ -169,7 +169,7 @@ $(BUILD_DIR)/%.o: %.c
 
 $(MOUNT_TOOL): tools/fujinet-mount.c include/fujinet_disk_device.h $(LIBRARY)
 	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 $< $(LIBRARY) -lamiga -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(KICK13_CRT) $< $(LIBRARY) -lamiga -o $@
 
 $(RESIDENT_LOADER): tools/fujinet-load-resident.c
 	@mkdir -p $(dir $@)

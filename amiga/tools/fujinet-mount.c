@@ -15,6 +15,7 @@
 #include "fujinet_disk_device.h"
 #define MAX_DRIVES 8
 
+#ifndef __KICK13__
 struct boundary_worker_state {
     ULONG started;
     ULONG done;
@@ -66,6 +67,7 @@ static void boundary_worker_entry(void)
     DeletePort(worker_port);
     boundary_worker.done = 1;
 }
+#endif
 
 static int parse_drive(const char *text, ULONG *drive)
 {
@@ -192,6 +194,16 @@ int main(int argc, char **argv)
         return result == 0 ? 0 : 20;
     }
 
+#ifdef __KICK13__
+    if (strcmp(argv[1], "--boundary") == 0) {
+        fprintf(stderr,
+                "fujinet-mount: --boundary requires Kickstart 2.0 or newer\n");
+        CloseDevice((struct IORequest *)request);
+        DeleteExtIO((struct IORequest *)request);
+        DeletePort(port);
+        return 10;
+    }
+#else
     if (strcmp(argv[1], "--boundary") == 0) {
         static const UWORD commands[] = {
             TD_CHANGENUM, CMD_STOP, CMD_START, CMD_FLUSH, TD_REMCHANGEINT
@@ -510,6 +522,7 @@ int main(int argc, char **argv)
         DeletePort(port);
         return result == 0 ? 0 : 20;
     }
+#endif
 
     if (strcmp(argv[1], "--malformed") == 0) {
         static const char malformed_uri[] = "host:/standard.adf";
