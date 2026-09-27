@@ -1,4 +1,5 @@
 #include <devices/serial.h>
+#include <dos/dos.h>
 #include <exec/devices.h>
 #include <exec/errors.h>
 #include <exec/execbase.h>

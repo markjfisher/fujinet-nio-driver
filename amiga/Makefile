@@ -22,6 +22,7 @@ NIO_EXCHANGE := $(BUILD_DIR)/fujinet-nio-exchange
 NIO_BAUD := $(BUILD_DIR)/fujinet-nio-baud
 NIO_SERIAL := $(BUILD_DIR)/fujinet-nio-serial
 NIO_OBJECTS := $(BUILD_DIR)/nio.device/fujinet_nio_device.o \
+	$(BUILD_DIR)/nio.device/fujinet_nio_legacy_worker.o \
 	$(BUILD_DIR)/nio.device/fujinet_nio_serial_backend.o \
 	$(BUILD_DIR)/common/fujinet_io_queue.o \
 	$(BUILD_DIR)/nio-framing/fn_session.o \
@@ -117,6 +118,9 @@ $(BUILD_DIR)/nio-framing/fn_slip.o: $(LIB_ROOT)/src/common/fn_slip.c
 
 $(BUILD_DIR)/nio.device/fujinet_nio_device.o: include/fujinet_nio_endian.h \
 	include/fujinet_nio_serial_config.h
+$(BUILD_DIR)/nio.device/fujinet_nio_legacy_worker.o: nio.device/fujinet_nio_legacy_worker.S
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 $(BUILD_DIR)/nio.device/fujinet_nio_serial_backend.o: include/fujinet_nio_serial_config.h
 $(BUILD_DIR)/serial.device/fujinet_serial_device.o: include/fujinet_paula_uart.h \
 	include/fujinet_serial_device.h

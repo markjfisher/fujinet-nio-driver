@@ -75,6 +75,8 @@ int main(int argc, char **argv)
     BPTR segment_list;
     struct Resident *resident;
     APTR initialized;
+    const char *registered_name;
+    struct Node *registered_node;
     ULONG first_hunk_bytes = 0;
     ULONG resident_offset = 0;
 
@@ -121,6 +123,21 @@ int main(int argc, char **argv)
                 resident->rt_Name);
         UnLoadSeg(segment_list);
         printf("Resident segment released after initialization failure\n");
+        return RETURN_FAIL;
+    }
+
+    /* InitResident can return a base even when an RTF_AUTOINIT device was
+     * not actually linked into Exec's DeviceList (notably KS 1.3 if its
+     * init code leaves ln_Name unset). Do not report that as loaded. The
+     * initialized segment must remain allocated: its failed registration is
+     * not safely recoverable from this generic loader. */
+    registered_name = resident_name != NULL ? resident_name : resident->rt_Name;
+    registered_node = FindName(&SysBase->DeviceList,
+                               (CONST_STRPTR)registered_name);
+    if (registered_node != (struct Node *)initialized) {
+        fprintf(stderr,
+                "Resident initialized but not registered in DeviceList: %s\n",
+                registered_name);
         return RETURN_FAIL;
     }
 

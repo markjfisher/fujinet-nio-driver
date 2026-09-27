@@ -7,7 +7,8 @@
 #include <exec/tasks.h>
 #include <exec/types.h>
 #include <dos/dos.h>
-#ifdef FUJINET_NIO_DIRECTORY_BACKEND
+#ifndef FUJINET_NIO_NATIVE_TEST
+#include <dos/dosextens.h>
 #include <dos/dostags.h>
 #include <proto/dos.h>
 #endif
@@ -65,13 +66,9 @@ struct fujinet_nio_device_base {
     UBYTE in_progress_aborted;
     UBYTE backend_open;
     UBYTE io_processing;
-    struct Task worker_task;
-    APTR worker_stack;
     BYTE worker_signal;
-#ifdef FUJINET_NIO_DIRECTORY_BACKEND
     struct Process *worker_process;
     UBYTE worker_stop;
-#endif
     fujinet_nio_backend_open_fn backend_open_fn;
     fujinet_nio_backend_close_fn backend_close_fn;
     fujinet_nio_backend_exchange_fn backend_exchange_fn;
@@ -85,6 +82,15 @@ struct ExecBase *SysBase;
 #ifdef FUJINET_NIO_DIRECTORY_BACKEND
 extern struct DosLibrary *DOSBase;
 static struct fujinet_nio_device_base *directory_worker_base;
+#elif !defined(FUJINET_NIO_NATIVE_TEST)
+struct DosLibrary *DOSBase;
+static struct fujinet_nio_device_base *serial_worker_base;
+
+/* On KS 1.3 CreateProc starts a BCPL seglist, rather than accepting an
+ * entry point. This symbol names the "next segment" longword in a tiny
+ * fake seglist; the preceding longword is its deliberately fake length.
+ * See fujinet_nio_legacy_worker.S. */
+extern ULONG fujinet_nio_legacy_worker_seglist;
 #endif
 
 #ifndef FUJINET_NIO_NATIVE_TEST
@@ -144,6 +150,30 @@ static void stop_directory_worker(struct fujinet_nio_device_base *base)
         base->worker_process = NULL;
         directory_worker_base = NULL;
     }
+}
+#endif
+
+#if !defined(FUJINET_NIO_DIRECTORY_BACKEND) && !defined(FUJINET_NIO_NATIVE_TEST)
+static void stop_serial_worker(struct fujinet_nio_device_base *base)
+{
+    unsigned spins;
+
+    if (base == NULL || base->worker_process == NULL) return;
+    base->worker_stop = 1;
+    Signal((struct Task *)base->worker_process, SIGBREAKF_CTRL_C);
+    if (base->worker_signal >= 0)
+        Signal((struct Task *)base->worker_process,
+               1UL << base->worker_signal);
+    for (spins = 0; spins < 250 && base->worker_process != NULL; ++spins)
+        Delay(1);
+    if (base->worker_process == NULL) serial_worker_base = NULL;
+}
+
+static void close_serial_worker_dos(void)
+{
+    if (DOSBase == NULL) return;
+    CloseLibrary((struct Library *)DOSBase);
+    DOSBase = NULL;
 }
 #endif
 
@@ -342,6 +372,9 @@ static void worker_pump(struct fujinet_nio_device_base *base)
 
 #ifndef FUJINET_NIO_NATIVE_TEST
 static void device_worker_entry(void);
+#if !defined(FUJINET_NIO_DIRECTORY_BACKEND)
+void fujinet_nio_legacy_worker_entry(void);
+#endif
 #endif
 static BPTR device_expunge(register struct fujinet_nio_device_base *base
                                FN_REGISTER("a6"));
@@ -403,22 +436,45 @@ static struct fujinet_nio_device_base *device_init(
     base->backend_get_baud_fn = backend_get_baud;
     base->backend_set_serial_fn = backend_set_serial;
     base->backend_get_serial_fn = backend_get_serial;
-    base->worker_signal = AllocSignal(-1);
-    if (base->worker_signal == -1) return NULL;
-    base->worker_stack = AllocMem(WORKER_STACK_SIZE, MEMF_PUBLIC | MEMF_CLEAR);
-    if (base->worker_stack == NULL) {
-        FreeSignal(base->worker_signal);
-        return NULL;
-    }
-    base->worker_task.tc_SPLower = base->worker_stack;
-    base->worker_task.tc_SPUpper =
-        (UBYTE *)base->worker_stack + WORKER_STACK_SIZE;
-    base->worker_task.tc_SPReg = (UBYTE *)base->worker_task.tc_SPUpper - 4;
-    base->worker_task.tc_UserData = base;
-    if (AddTask(&base->worker_task, (APTR)device_worker_entry, NULL) == NULL) {
-        FreeMem(base->worker_stack, WORKER_STACK_SIZE);
-        FreeSignal(base->worker_signal);
-        return NULL;
+    {
+        unsigned spins;
+        struct MsgPort *worker_port;
+
+        if (DOSBase == NULL)
+            DOSBase = (struct DosLibrary *)OpenLibrary("dos.library", 34);
+        if (DOSBase == NULL) return NULL;
+        base->worker_signal = -1;
+        base->worker_stop = 0;
+        serial_worker_base = base;
+        if (DOSBase->dl_lib.lib_Version >= 36) {
+            base->worker_process = CreateNewProcTags(
+                NP_Entry, (ULONG)fujinet_nio_legacy_worker_entry,
+                NP_StackSize, WORKER_STACK_SIZE,
+                NP_Name, (ULONG)"fujinet-nio-worker",
+                TAG_DONE);
+        } else {
+            worker_port = CreateProc(
+                "fujinet-nio-worker", 0,
+                (BPTR)((ULONG)&fujinet_nio_legacy_worker_seglist >> 2),
+                WORKER_STACK_SIZE);
+            base->worker_process = worker_port == NULL ? NULL :
+                (struct Process *)((UBYTE *)worker_port -
+                                   sizeof(struct Task));
+        }
+        if (base->worker_process == NULL) {
+            serial_worker_base = NULL;
+            close_serial_worker_dos();
+            return NULL;
+        }
+        for (spins = 0; spins < 100 && base->worker_signal < 0; ++spins)
+            Delay(1);
+        if (base->worker_signal < 0) {
+            stop_serial_worker(base);
+            serial_worker_base = NULL;
+            base->worker_process = NULL;
+            close_serial_worker_dos();
+            return NULL;
+        }
     }
 #endif
 #endif
@@ -512,18 +568,19 @@ static BPTR device_expunge(
         }
     }
 #else
-    if (base->worker_stack != NULL) {
-        RemTask(&base->worker_task);
-        FreeMem(base->worker_stack, WORKER_STACK_SIZE);
-        base->worker_stack = NULL;
-    }
-    if (base->worker_signal != -1) {
-        FreeSignal(base->worker_signal);
-        base->worker_signal = -1;
+    if (base->worker_process != NULL) {
+        stop_serial_worker(base);
+        if (base->worker_process != NULL) {
+            base->device.dd_Library.lib_Flags |= LIBF_DELEXP;
+            return 0;
+        }
     }
 #endif
 #endif
     close_backend(base);
+#if !defined(FUJINET_NIO_NATIVE_TEST) && !defined(FUJINET_NIO_DIRECTORY_BACKEND)
+    close_serial_worker_dos();
+#endif
 #ifndef FUJINET_NIO_NATIVE_TEST
     Forbid();
     Remove((struct Node *)base);
@@ -562,16 +619,29 @@ static void device_worker_entry(void)
         base->worker_signal = -1;
     }
 #else
-    struct fujinet_nio_device_base *base =
-        (struct fujinet_nio_device_base *)FindTask(NULL)->tc_UserData;
+    struct fujinet_nio_device_base *base = serial_worker_base;
     ULONG signal_mask = 1UL << base->worker_signal;
 
     for (;;) {
-        Wait(signal_mask);
+        ULONG got = Wait(signal_mask | SIGBREAKF_CTRL_C);
+        if (base->worker_stop || (got & SIGBREAKF_CTRL_C) != 0) break;
         worker_pump(base);
     }
+    if (base->worker_signal >= 0) {
+        FreeSignal(base->worker_signal);
+        base->worker_signal = -1;
+    }
+    base->worker_process = NULL;
+    serial_worker_base = NULL;
 #endif
 }
+
+#if !defined(FUJINET_NIO_DIRECTORY_BACKEND)
+void fujinet_nio_legacy_worker_entry(void)
+{
+    device_worker_entry();
+}
+#endif
 #endif
 
 static void device_begin_io(
@@ -658,7 +728,9 @@ static void device_begin_io(
         Signal((struct Task *)base->worker_process,
                1UL << base->worker_signal);
 #else
-    Signal(&base->worker_task, 1UL << base->worker_signal);
+    if (base->worker_process != NULL && base->worker_signal >= 0)
+        Signal((struct Task *)base->worker_process,
+               1UL << base->worker_signal);
 #endif
 #endif
     Enable();
