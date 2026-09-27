@@ -42,6 +42,23 @@ FUMOUNT DN0:
 selected drive, and updates the shared `config-nio/mappings` record.
 `FUMOUNT` performs the driver-mediated eject and removes the mapping.
 
+### Workbench 1.3
+
+The WB1.3 package has a permanent `DEVS:MountList` entry for each `DNx:` unit.
+It supports the same simple command sequence:
+
+```text
+FMOUNT 11 DN0: RO
+Dir DN0:
+FUMOUNT DN0:
+FMOUNT 11 DN0: RO
+```
+
+On WB1.3, `FUMOUNT` ejects the media but intentionally keeps the static
+MountList entry and OFS handler alive. The final `FMOUNT` changes the media on
+that unit. This differs from WB2+ builds, where `FUMOUNT` retires a dynamic
+handler and removes its DOS node; `FMOUNTRESTORE` is also WB2+ only.
+
 ### Mounting more than one image
 
 Give images that will be mounted at the same time different Amiga volume
