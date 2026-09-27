@@ -51,13 +51,20 @@ SOURCES := common/fujinet_disk_driver.c \
 	disk.device/fujinet_disk_device.c
 OBJECTS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SOURCES))
 
-.PHONY: all native library tests clean
+.PHONY: all native library tests resident-artifacts clean
 
 all: tests native sdk
 
 native: library $(DEVICE) $(MOUNT_TOOL) $(RESIDENT_LOADER) $(RESIDENT_UNLOADER) $(TD_PROBE) \
 	$(NIO_DEVICE) $(SERIAL_DEVICE) $(NIO_EXCHANGE) $(NIO_BAUD) $(NIO_SERIAL) \
 	$(NIO_NATIVE_TEST_DEVICE) $(NIO_NATIVE_TEST_PROBE) $(NIO_NATIVE_FAULT_PROBE)
+	$(MAKE) resident-artifacts
+
+resident-artifacts: $(DEVICE) $(NIO_DEVICE) $(SERIAL_DEVICE)
+	python3 tools/check-resident-artifacts.py \
+		$(DEVICE):fujinet-disk.device \
+		$(NIO_DEVICE):fujinet-nio.device \
+		$(SERIAL_DEVICE):fujinet-serial.device
 
 sdk: $(SDK_LIBRARY) $(SDK_INCLUDE)/fujinet-amiga-disk/support.h $(SDK_INCLUDE)/fujinet-amiga-disk/device.h
 
