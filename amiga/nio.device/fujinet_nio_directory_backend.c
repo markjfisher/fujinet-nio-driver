@@ -885,6 +885,14 @@ uint8_t backend_exchange(
     }
 }
 
+void backend_get_diagnostics(uint8_t *detail, uint8_t *native_io_error,
+                             uint16_t *native_status)
+{
+    if (detail != NULL) *detail = FUJINET_NIO_DETAIL_NONE;
+    if (native_io_error != NULL) *native_io_error = 0;
+    if (native_status != NULL) *native_status = 0;
+}
+
 uint8_t backend_set_baud(uint32_t baud)
 {
     (void)baud;

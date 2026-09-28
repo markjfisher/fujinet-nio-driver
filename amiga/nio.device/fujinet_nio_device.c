@@ -225,7 +225,12 @@ static void process_exchange(struct fujinet_nio_device_base *base,
             nio_error = base->backend_exchange_fn(
                 req->fn_request_data, req->fn_request_length,
                 req->fn_response_data, req->fn_response_capacity,
+#ifdef FUJINET_NIO_NATIVE_TEST
                 &response_len, &detail, &native_io_error, &native_status);
+#else
+                &response_len, NULL, NULL, NULL);
+            backend_get_diagnostics(&detail, &native_io_error, &native_status);
+#endif
             /* TRANSPORT (including Paula overrun) and TIMEOUT both close.
              * backend_exchange drains RX until idle first so leftover ESP
              * paced chunks cannot become SESSION_IO (cause=3) on reopen.

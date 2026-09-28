@@ -32,6 +32,11 @@ uint8_t backend_exchange(
     uint8_t *detail,
     uint8_t *native_io_error,
     uint16_t *native_status);
+/* The legacy KS 1.3 worker cannot safely carry three trailing diagnostic
+ * pointer arguments through the serial exchange.  Backends retain those
+ * values for the device worker to collect after the exchange instead. */
+void backend_get_diagnostics(uint8_t *detail, uint8_t *native_io_error,
+                             uint16_t *native_status);
 uint8_t backend_set_baud(uint32_t baud);
 uint32_t backend_get_baud(void);
 uint8_t backend_set_serial(uint32_t unit, const char *name);

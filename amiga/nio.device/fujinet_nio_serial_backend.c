@@ -61,6 +61,9 @@ static uint8_t channel_error;
 static uint8_t serial_failure_detail;
 static uint8_t serial_failure_io_error;
 static uint16_t serial_failure_status;
+static uint8_t backend_detail;
+static uint8_t backend_native_io_error;
+static uint16_t backend_native_status;
 static uint16_t serial_rx_diag_status; /* last QUERY/READ io_Status (first byte + OVRUN) */
 static uint8_t serial_flush_drained_overrun; /* set when session_flush drained IO_STATF_OVERRUN */
 static uint8_t serial_hidden_overrun; /* CMD_READ/QUERY io_Error=0 but IO_STATF_OVERRUN */
@@ -173,25 +176,6 @@ static void note_byte_got(uint8_t value)
     if (debug_bytes_got != 0xFFFFU) debug_bytes_got++;
     if (debug_peek_len < DEBUG_PEEK_MAX)
         debug_peek[debug_peek_len++] = value;
-}
-
-static void copy_session_diag(uint8_t *response, uint16_t capacity,
-                              uint16_t pkt_len, const uint8_t *leftover,
-                              uint8_t leftover_len)
-{
-    const uint8_t *raw;
-    uint16_t raw_len;
-
-    if (response == NULL) return;
-    raw = session.wire_buffer;
-    raw_len = session.last_raw_length;
-    if (raw_len == 0 && debug_peek_len != 0) {
-        raw = debug_peek;
-        raw_len = debug_peek_len;
-    }
-    (void)fn_nio_session_diag_fill(response, capacity, raw, raw_len,
-                                   session.last_decoded_length, pkt_len,
-                                   leftover, leftover_len);
 }
 
 static uint8_t capture_leftover(uint8_t *dst, uint8_t max, uint8_t *got)
@@ -738,26 +722,22 @@ uint8_t backend_exchange(
             }
         }
     }
-    if (detail != NULL) {
-        if (channel_error != 0)
-            *detail = serial_failure_detail != FUJINET_NIO_DETAIL_NONE
-                          ? serial_failure_detail
-                          : FUJINET_NIO_DETAIL_SERIAL_IO;
-        else if (session_result == FN_ERR_IO)
-            *detail = FUJINET_NIO_DETAIL_SESSION_IO;
-        else if (session_result == FN_ERR_TIMEOUT)
-            *detail = FUJINET_NIO_DETAIL_TIMEOUT;
-    }
-    if (native_io_error != NULL)
-        *native_io_error = serial_failure_io_error;
-    if (native_status != NULL) {
-        if (serial_failure_status != 0)
-            *native_status = serial_failure_status;
-        else if (session_result != FN_OK)
-            *native_status = serial_rx_diag_status;
-        else
-            *native_status = 0;
-    }
+    backend_detail = FUJINET_NIO_DETAIL_NONE;
+    backend_native_io_error = serial_failure_io_error;
+    if (channel_error != 0)
+        backend_detail = serial_failure_detail != FUJINET_NIO_DETAIL_NONE
+                             ? serial_failure_detail
+                             : FUJINET_NIO_DETAIL_SERIAL_IO;
+    else if (session_result == FN_ERR_IO)
+        backend_detail = FUJINET_NIO_DETAIL_SESSION_IO;
+    else if (session_result == FN_ERR_TIMEOUT)
+        backend_detail = FUJINET_NIO_DETAIL_TIMEOUT;
+    if (serial_failure_status != 0)
+        backend_native_status = serial_failure_status;
+    else if (session_result != FN_OK)
+        backend_native_status = serial_rx_diag_status;
+    else
+        backend_native_status = 0;
     result = fn_serial_channel_map_session_result(session_result, &channel_error);
     /* Paula OVRUN can complete CMD_READ/QUERY with io_Error=0. That used to
      * surface as SESSION_IO (cause=3). Keep delivering bytes so SLIP can
@@ -765,9 +745,11 @@ uint8_t backend_exchange(
      * status high byte 1. */
     if (serial_hidden_overrun) {
         result = FN_ERR_TRANSPORT;
-        if (detail != NULL)
-            *detail = FUJINET_NIO_DETAIL_SERIAL_READ;
+        backend_detail = FUJINET_NIO_DETAIL_SERIAL_READ;
     }
+    if (detail != NULL) *detail = backend_detail;
+    if (native_io_error != NULL) *native_io_error = backend_native_io_error;
+    if (native_status != NULL) *native_status = backend_native_status;
     /*
      * Session framing failures, timeouts and overruns may leave unread
      * bytes on the wire. ESP chunk pacing can still be transmitting (2 ms
@@ -775,15 +757,16 @@ uint8_t backend_exchange(
      * next EXCHANGE lazy-reopens a clean session.
      */
     if (result != FN_OK && serial_open) {
-        uint16_t pkt_len = 0;
         uint8_t leftover_len = 0;
 
-        if (session.last_decoded_length >= 4U)
-            pkt_len = (uint16_t)(response[2] | ((uint16_t)response[3] << 8));
         if (strcmp(serial_device_name, FUJINET_SERIAL_DEVICE_NAME) == 0)
             capture_leftover(diag_leftover, DIAG_LEFTOVER_MAX, &leftover_len);
-        copy_session_diag(response, response_capacity, pkt_len, diag_leftover,
-                          leftover_len);
+        /* A failed exchange has no response contract.  In particular, do
+         * not dereference the caller-owned response buffer while unwinding a
+         * timeout: its owner may already be resolving the failed request.
+         * The broker's explicit detail/native-status fields retain the
+         * actionable failure diagnostics. */
+        (void)leftover_len;
     }
     if (result != FN_OK) session_flush_until_idle();
     if (serial_open) {
@@ -793,4 +776,12 @@ uint8_t backend_exchange(
         DoIO((struct IORequest *)serial_req);
     }
     return result;
+}
+
+void backend_get_diagnostics(uint8_t *detail, uint8_t *native_io_error,
+                             uint16_t *native_status)
+{
+    if (detail != NULL) *detail = backend_detail;
+    if (native_io_error != NULL) *native_io_error = backend_native_io_error;
+    if (native_status != NULL) *native_status = backend_native_status;
 }
