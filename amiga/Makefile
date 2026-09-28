@@ -3,6 +3,7 @@ CC := m68k-amigaos-gcc
 CFLAGS := -std=c99 -Wall -Wextra -Werror -O2 -mcpu=68000 -msoft-float
 CPPFLAGS := -Iinclude -Ipublic/include -I$(LIB_ROOT)/include
 KICK13_CRT := -mcrt=nix13
+NIO_TEST_CRT ?= clib2
 BUILD_DIR ?= ../build/amiga
 LIBRARY := $(LIB_ROOT)/build/fujinet-nio-amiga-driver.a
 DEVICE := $(BUILD_DIR)/fujinet-disk.device
@@ -29,6 +30,7 @@ NIO_OBJECTS := $(BUILD_DIR)/nio.device/fujinet_nio_device.o \
 	$(BUILD_DIR)/nio-framing/fn_session.o \
 	$(BUILD_DIR)/nio-framing/fn_slip.o
 NIO_NATIVE_TEST_OBJECTS := $(BUILD_DIR)/nio.device/fujinet_nio_directory_device.o \
+	$(BUILD_DIR)/nio.device/fujinet_nio_legacy_worker.o \
 	$(BUILD_DIR)/nio.device/fujinet_nio_directory_backend.o \
 	$(BUILD_DIR)/nio.device/fujinet_nio_packet_backend.o \
 	$(BUILD_DIR)/common/fujinet_io_queue.o \
@@ -161,7 +163,7 @@ $(NIO_SERIAL): tools/fujinet-nio-serial.c include/fujinet_nio_device.h \
 $(NIO_NATIVE_TEST_PROBE): tools/fujinet-nio-native-test-probe.c \
 		include/fujinet_nio_device.h include/fujinet_nio_endian.h
 	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 $< -lamiga -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=$(NIO_TEST_CRT) $< -lamiga -o $@
 
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -192,4 +194,4 @@ clean:
 
 $(NIO_NATIVE_FAULT_PROBE): tools/fujinet-nio-native-fault-probe.c $(LIBRARY)
 	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=clib2 $< $(LIBRARY) -lamiga -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=$(NIO_TEST_CRT) $< $(LIBRARY) -lamiga -o $@

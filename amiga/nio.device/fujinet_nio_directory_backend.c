@@ -95,7 +95,10 @@ static uint8_t ensure_dos(void)
 {
     if (DOSBase != NULL)
         return FN_OK;
-    DOSBase = (struct DosLibrary *)OpenLibrary("dos.library", 37);
+    /* The native test device is also a KS 1.3 test artefact.  All DOS calls
+     * used here are available in V34, so do not reject that platform merely
+     * by asking Exec for a V37 library. */
+    DOSBase = (struct DosLibrary *)OpenLibrary("dos.library", 34);
     return DOSBase != NULL ? FN_OK : FN_ERR_TRANSPORT;
 }
 
@@ -108,6 +111,10 @@ static void sleep_poll(void)
 static LONG get_env_dir(char *out, LONG cap)
 {
     if (ensure_dos() != FN_OK)
+        return -1;
+    /* GetVar() was added with V36.  KS 1.3 tests use the fixed NATIVE:
+     * volume instead, selected by resolve_directory's fallback. */
+    if (DOSBase->dl_lib.lib_Version < 36)
         return -1;
     return GetVar((CONST_STRPTR)"FN_NATIVE_TEST_DIR", out, cap, 0);
 }
@@ -225,7 +232,12 @@ static int file_write_tmp(const char *tmp, const uint8_t *packet, uint32_t size)
         }
         put += (uint32_t)n;
     }
-    if (!Flush(fh)) { Close(fh); return -1; }
+    /* Flush() is V36.  Close() writes the buffered data on V34 and is the
+     * publish barrier before the subsequent rename. */
+    if (DOSBase->dl_lib.lib_Version >= 36 && !Flush(fh)) {
+        Close(fh);
+        return -1;
+    }
     if (!Close(fh)) return -1;
     return 0;
 }
@@ -425,6 +437,7 @@ static int discard_named(const char *name)
 {
     char path[FN_DIR_PATH_MAX];
     char tmp[FN_DIR_PATH_MAX];
+    char ready[FN_DIR_PATH_MAX];
     int rc = 0;
 
     if (join_path(path, sizeof(path), directory, name) != 0)
@@ -434,9 +447,15 @@ static int discard_named(const char *name)
     if (strlen(tmp) + 4U >= sizeof(tmp))
         return -1;
     strcat(tmp, ".tmp");
+    if (strlen(path) + 6U >= sizeof(ready))
+        return -1;
+    strcpy(ready, path);
+    strcat(ready, ".ready");
     if (file_remove(path) != 0)
         rc = -1;
     if (file_remove(tmp) != 0)
+        rc = -1;
+    if (file_remove(ready) != 0)
         rc = -1;
     return rc;
 }
@@ -516,6 +535,34 @@ int fujinet_nio_directory_client_send(const uint8_t *packet, uint32_t size)
         return FN_DIR_UNAVAILABLE;
     if (file_exists(dest))
         return FN_DIR_BACKPRESSURE;
+#ifdef __AMIGA__
+    /* Rename() is not available through the V34 dos.library interface.
+     * The native-test transport is single-client and its peer only consumes
+     * records after Close(), so a direct closed-file publish is safe here. */
+    if (DOSBase->dl_lib.lib_Version < 36) {
+        static const uint8_t ready[] = { '1' };
+
+        /* The native peer recognises this V34-only publication pair: it
+         * consumes to-host.pkt.tmp only once to-host.pkt.ready exists. */
+        if (strlen(dest) + 4U >= sizeof(tmp))
+            return FN_DIR_UNAVAILABLE;
+        strcpy(tmp, dest);
+        strcat(tmp, ".tmp");
+        if (file_write_tmp(tmp, packet, size) != 0)
+            return directory_usable(directory) ? FN_DIR_FAILED : FN_DIR_UNAVAILABLE;
+        if (strlen(dest) + 6U >= sizeof(tmp)) {
+            (void)file_remove(tmp);
+            return FN_DIR_UNAVAILABLE;
+        }
+        strcpy(tmp, dest);
+        strcat(tmp, ".ready");
+        if (file_write_tmp(tmp, ready, sizeof(ready)) != 0) {
+            (void)discard_named(FN_DIRECTORY_TO_HOST_NAME);
+            return directory_usable(directory) ? FN_DIR_FAILED : FN_DIR_UNAVAILABLE;
+        }
+        return FN_DIR_OK;
+    }
+#endif
     if (strlen(dest) + 4U >= sizeof(tmp))
         return FN_DIR_UNAVAILABLE;
     strcpy(tmp, dest);
@@ -624,6 +671,10 @@ static int control_write(const char *name, const uint8_t token[33])
     char path[FN_DIR_PATH_MAX], tmp[FN_DIR_PATH_MAX];
     if (join_path(path, sizeof(path), directory, name) != 0 ||
         strlen(path) + 4 >= sizeof(tmp)) return -1;
+#ifdef __AMIGA__
+    if (DOSBase->dl_lib.lib_Version < 36)
+        return file_write_tmp(path, token, 33);
+#endif
     strcpy(tmp, path);
     strcat(tmp, ".tmp");
     if (file_write_tmp(tmp, token, 33) != 0) return -1;

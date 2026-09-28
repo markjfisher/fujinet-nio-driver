@@ -86,6 +86,9 @@ static struct fujinet_nio_device_base *directory_worker_base;
 struct DosLibrary *DOSBase;
 static struct fujinet_nio_device_base *serial_worker_base;
 
+#endif
+
+#ifndef FUJINET_NIO_NATIVE_TEST
 /* On KS 1.3 CreateProc starts a BCPL seglist, rather than accepting an
  * entry point. This symbol names the "next segment" longword in a tiny
  * fake seglist; the preceding longword is its deliberately fake length.
@@ -372,9 +375,7 @@ static void worker_pump(struct fujinet_nio_device_base *base)
 
 #ifndef FUJINET_NIO_NATIVE_TEST
 static void device_worker_entry(void);
-#if !defined(FUJINET_NIO_DIRECTORY_BACKEND)
 void fujinet_nio_legacy_worker_entry(void);
-#endif
 #endif
 static BPTR device_expunge(register struct fujinet_nio_device_base *base
                                FN_REGISTER("a6"));
@@ -407,17 +408,27 @@ static struct fujinet_nio_device_base *device_init(
         unsigned spins;
 
         if (DOSBase == NULL) {
-            DOSBase = (struct DosLibrary *)OpenLibrary("dos.library", 37);
+            DOSBase = (struct DosLibrary *)OpenLibrary("dos.library", 34);
         }
         if (DOSBase == NULL) return NULL;
         base->worker_signal = -1;
         base->worker_stop = 0;
         directory_worker_base = base;
-        base->worker_process = CreateNewProcTags(
-            NP_Entry, (ULONG)device_worker_entry,
-            NP_StackSize, WORKER_STACK_SIZE,
-            NP_Name, (ULONG)"fn-native-test",
-            TAG_DONE);
+        if (DOSBase->dl_lib.lib_Version >= 36) {
+            base->worker_process = CreateNewProcTags(
+                NP_Entry, (ULONG)device_worker_entry,
+                NP_StackSize, WORKER_STACK_SIZE,
+                NP_Name, (ULONG)"fn-native-test",
+                TAG_DONE);
+        } else {
+            struct MsgPort *worker_port = CreateProc(
+                "fn-native-test", 0,
+                (BPTR)((ULONG)&fujinet_nio_legacy_worker_seglist >> 2),
+                WORKER_STACK_SIZE);
+            base->worker_process = worker_port == NULL ? NULL :
+                (struct Process *)((UBYTE *)worker_port -
+                                   sizeof(struct Task));
+        }
         if (base->worker_process == NULL) {
             directory_worker_base = NULL;
             return NULL;
@@ -618,6 +629,8 @@ static void device_worker_entry(void)
         FreeSignal(base->worker_signal);
         base->worker_signal = -1;
     }
+    base->worker_process = NULL;
+    directory_worker_base = NULL;
 #else
     struct fujinet_nio_device_base *base = serial_worker_base;
     ULONG signal_mask;
@@ -641,12 +654,10 @@ static void device_worker_entry(void)
 #endif
 }
 
-#if !defined(FUJINET_NIO_DIRECTORY_BACKEND)
 void fujinet_nio_legacy_worker_entry(void)
 {
     device_worker_entry();
 }
-#endif
 #endif
 
 static void device_begin_io(
