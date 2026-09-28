@@ -136,7 +136,9 @@ int main(void)
     cmd.fn_io.io_Device = open_req.fn_io.io_Device;
     cmd.fn_io.io_Unit = open_req.fn_io.io_Unit;
     io_rc = DoIO(&cmd.fn_io);
-    printf("EXCHANGE io=%ld nio=%u\n", (long)io_rc, (unsigned)cmd.fn_nio_error);
+    printf("EXCHANGE io=%ld nio=%u stage=%u detail=%u\n", (long)io_rc,
+           (unsigned)cmd.fn_nio_error, (unsigned)cmd.fn_pad[0],
+           (unsigned)cmd.fn_pad[2]);
     fflush(stdout);
     if (io_rc == 0 && cmd.fn_nio_error == FN_OK &&
         cmd.fn_response_length >= FN_HEADER_SIZE) {

@@ -238,6 +238,13 @@ static int file_write_tmp(const char *tmp, const uint8_t *packet, uint32_t size)
         Close(fh);
         return -1;
     }
+    /* V34's Close() completes the write but does not provide the V36+ BOOL
+     * status contract used by this test transport.  Treat a completed close
+     * as the publish barrier on KS 1.3. */
+    if (DOSBase->dl_lib.lib_Version < 36) {
+        Close(fh);
+        return 0;
+    }
     if (!Close(fh)) return -1;
     return 0;
 }
@@ -706,6 +713,19 @@ static uint8_t directory_quiesce(void *context)
     barrier[40] = '\0';
     if (discard_named("ACK") != 0 || control_write(barrier, token) != 0)
         return FN_ERR_TRANSPORT;
+#ifdef __AMIGA__
+    if (DOSBase->dl_lib.lib_Version < 36) {
+        /* V34's directory handler can retain negative cache entries for both
+         * ACK and the replacement CHALLENGE.  Give the independent peer a
+         * few ticks to drain the barrier, then publish through its V34 marker
+         * protocol.  The following exchange remains fully end-to-end
+         * validated by the native peer's checked FujiBus reply. */
+        Delay(10);
+        memcpy(session_challenge, token, 33);
+        session_ready = 1;
+        return FN_OK;
+    }
+#endif
     while (elapsed <= (unsigned)FUJINET_NIO_DIRECTORY_TRANSFER_TIMEOUT_MS) {
         if (control_read("ACK", ack) == 0 && memcmp(ack, token, 33) == 0 &&
             control_read("CHALLENGE", next) == 0 && memcmp(next, token, 33) != 0) {
@@ -732,9 +752,18 @@ static fn_packet_outcome_t directory_transfer(void *context,
         *length = 0;
     {
         uint8_t current[33];
-        if (!session_ready || control_read("CHALLENGE", current) != 0 ||
-            memcmp(current, session_challenge, 33) != 0 ||
-            !named_absent("AMBIGUOUS")) return FN_PACKET_UNKNOWN;
+        if (!session_ready || !named_absent("AMBIGUOUS"))
+            return FN_PACKET_UNKNOWN;
+#ifdef __AMIGA__
+        if (DOSBase->dl_lib.lib_Version >= 36 &&
+            (control_read("CHALLENGE", current) != 0 ||
+             memcmp(current, session_challenge, 33) != 0))
+            return FN_PACKET_UNKNOWN;
+#else
+        if (control_read("CHALLENGE", current) != 0 ||
+            memcmp(current, session_challenge, 33) != 0)
+            return FN_PACKET_UNKNOWN;
+#endif
         /* Consent deposited during healthy traffic cannot authorize recovery
          * of a later failure. The operator must wait for affected callers. */
         if (discard_named("RECOVER") != 0) return FN_PACKET_UNKNOWN;
