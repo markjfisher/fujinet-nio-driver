@@ -71,6 +71,23 @@ Copy DN0:BASE.TXT TO HD0:FROMDD.TXT
 FUMOUNT HD0:
 ```
 
+For standard 880 KiB `DOS\\1` FastFileSystem ADFs, first install the default
+all-DD profile, then run `Install-FujiNet-WB13-FFS`. It appends `FF0:` through
+`FF7:` static entries which load `L:FastFileSystem`; add the matching
+`C:Mount FFx:` startup lines and use those names with the normal commands:
+
+```text
+FMOUNT 11 FF0: RW
+Copy DH0:REPORT TO FF0:REPORT
+FUMOUNT FF0:
+FMOUNT 11 FF0: RO
+Type FF0:REPORT
+```
+
+`FFx:` aliases the same device unit as `DNx:`. Do not mount both aliases for
+one unit simultaneously. This FFS extension is for the all-DD profile; it
+does not provide FFS high-density aliases for the mixed DD/HD profile.
+
 On WB1.3, `FUMOUNT` ejects the media but intentionally keeps the static
 MountList entry and OFS handler alive. The final `FMOUNT` changes the media on
 that unit. This differs from WB2+ builds, where `FUMOUNT` retires a dynamic
