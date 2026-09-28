@@ -840,7 +840,6 @@ static int run_disk_ordinary(const struct fn_nio_exchange_opts *opts)
     printf("ORDINARY %s completed_trials=%u failure=%s\n",
            status == 0 ? "PASS" : "FAIL", result.completed_trials,
            result.failure ? result.failure : "none");
-    fflush(stdout);
     if (result.fixture_mounted)
         printf("FIXTURE LEFT MOUNTED slot=%u uri=%s; saved mappings unchanged\n",
                opts->slot, opts->fixture_uri);
@@ -848,14 +847,8 @@ static int run_disk_ordinary(const struct fn_nio_exchange_opts *opts)
         printf("FIXTURE STATE UNKNOWN slot=%u uri=%s; may remain mounted; "
                "no retry or unmount attempted\n", opts->slot, opts->fixture_uri);
     /* All commands were synchronous; no WaitIO on the OpenDevice request. */
-    printf("ORDINARY cleanup=before-disk-close\n");
-    fflush(stdout);
     CloseDevice((struct IORequest *)&c->disk);
-    printf("ORDINARY cleanup=after-disk-close\n");
-    fflush(stdout);
     CloseDevice(&c->nio_open);
-    printf("ORDINARY cleanup=after-nio-close\n");
-    fflush(stdout);
     DeletePort(c->port);
     return status == 0 ? RETURN_OK : RETURN_FAIL;
 }

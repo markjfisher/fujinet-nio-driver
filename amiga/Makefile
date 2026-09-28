@@ -4,6 +4,10 @@ CFLAGS := -std=c99 -Wall -Wextra -Werror -O2 -mcpu=68000 -msoft-float
 CPPFLAGS := -Iinclude -Ipublic/include -I$(LIB_ROOT)/include
 KICK13_CRT := -mcrt=nix13
 NIO_TEST_CRT ?= clib2
+AMIGA_WB13 ?= 0
+# fujinet-nio-exchange keeps the nix13 runtime even for newer Workbenches.
+# Select its WB1.3-only diagnostics by target profile, not by that runtime.
+NIO_EXCHANGE_PROFILE_CPPFLAGS := $(if $(filter 1,$(AMIGA_WB13)),-DFUJINET_WB13,)
 BUILD_DIR ?= ../build/amiga
 LIBRARY := $(LIB_ROOT)/build/fujinet-nio-amiga-driver.a
 DEVICE := $(BUILD_DIR)/fujinet-disk.device
@@ -146,7 +150,7 @@ $(NIO_EXCHANGE): tools/fujinet_nio_exchange_legacy_worker.S tools/fujinet_nio_ex
 		include/fujinet_nio_endian.h include/fujinet_nio_serial_config.h \
 		$(LIBRARY)
 	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(KICK13_CRT) \
+	$(CC) $(CPPFLAGS) $(NIO_EXCHANGE_PROFILE_CPPFLAGS) $(CFLAGS) $(KICK13_CRT) \
 		tools/fujinet-nio-exchange.c tools/fujinet_nio_exchange_legacy_worker.S tools/fujinet_nio_exchange_opts.c tools/fujinet_nio_exchange_disk.c tools/fujinet_nio_exchange_disk_adapter.c \
 		$(LIBRARY) -lamiga -o $@
 

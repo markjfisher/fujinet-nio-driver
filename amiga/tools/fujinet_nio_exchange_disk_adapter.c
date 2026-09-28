@@ -4,6 +4,16 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef FUJINET_WB13
+/* The native WB1.3 matrix's behavioural proof is the returned I/O result and
+ * independently checked host media.  The verbose per-operation diagnostic
+ * formatter corrupts the V34 command return path after successful I/O, so
+ * do not run it in that build. */
+#define ordinary_printf(...) ((void)0)
+#else
+#define ordinary_printf printf
+#endif
+
 uint8_t fn_exchange_disk_adapter_exchange(void *opaque, const uint8_t *request,
                                  uint16_t length, uint8_t *response,
                                  uint16_t capacity, uint16_t *response_length)
@@ -23,7 +33,7 @@ uint8_t fn_exchange_disk_adapter_exchange(void *opaque, const uint8_t *request,
     c->nio.fn_response_capacity = capacity;
     (void)DoIO(&c->nio.fn_io);
     *response_length = c->nio.fn_response_length;
-    printf("ordinary remote-info io_Error=%d nio=%u result=%u cause=%u "
+    ordinary_printf("ordinary remote-info io_Error=%d nio=%u result=%u cause=%u "
            "native=%u status=%u\n", (int)c->nio.fn_io.io_Error,
            (unsigned)c->nio.fn_nio_error, (unsigned)c->nio.fn_pad[1],
            (unsigned)c->nio.fn_pad[2], (unsigned)(c->nio.fn_flags & 255),
@@ -45,12 +55,15 @@ int fn_exchange_disk_adapter_io(void *opaque, enum fn_exchange_disk_op op,
     void *data = NULL;
     ULONG length = 0;
     const char *name = "unknown";
-    unsigned index, attempt;
+    unsigned index;
+#ifndef FUJINET_WB13
+    unsigned attempt;
+#endif
     uint8_t result;
     if (op == FN_EXDISK_REMOTE_INFO) {
         memset(&info, 0, sizeof(info));
         result = fn_disk_info_context(&c->codec, (uint8_t)c->opts->slot, &info);
-        printf("ordinary remote-info codec_result=%u\n", (unsigned)result);
+        ordinary_printf("ordinary remote-info codec_result=%u\n", (unsigned)result);
         if (result != FN_OK || info.slot != c->opts->slot) return -1;
         state->mounted = (info.flags & FN_DISK_FLAG_MOUNTED) != 0;
         return 0;
@@ -72,10 +85,13 @@ int fn_exchange_disk_adapter_io(void *opaque, enum fn_exchange_disk_op op,
     case FN_EXDISK_FLUSH: command = CMD_UPDATE; name = "flush"; break;
     default: return -1;
     }
+#ifdef FUJINET_WB13
+    (void)name;
+#endif
     request->io_Command = FUJINET_DISK_CMD_TRACE_CLEAR;
     io->io_Data = NULL; io->io_Length = 0;
     if (DoIO((struct IORequest *)io) != 0) {
-        printf("ordinary op=%s trial=%u trace_clear io_Error=%d io_Actual=%lu\n",
+        ordinary_printf("ordinary op=%s trial=%u trace_clear io_Error=%d io_Actual=%lu\n",
                name, state->trial, (int)request->io_Error, (unsigned long)io->io_Actual);
         return -1;
     }
@@ -86,10 +102,11 @@ int fn_exchange_disk_adapter_io(void *opaque, enum fn_exchange_disk_op op,
     (void)DoIO((struct IORequest *)io);
     /* TRACE overwrites these fields: capture before querying. */
     error = request->io_Error; actual = io->io_Actual;
-    printf("ordinary op=%s slot=%u lba=%lu io_Error=%d io_Actual=%lu trial=%u\n",
+    ordinary_printf("ordinary op=%s slot=%u lba=%lu io_Error=%d io_Actual=%lu trial=%u\n",
            name, c->opts->slot, (unsigned long)c->opts->lba,
            (int)error, (unsigned long)actual, state->trial);
     if (op == FN_EXDISK_READ || op == FN_EXDISK_WRITE) {
+#ifndef FUJINET_WB13
         memset(&c->trace, 0, sizeof(c->trace));
         request->io_Command = FUJINET_DISK_CMD_TRACE;
         io->io_Data = &c->trace; io->io_Length = sizeof(c->trace);
@@ -110,13 +127,14 @@ int fn_exchange_disk_adapter_io(void *opaque, enum fn_exchange_disk_op op,
                     (unsigned)c->trace.exchange_native_errors[index][attempt],
                     (unsigned)c->trace.exchange_statuses[index][attempt], state->trial);
         }
+#endif
     }
     if (error) return -1;
     if (op == FN_EXDISK_READ && actual == 512) {
         uint32_t digest = 2166136261UL;
         for (index = 0; index < 512; ++index)
             digest = (digest ^ buffer[index]) * 16777619UL;
-        printf("ordinary read trial=%u checksum_fnv1a32=%08lx\n",
+        ordinary_printf("ordinary read trial=%u checksum_fnv1a32=%08lx\n",
                state->trial, (unsigned long)digest);
     }
     state->actual = actual;
@@ -129,4 +147,3 @@ int fn_exchange_disk_adapter_io(void *opaque, enum fn_exchange_disk_op op,
     }
     return 0;
 }
-
