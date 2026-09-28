@@ -44,10 +44,14 @@ selected drive, and updates the shared `config-nio/mappings` record.
 
 ### Workbench 1.3
 
-The WB1.3 installer appends permanent static `DN0:` through `DN7:` entries to
-the existing `DEVS:MountList`. The corresponding startup setup starts those
-static handlers after loading the resident disk device; `FMOUNT` then changes
-media in the selected unit. It supports the same simple command sequence:
+The default WB1.3 installer appends permanent static `DN0:` through `DN7:` DD
+entries to the existing `DEVS:MountList`. The alternative
+`Install-FujiNet-WB13-Mixed` profile instead installs four DD entries
+(`DN0:`--`DN3:`) and four HD entries (`HD0:`--`HD3:`); use exactly one profile
+on a clean MountList. The corresponding startup setup starts those static
+handlers after loading the resident disk device; `FMOUNT` then changes media
+in the selected unit. The default profile supports the same simple command
+sequence:
 
 ```text
 FMOUNT 11 DN0: RO
@@ -56,6 +60,15 @@ FMOUNT 13 DN2: RW
 FUMOUNT DN0:
 FUMOUNT DN2:
 FMOUNT 11 DN0: RO
+```
+
+The mixed profile supports concurrent DD and 1760 KiB HD ADFs:
+
+```text
+FMOUNT 13 DN0: RW
+FMOUNT 21 HD0: RW
+Copy DN0:BASE.TXT TO HD0:FROMDD.TXT
+FUMOUNT HD0:
 ```
 
 On WB1.3, `FUMOUNT` ejects the media but intentionally keeps the static
