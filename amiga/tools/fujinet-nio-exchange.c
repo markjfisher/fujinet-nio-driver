@@ -85,6 +85,14 @@ struct exchange_job {
 static struct exchange_job job_a;
 static struct exchange_job job_b;
 
+#ifdef __KICK13__
+/* CreateProc on KS 1.3 requires a BCPL seglist rather than a C entry point.
+ * The tiny seglists in fujinet_nio_exchange_legacy_worker.S dispatch to the
+ * two independent jobs below. */
+extern ULONG fujinet_nio_exchange_legacy_job_a_seglist;
+extern ULONG fujinet_nio_exchange_legacy_job_b_seglist;
+#endif
+
 static void fill_exchange(struct FujiNetNIORequest *req, struct MsgPort *port,
                           const uint8_t *request, UWORD request_len,
                           uint8_t *response, UWORD response_cap)
@@ -221,6 +229,44 @@ static void job_a_entry(void)
 static void job_b_entry(void)
 {
     run_job(&job_b);
+}
+
+#ifdef __KICK13__
+void fujinet_nio_exchange_legacy_job_a_entry(void)
+{
+    job_a_entry();
+}
+
+void fujinet_nio_exchange_legacy_job_b_entry(void)
+{
+    job_b_entry();
+}
+#endif
+
+static struct Process *spawn_exchange_job(const char *name, APTR entry,
+                                          ULONG *legacy_seglist)
+{
+    struct Library *dos;
+    struct MsgPort *port;
+    UWORD version;
+
+    dos = OpenLibrary((CONST_STRPTR)"dos.library", 34);
+    if (dos == NULL) return NULL;
+    version = dos->lib_Version;
+    CloseLibrary(dos);
+    if (version >= 36) {
+        return CreateNewProcTags(NP_Entry, (ULONG)entry, NP_StackSize, 8192,
+                                 NP_Name, (ULONG)name, TAG_DONE);
+    }
+#ifdef __KICK13__
+    port = CreateProc((STRPTR)name, 0,
+                      (BPTR)((ULONG)legacy_seglist >> 2), 8192);
+    return port == NULL ? NULL :
+        (struct Process *)((UBYTE *)port - sizeof(struct Task));
+#else
+    (void)legacy_seglist;
+    return NULL;
+#endif
 }
 
 static uint8_t spawned_a;
@@ -1235,11 +1281,21 @@ static int run_isolation_suite(void)
         job_b.request, sizeof(job_b.request));
     if (packet_len < 0) return RETURN_FAIL;
     job_b.request_length = (UWORD)packet_len;
-    proc_a = CreateNewProcTags(NP_Entry, (ULONG)job_a_entry, NP_StackSize,
-                               8192, NP_Name, (ULONG) "nio-exch-a", TAG_DONE);
+    proc_a = spawn_exchange_job("nio-exch-a", (APTR)job_a_entry,
+#ifdef __KICK13__
+                                &fujinet_nio_exchange_legacy_job_a_seglist
+#else
+                                NULL
+#endif
+    );
     if (proc_a != NULL) spawned_a = 1;
-    proc_b = CreateNewProcTags(NP_Entry, (ULONG)job_b_entry, NP_StackSize,
-                               8192, NP_Name, (ULONG) "nio-exch-b", TAG_DONE);
+    proc_b = spawn_exchange_job("nio-exch-b", (APTR)job_b_entry,
+#ifdef __KICK13__
+                                &fujinet_nio_exchange_legacy_job_b_seglist
+#else
+                                NULL
+#endif
+    );
     if (proc_b != NULL) spawned_b = 1;
     if (proc_a == NULL || proc_b == NULL) {
         printf("CONCURRENT spawn-fail\n");
