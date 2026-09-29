@@ -47,21 +47,22 @@ selected drive, and updates the shared `config-nio/mappings` record.
 The WB1.3 installer appends eight initially inactive static recipes with
 independent physical units: `DN0:`--`DN1:` (DD/FFS, units 0--1),
 `HN0:`--`HN1:` (HD/FFS, units 2--3), `DO0:`--`DO1:` (DD/OFS, units 4--5),
-and `HO0:`--`HO1:` (HD/OFS, units 6--7). `FMOUNT` inspects the catalogue ADF
-and verifies the user-selected endpoint:
+and `HO0:`--`HO1:` (HD/OFS, units 6--7). `FMOUNT` inspects the catalogue ADF;
+a logical unit selects the compatible endpoint automatically:
 
 ```text
-FMOUNT 11 DO0: RO
-FMOUNT 21 HN0: RW
-FUMOUNT DO0:
-FUMOUNT HN0:
+FMOUNT 11 0 RO ; reports DO0: for a DD/OFS ADF
+FMOUNT 21 1 RW ; reports HN1: for an HD/FFS ADF
+FUMOUNT 0
+FUMOUNT 1
 ```
 
 `L:FastFileSystem` must be present for FFS recipes. On WB1.3, `FUMOUNT`
-ejects media but retains the active static handler; later same-type media can
-be remounted on that endpoint. Different DD/HD or OFS/FFS media use their own
-non-overlapping endpoint, because handler retirement is unsafe on KS1.3. WB2+
-builds use dynamic nodes and do not have this constraint.
+ejects media but retains the active static handler; later media can be
+remounted through the same logical unit or an explicit endpoint. Different
+DD/HD or OFS/FFS media use non-overlapping endpoints, because handler
+retirement is unsafe on KS1.3. WB2+ builds use dynamic nodes and do not have
+this constraint.
 
 ### Mounting more than one image
 
