@@ -5,6 +5,10 @@ CPPFLAGS := -Iinclude -Ipublic/include -I$(LIB_ROOT)/include
 KICK13_CRT := -mcrt=nix13
 NIO_TEST_CRT ?= clib2
 AMIGA_WB13 ?= 0
+# fujinet-mount contains the dynamic-node boundary probe used by WB2+ tests.
+# Keep the nix13 build for the WB1.3 package, but do not let that compile-time
+# compatibility branch leak into a newer Workbench artifact.
+MOUNT_TOOL_CRT := $(if $(filter 1,$(AMIGA_WB13)),$(KICK13_CRT),-mcrt=clib2)
 # fujinet-nio-exchange keeps the nix13 runtime even for newer Workbenches.
 # Select its WB1.3-only diagnostics by target profile, not by that runtime.
 NIO_EXCHANGE_PROFILE_CPPFLAGS := $(if $(filter 1,$(AMIGA_WB13)),-DFUJINET_WB13,)
@@ -173,9 +177,9 @@ $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
-$(MOUNT_TOOL): tools/fujinet-mount.c include/fujinet_disk_device.h $(LIBRARY)
+$(MOUNT_TOOL): Makefile tools/fujinet-mount.c include/fujinet_disk_device.h $(LIBRARY)
 	@mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(KICK13_CRT) $< $(LIBRARY) -lamiga -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(MOUNT_TOOL_CRT) tools/fujinet-mount.c $(LIBRARY) -lamiga -o $@
 
 $(RESIDENT_LOADER): tools/fujinet-load-resident.c
 	@mkdir -p $(dir $@)
