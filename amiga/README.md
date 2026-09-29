@@ -31,7 +31,10 @@ has been integration-tested with a standard 880 KiB ADF.
 - Large packet and codec buffers therefore live in the resident device base,
   not caller-owned filesystem stacks or mutable library statics.
 
-Normal Amiga users select catalogue media with the `nio-core-apps` tools:
+### Workbench 2.0 and newer
+
+On dynamic-DOS-node Workbench releases, users select catalogue media with the
+`nio-core-apps` tools:
 
 ```text
 FMOUNT CATALOG-SLOT DN0: [RO|RW]
