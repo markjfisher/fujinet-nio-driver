@@ -44,54 +44,24 @@ selected drive, and updates the shared `config-nio/mappings` record.
 
 ### Workbench 1.3
 
-The default WB1.3 installer appends permanent static `DN0:` through `DN7:` DD
-entries to the existing `DEVS:MountList`. The alternative
-`Install-FujiNet-WB13-Mixed` profile instead installs four DD entries
-(`DN0:`--`DN3:`) and four HD entries (`HD0:`--`HD3:`); use exactly one profile
-on a clean MountList. The corresponding startup setup starts those static
-handlers after loading the resident disk device; `FMOUNT` then changes media
-in the selected unit. The default profile supports the same simple command
-sequence:
+The WB1.3 installer appends eight initially inactive static recipes with
+independent physical units: `DN0:`--`DN1:` (DD/FFS, units 0--1),
+`HN0:`--`HN1:` (HD/FFS, units 2--3), `DO0:`--`DO1:` (DD/OFS, units 4--5),
+and `HO0:`--`HO1:` (HD/OFS, units 6--7). `FMOUNT` inspects the catalogue ADF
+and verifies the user-selected endpoint:
 
 ```text
-FMOUNT 11 DN0: RO
-Dir DN0:
-FMOUNT 13 DN2: RW
-FUMOUNT DN0:
-FUMOUNT DN2:
-FMOUNT 11 DN0: RO
+FMOUNT 11 DO0: RO
+FMOUNT 21 HN0: RW
+FUMOUNT DO0:
+FUMOUNT HN0:
 ```
 
-The mixed profile supports concurrent DD and 1760 KiB HD ADFs:
-
-```text
-FMOUNT 13 DN0: RW
-FMOUNT 21 HD0: RW
-Copy DN0:BASE.TXT TO HD0:FROMDD.TXT
-FUMOUNT HD0:
-```
-
-For standard 880 KiB `DOS\\1` FastFileSystem ADFs, first install the default
-all-DD profile, then run `Install-FujiNet-WB13-FFS`. It appends `FF0:` through
-`FF7:` static entries which load `L:FastFileSystem`; add the matching
-`C:Mount FFx:` startup lines and use those names with the normal commands:
-
-```text
-FMOUNT 11 FF0: RW
-Copy DH0:REPORT TO FF0:REPORT
-FUMOUNT FF0:
-FMOUNT 11 FF0: RO
-Type FF0:REPORT
-```
-
-`FFx:` aliases the same device unit as `DNx:`. Do not mount both aliases for
-one unit simultaneously. This FFS extension is for the all-DD profile; it
-does not provide FFS high-density aliases for the mixed DD/HD profile.
-
-On WB1.3, `FUMOUNT` ejects the media but intentionally keeps the static
-MountList entry and OFS handler alive. The final `FMOUNT` changes the media on
-that unit. This differs from WB2+ builds, where `FUMOUNT` retires a dynamic
-handler and removes its DOS node; `FMOUNTRESTORE` is also WB2+ only.
+`L:FastFileSystem` must be present for FFS recipes. On WB1.3, `FUMOUNT`
+ejects media but retains the active static handler; later same-type media can
+be remounted on that endpoint. Different DD/HD or OFS/FFS media use their own
+non-overlapping endpoint, because handler retirement is unsafe on KS1.3. WB2+
+builds use dynamic nodes and do not have this constraint.
 
 ### Mounting more than one image
 
