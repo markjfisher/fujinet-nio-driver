@@ -23,7 +23,13 @@ static int control(const char *name, const void *data, LONG length)
     BPTR file = Open((CONST_STRPTR)name, MODE_NEWFILE);
     int ok;
     if (!file) return 0;
-    ok = Write(file, (APTR)data, length) == length && Flush(file);
+    ok = Write(file, (APTR)data, length) == length;
+#ifndef __KICK13__
+    /* Flush() is a later DOS interface.  The file is closed immediately
+     * below, which is the WB1.3-compatible write boundary for this control
+     * record. */
+    ok = ok && Flush(file);
+#endif
     Close(file);
     return ok;
 }

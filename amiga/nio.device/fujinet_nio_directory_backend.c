@@ -721,6 +721,12 @@ static uint8_t directory_quiesce(void *context)
          * protocol.  The following exchange remains fully end-to-end
          * validated by the native peer's checked FujiBus reply. */
         Delay(10);
+        /* The V34 marker protocol has received the peer's independent
+         * barrier proof by this point.  Preserve the same invariant as the
+         * V36 ACK path: no subsequent transfer may leave quarantine until
+         * the old ambiguity record has been removed. */
+        if (discard_named("AMBIGUOUS") != 0)
+            return FN_ERR_TRANSPORT;
         memcpy(session_challenge, token, 33);
         session_ready = 1;
         return FN_OK;
