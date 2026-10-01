@@ -4,6 +4,20 @@ This directory contains the Amiga `fujinet-disk.device` implementation. It
 provides eight Amiga units over the RS-232 client binding and
 has been integration-tested with a standard 880 KiB ADF.
 
+## Building
+
+Run the public build from the driver repository root:
+
+```sh
+make amiga                         # build wb13, wb31, and wb32
+make amiga AMIGA_PROFILE=wb13      # build one named profile
+```
+
+Outputs are always profile-qualified under `build/amiga/wb13/`,
+`build/amiga/wb31/`, or `build/amiga/wb32/`; there is no supported generic
+`build/amiga/` release directory. WB1.3 does not include the later
+DOS-node-removal utilities such as `fujinet-unload-resident`.
+
 ## Current standard-ADF contract
 
 - Amiga units 0–7 map to DiskDevice slots 1–8 and MountLists `DN0`–`DN7`.
@@ -102,9 +116,9 @@ application.
 
 ## Loading the resident device
 
-`make native` also builds `build/amiga/fujinet-load-resident`. Install that
-program in `C:` and the device in `DEVS:`, then register the device during
-startup with:
+The selected profile contains `fujinet-load-resident`. Install that program
+in `C:` and the matching profile's device in `DEVS:`, then register the
+device during startup with:
 
 ```text
 C:fujinet-load-resident DEVS:fujinet-disk.device fujinet-disk.device
@@ -117,8 +131,8 @@ non-worker Expunge or last `CloseDevice` completes teardown.
 
 ## Unloading the resident device
 
-`make native` also builds `build/amiga/fujinet-unload-resident`. Install that
-program in `C:` and request unload of a resident device with:
+WB2+ profiles contain `fujinet-unload-resident`. Install that program in `C:`
+and request unload of a resident device with:
 
 ```text
 C:fujinet-unload-resident fujinet-disk.device
@@ -160,10 +174,9 @@ standard trackdisk status commands on both the normal test OS and Workbench
 
 ## RS-232 baud rate and serial driver
 
-`make native` also builds `build/amiga/fujinet-nio-baud` and
-`build/amiga/fujinet-nio-serial`. With the resident `fujinet-nio.device`
-loaded, use them to inspect or select the rate and Exec serial driver used
-when the RS-232 backend next opens:
+WB2+ profiles contain `fujinet-nio-baud` and `fujinet-nio-serial`. With the
+resident `fujinet-nio.device` loaded, use them to inspect or select the rate
+and Exec serial driver used when the RS-232 backend next opens:
 
 ```text
 fujinet-nio-baud
@@ -294,10 +307,9 @@ RDB/HDF media, dynamic DOS nodes, seamless handler coordination, and
 consolidation onto standard tools.
 
 Run the portable contract tests with `make tests` from this directory. Run
-`make native` to build `build/amiga/fujinet-disk.device`,
-`build/amiga/fujinet-load-resident`, and `build/amiga/fujinet-unload-resident`;
-this additionally requires the Amiga GCC toolchain, readable NDK headers, and
-`fujinet-nio-amiga-driver.a`.
+`make amiga` from the driver repository root to build the profile-qualified
+resident devices and tools; this additionally requires the Amiga GCC
+toolchain, readable NDK headers, and `fujinet-nio-amiga-driver.a`.
 
 The host `test_fujinet_exec_boundary` test is the first resident-device
 boundary contract harness. It covers queue, request-removal, and retained

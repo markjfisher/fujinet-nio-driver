@@ -13,6 +13,18 @@ MOUNT_TOOL_CRT := $(if $(filter 1,$(AMIGA_WB13)),$(KICK13_CRT),-mcrt=clib2)
 # Select its WB1.3-only diagnostics by target profile, not by that runtime.
 NIO_EXCHANGE_PROFILE_CPPFLAGS := $(if $(filter 1,$(AMIGA_WB13)),-DFUJINET_WB13,)
 BUILD_DIR ?= ../build/amiga
+
+# Public builds must select a Workbench profile.  The generic directory used
+# to make it possible to copy whatever binary happened to have been built
+# last.  Unit tests and explicit cleanup do not produce release artefacts and
+# remain usable without a profile.
+ifeq ($(BUILD_DIR),../build/amiga)
+ifneq ($(MAKECMDGOALS),tests)
+ifneq ($(MAKECMDGOALS),clean)
+$(error Amiga builds require BUILD_DIR=../build/amiga/wb13, wb31, or wb32; use `make amiga` from the repository root)
+endif
+endif
+endif
 LIBRARY := $(LIB_ROOT)/build/fujinet-nio-amiga-driver.a
 DEVICE := $(BUILD_DIR)/fujinet-disk.device
 DEVICE_MAP := $(DEVICE).map
@@ -60,9 +72,14 @@ SOURCES := common/fujinet_disk_driver.c \
 	common/fujinet_io_queue.c \
 	channels/rs232/fujinet_nio_client.c \
 	disk.device/fujinet_disk_device.c
-OBJECTS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SOURCES))
+# Do not apply the generic source-to-object mapping to ../common: doing so
+# normalises BUILD_DIR/wbXX/../common into the unprofiled build/amiga/common.
+# Keep this object below the selected profile alongside the other common code.
+PROFILE_SOURCES := $(filter-out ../common/fujinet_disk_retry.c,$(SOURCES))
+OBJECTS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(PROFILE_SOURCES)) \
+	$(BUILD_DIR)/common/fujinet_disk_retry.o
 
-.PHONY: all native library tests resident-artifacts clean
+.PHONY: all native profile-artifacts library tests resident-artifacts clean
 
 all: tests native sdk
 
@@ -70,6 +87,14 @@ native: library $(DEVICE) $(MOUNT_TOOL) $(RESIDENT_LOADER) $(RESIDENT_UNLOADER) 
 	$(NIO_DEVICE) $(SERIAL_DEVICE) $(NIO_EXCHANGE) $(NIO_BAUD) $(NIO_SERIAL) \
 	$(NIO_NATIVE_TEST_DEVICE) $(NIO_NATIVE_TEST_PROBE) $(NIO_NATIVE_FAULT_PROBE)
 	$(MAKE) resident-artifacts
+
+# Release/staging assets for one named Workbench profile.  The WB1.3 package
+# deliberately excludes tools that require DOS node removal introduced later.
+profile-artifacts: library $(DEVICE) $(MOUNT_TOOL) $(RESIDENT_LOADER) \
+	$(NIO_DEVICE) $(SERIAL_DEVICE) $(NIO_EXCHANGE) sdk resident-artifacts
+ifneq ($(AMIGA_WB13),1)
+profile-artifacts: $(RESIDENT_UNLOADER) $(TD_PROBE) $(NIO_BAUD) $(NIO_SERIAL)
+endif
 
 resident-artifacts: $(DEVICE) $(NIO_DEVICE) $(SERIAL_DEVICE)
 	python3 tools/check-resident-artifacts.py \
@@ -174,6 +199,10 @@ $(NIO_NATIVE_TEST_PROBE): tools/fujinet-nio-native-test-probe.c \
 	$(CC) $(CPPFLAGS) $(CFLAGS) -mcrt=$(NIO_TEST_CRT) $< -lamiga -o $@
 
 $(BUILD_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/common/fujinet_disk_retry.o: ../common/fujinet_disk_retry.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
