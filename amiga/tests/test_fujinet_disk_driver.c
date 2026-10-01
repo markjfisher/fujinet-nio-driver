@@ -74,6 +74,13 @@ static uint8_t fake_mount(void *context, uint8_t slot, const char *uri,
     fake->media = *info;
     return FN_OK;
 }
+static uint8_t fake_restore_boot(void *context, uint8_t slot, fn_disk_info_t *info)
+{
+    fake_client_t *fake = context;
+    fake->slot = slot;
+    *info = fake->media;
+    return fake->mount_result;
+}
 
 static uint8_t fake_info(void *context, uint8_t slot, fn_disk_info_t *info)
 {
@@ -142,6 +149,7 @@ static uint8_t fake_inspect(void *context, const char *uri, fn_disk_inspection_t
 static const fujinet_disk_client_t fake_ops = {
     fake_init,
     fake_mount,
+    fake_restore_boot,
     fake_info,
     fake_read,
     fake_write,
@@ -243,6 +251,27 @@ static void test_mount_is_explicitly_read_only_auto_detected_and_512_bytes(void)
     CHECK("Mount verifies geometry with an Info request", fake.info_calls == 1);
     CHECK("Mount passes the configured URI",
           strcmp(fake.uri, "tnfs://host/workbench.adf") == 0);
+}
+
+static void test_restore_boot_commits_returned_media(void)
+{
+    fake_client_t fake = {0};
+    fujinet_disk_driver_t driver;
+
+    fake.media.flags = FN_DISK_FLAG_MOUNTED | FN_DISK_FLAG_READONLY;
+    fake.media.slot = 1;
+    fake.media.type = FN_DISK_TYPE_RAW;
+    fake.media.sector_size = FUJINET_DISK_BLOCK_SIZE;
+    fake.media.sector_count = FUJINET_DD_ADF_BLOCK_COUNT;
+    fujinet_disk_driver_init(&driver, &fake_ops, &fake, 0);
+    CHECK("restore boot accepts returned DD media",
+          fujinet_disk_restore_boot(&driver, 0) == FN_OK);
+    CHECK("restore boot uses unit zero's one-based slot", fake.slot == 1);
+    CHECK("restore boot marks the unit mounted", driver.mounted == 1);
+    CHECK("restore boot retains firmware read-only state", driver.writable == 0);
+    CHECK("restore boot commits returned geometry",
+          driver.media.sector_count == FUJINET_DD_ADF_BLOCK_COUNT);
+    CHECK("restore boot advances the media change count", driver.change_count == 1);
 }
 
 static void test_adf_info_accepts_dd_and_hd_rejects_others(void)
@@ -757,6 +786,7 @@ int main(void)
     test_amiga_units_map_to_one_based_diskdevice_slots();
     test_inspect_catalog_preserves_mounted_unit();
     test_mount_is_explicitly_read_only_auto_detected_and_512_bytes();
+    test_restore_boot_commits_returned_media();
     test_repeated_mounts_share_one_initialized_session();
     test_adf_info_accepts_dd_and_hd_rejects_others();
     test_hd_adf_mount_and_bounds();

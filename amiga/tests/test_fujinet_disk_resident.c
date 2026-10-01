@@ -94,6 +94,8 @@ static uint8_t unused_client_mount(void *context, uint8_t slot, const char *uri,
                                    uint8_t readonly, uint8_t type,
                                    uint16_t hint, fn_disk_info_t *info)
 { (void)context; (void)slot; (void)uri; (void)readonly; (void)type; (void)hint; (void)info; return FN_ERR_NOT_READY; }
+static uint8_t unused_client_restore_boot(void *context, uint8_t slot, fn_disk_info_t *info)
+{ (void)context; (void)slot; (void)info; return FN_ERR_NOT_READY; }
 static uint8_t unused_client_info(void *context, uint8_t slot, fn_disk_info_t *info)
 { (void)context; (void)slot; (void)info; return FN_ERR_NOT_READY; }
 static uint8_t unused_client_read(void *context, uint8_t slot, uint32_t lba,
@@ -109,7 +111,8 @@ static uint8_t unused_client_inspect(void *context, const char *uri,
 { (void)context; (void)uri; (void)inspection; return FN_ERR_NOT_READY; }
 
 const fujinet_disk_client_t fujinet_nio_disk_client = {
-    unused_client_init, unused_client_mount, unused_client_info,
+    unused_client_init, unused_client_mount, unused_client_restore_boot,
+    unused_client_info,
     unused_client_read, unused_client_write, unused_client_slot,
     unused_client_slot, unused_client_slot, unused_client_inspect
 };

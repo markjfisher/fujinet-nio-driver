@@ -66,6 +66,8 @@ static uint8_t nio_mount(void *context, uint8_t slot, const char *uri,
     return fn_disk_mount_context(&nio->client, slot, uri, readonly, type,
                                  sector_size_hint, info);
 }
+static uint8_t nio_restore_boot(void *context, uint8_t slot, fn_disk_info_t *info)
+{ fujinet_nio_disk_context_t *nio = context; return nio ? fn_disk_restore_boot_context(&nio->client, slot, info) : FN_ERR_INVALID; }
 
 static uint8_t nio_read_sector(void *context, uint8_t slot, uint32_t lba,
                                uint8_t *data, uint16_t capacity,
@@ -99,6 +101,7 @@ static uint8_t nio_inspect(void *context, const char *uri, fn_disk_inspection_t 
 const fujinet_disk_client_t fujinet_nio_disk_client = {
     nio_init,
     nio_mount,
+    nio_restore_boot,
     nio_info,
     nio_read_sector,
     nio_write,

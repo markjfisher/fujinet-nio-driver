@@ -11,6 +11,7 @@
 #define FUJINET_DISK_CMD_MOUNT_WRITABLE (CMD_NONSTD + 0x102)
 #define FUJINET_DISK_CMD_MOUNT_CATALOG (CMD_NONSTD + 0x103)
 #define FUJINET_DISK_CMD_INSPECT_CATALOG (CMD_NONSTD + 0x104)
+#define FUJINET_DISK_CMD_RESTORE_BOOT (CMD_NONSTD + 0x106)
 
 struct fujinet_disk_catalog_mount { UBYTE catalog_slot; UBYTE writable; };
 struct fujinet_disk_catalog_inspection { UBYTE catalog_slot; fn_disk_inspection_t inspection; };

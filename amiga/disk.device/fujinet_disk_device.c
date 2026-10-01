@@ -46,7 +46,7 @@ static const UWORD supported_commands[] = {
     TD_GETDRIVETYPE, TD_GETNUMTRACKS, TD_GETGEOMETRY,
     NSCMD_DEVICEQUERY, FUJINET_DISK_CMD_MOUNT,
     FUJINET_DISK_CMD_MOUNT_WRITABLE, FUJINET_DISK_CMD_MOUNT_CATALOG,
-    FUJINET_DISK_CMD_INSPECT_CATALOG, 0
+    FUJINET_DISK_CMD_INSPECT_CATALOG, FUJINET_DISK_CMD_RESTORE_BOOT, 0
 };
 
 struct fujinet_disk_unit_state {
@@ -490,6 +490,14 @@ static void device_process_request(struct IORequest *request,
     }
 
     switch (request->io_Command) {
+    case FUJINET_DISK_CMD_RESTORE_BOOT:
+        {
+        uint32_t old_count = unit->driver.change_count;
+        result = fujinet_disk_restore_boot(&unit->driver, unit_index);
+        request->io_Error = result_to_io_error(result);
+        if (unit->driver.change_count != old_count) signal_media_change(unit);
+        }
+        break;
     case FUJINET_DISK_CMD_MOUNT:
     case FUJINET_DISK_CMD_MOUNT_WRITABLE:
         {

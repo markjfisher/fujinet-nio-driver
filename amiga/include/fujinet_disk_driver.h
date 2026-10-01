@@ -24,6 +24,7 @@ typedef struct fujinet_disk_client {
     uint8_t (*mount)(void *context, uint8_t slot, const char *uri,
                      uint8_t readonly, uint8_t type,
                      uint16_t sector_size_hint, fn_disk_info_t *info);
+    uint8_t (*restore_boot)(void *context, uint8_t slot, fn_disk_info_t *info);
     uint8_t (*info)(void *context, uint8_t slot, fn_disk_info_t *info);
     uint8_t (*read_sector)(void *context, uint8_t slot, uint32_t lba,
                            uint8_t *data, uint16_t capacity,
@@ -70,6 +71,7 @@ uint8_t fujinet_disk_mount(fujinet_disk_driver_t *driver, uint32_t unit,
                            const char *uri);
 uint8_t fujinet_disk_mount_mode(fujinet_disk_driver_t *driver, uint32_t unit,
                                 const char *uri, uint8_t writable);
+uint8_t fujinet_disk_restore_boot(fujinet_disk_driver_t *driver, uint32_t unit);
 uint8_t fujinet_disk_eject(fujinet_disk_driver_t *driver, uint32_t unit);
 uint8_t fujinet_disk_flush(fujinet_disk_driver_t *driver, uint32_t unit);
 uint8_t fujinet_disk_acknowledge_change(fujinet_disk_driver_t *driver,

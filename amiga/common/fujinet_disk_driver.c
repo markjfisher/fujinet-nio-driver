@@ -34,6 +34,7 @@ static uint8_t ensure_client(fujinet_disk_driver_t *driver)
 
     if (driver == NULL || driver->client == NULL ||
         driver->client->init == NULL || driver->client->mount == NULL ||
+        driver->client->restore_boot == NULL ||
         driver->client->info == NULL ||
         driver->client->read_sector == NULL ||
         driver->client->write_sector == NULL ||
@@ -175,6 +176,36 @@ uint8_t fujinet_disk_mount_mode(fujinet_disk_driver_t *driver, uint32_t unit,
         clear_local_media(driver);
     }
     return result;
+}
+
+uint8_t fujinet_disk_restore_boot(fujinet_disk_driver_t *driver, uint32_t unit)
+{
+    uint8_t slot;
+    uint8_t result;
+    uint8_t replacing;
+
+    if (driver == NULL) return FN_ERR_INVALID;
+    replacing = driver->mounted;
+    result = fujinet_disk_unit_to_slot(unit, &slot);
+    if (result != FN_OK) return result;
+    result = ensure_client(driver);
+    if (result != FN_OK) return result;
+    result = driver->client->restore_boot(driver->client_context, slot,
+                                          &driver->media);
+    if (result != FN_OK) return result;
+    result = validate_adf_geometry(&driver->media, 0, slot);
+    if (result != FN_OK) {
+        clear_local_media(driver);
+        return result;
+    }
+    driver->mounted = 1;
+    driver->writable = (driver->media.flags & FN_DISK_FLAG_READONLY) ? 0 : 1;
+    driver->change_count += replacing ? 2 : 1;
+    if (driver->client->clear_changed(driver->client_context, slot) != FN_OK)
+        driver->change_ack_pending = 1;
+    else
+        driver->change_ack_pending = 0;
+    return FN_OK;
 }
 
 uint8_t fujinet_disk_flush(fujinet_disk_driver_t *driver, uint32_t unit)
