@@ -413,7 +413,8 @@ static struct fujinet_nio_device_base *device_init(
         unsigned spins;
 
         if (DOSBase == NULL) {
-            DOSBase = (struct DosLibrary *)OpenLibrary("dos.library", 34);
+            DOSBase = (struct DosLibrary *)OpenLibrary(
+                (CONST_STRPTR)"dos.library", 34);
         }
         if (DOSBase == NULL) return NULL;
         base->worker_signal = -1;
@@ -427,7 +428,7 @@ static struct fujinet_nio_device_base *device_init(
                 TAG_DONE);
         } else {
             struct MsgPort *worker_port = CreateProc(
-                "fn-native-test", 0,
+                (CONST_STRPTR)"fn-native-test", 0,
                 (BPTR)((ULONG)&fujinet_nio_legacy_worker_seglist >> 2),
                 WORKER_STACK_SIZE);
             base->worker_process = worker_port == NULL ? NULL :
@@ -457,7 +458,8 @@ static struct fujinet_nio_device_base *device_init(
         struct MsgPort *worker_port;
 
         if (DOSBase == NULL)
-            DOSBase = (struct DosLibrary *)OpenLibrary("dos.library", 34);
+            DOSBase = (struct DosLibrary *)OpenLibrary(
+                (CONST_STRPTR)"dos.library", 34);
         if (DOSBase == NULL) return NULL;
         base->worker_signal = -1;
         base->worker_stop = 0;
@@ -470,7 +472,7 @@ static struct fujinet_nio_device_base *device_init(
                 TAG_DONE);
         } else {
             worker_port = CreateProc(
-                "fujinet-nio-worker", 0,
+                (CONST_STRPTR)"fujinet-nio-worker", 0,
                 (BPTR)((ULONG)&fujinet_nio_legacy_worker_seglist >> 2),
                 WORKER_STACK_SIZE);
             base->worker_process = worker_port == NULL ? NULL :

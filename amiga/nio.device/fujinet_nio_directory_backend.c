@@ -98,7 +98,8 @@ static uint8_t ensure_dos(void)
     /* The native test device is also a KS 1.3 test artefact.  All DOS calls
      * used here are available in V34, so do not reject that platform merely
      * by asking Exec for a V37 library. */
-    DOSBase = (struct DosLibrary *)OpenLibrary("dos.library", 34);
+    DOSBase = (struct DosLibrary *)OpenLibrary((CONST_STRPTR)"dos.library",
+                                                34);
     return DOSBase != NULL ? FN_OK : FN_ERR_TRANSPORT;
 }
 
