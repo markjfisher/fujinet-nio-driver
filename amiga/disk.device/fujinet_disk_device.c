@@ -700,7 +700,13 @@ static void device_process_request(struct IORequest *request,
             new_mappings[2 + unit_index * 2] = 0;
             result = store_mappings(base, new_mappings);
         }
-        if (result == FN_OK)
+        /* A unit with no media loaded (a fresh boot, or a mapping saved
+         * before the last reboot) has nothing to eject, but its saved
+         * mapping must still be removable: the eject succeeds once the
+         * mapping is cleared, so FUMOUNT and config-nio can drop stale
+         * entries.  Ejecting a mounted unit still unmounts it on the
+         * FujiNet, and a failure there restores the mapping. */
+        if (result == FN_OK && unit->driver.mounted)
             result = fujinet_disk_eject(&unit->driver, unit_index);
         if (result != FN_OK && mappings_loaded)
             (void)store_mappings(base, old_mappings);

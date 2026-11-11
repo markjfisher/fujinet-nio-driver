@@ -65,22 +65,36 @@ void FreeMem(APTR memory, ULONG bytes)
     free(memory);
 }
 void fn_transport_close(void) { ++transport_close_count; }
-uint8_t fn_init(void) { return FN_ERR_NOT_READY; }
+static uint8_t fn_init_result = FN_ERR_NOT_READY;
+uint8_t fn_init(void) { return fn_init_result; }
+/* In-memory config-nio/mappings, so TD_EJECT's mapping update is observable.
+ * store_present == 0 reads back as "no stored value". */
+static uint8_t store_bytes[17];
+static uint8_t store_present;
 uint8_t fn_appstore_read(fn_appstore_io_t *io, const char *namespace_name,
                          const char *key, uint32_t offset, uint8_t *buf,
                          uint16_t max_len, fn_appstore_read_t *out)
 {
-    (void)io; (void)namespace_name; (void)key; (void)offset; (void)buf;
-    (void)max_len; (void)out;
-    return FN_ERR_NOT_READY;
+    (void)io; (void)namespace_name; (void)key; (void)offset;
+    if (!store_present) {
+        out->flags = 0;
+        out->bytes_read = 0;
+        return FN_OK;
+    }
+    memcpy(buf, store_bytes, max_len < sizeof(store_bytes) ? max_len : sizeof(store_bytes));
+    out->flags = FN_APPSTORE_READ_EXISTS;
+    out->bytes_read = sizeof(store_bytes);
+    return FN_OK;
 }
 uint8_t fn_appstore_write(fn_appstore_io_t *io, const char *namespace_name,
                           const char *key, uint32_t offset, const uint8_t *data,
                           uint16_t length, fn_appstore_write_t *out)
 {
-    (void)io; (void)namespace_name; (void)key; (void)offset; (void)data;
-    (void)length; (void)out;
-    return FN_ERR_NOT_READY;
+    (void)io; (void)namespace_name; (void)key; (void)offset;
+    memcpy(store_bytes, data, length < sizeof(store_bytes) ? length : sizeof(store_bytes));
+    store_present = 1;
+    out->bytes_written = length;
+    return FN_OK;
 }
 uint8_t fn_slot_catalog_get(fn_slot_catalog_io_t *io, uint8_t index,
                             fn_slot_catalog_entry_t *out)
@@ -445,9 +459,54 @@ static void test_open_cancels_deferred_expunge(void)
           fujinet_disk_native_test_client_initialized(0) == 1);
 }
 
+static void eject_unit(uint8_t unit, struct IOExtTD *request)
+{
+    memset(request, 0, sizeof(*request));
+    request->iotd_Req.io.io_Command = TD_EJECT;
+    fujinet_disk_native_test_begin_io(unit, &request->iotd_Req.io);
+}
+
+/* A mapping saved before a reboot has no media loaded in the driver; FUMOUNT
+ * and config-nio must still be able to drop it. */
+static void test_eject_unmounted_unit_clears_saved_mapping(void)
+{
+    struct IOExtTD request;
+
+    fujinet_disk_native_test_reset();
+    fn_init_result = FN_OK;
+    memset(store_bytes, 0, sizeof(store_bytes));
+    store_bytes[0] = 1;
+    store_bytes[1 + 0 * 2] = 1;   /* unit 0: valid, RW, slot 7 */
+    store_bytes[2 + 0 * 2] = 7;
+    store_bytes[1 + 1 * 2] = 3;   /* unit 1: valid, RO, slot 9 */
+    store_bytes[2 + 1 * 2] = 9;
+    store_present = 1;
+
+    eject_unit(0, &request);
+    CHECK("eject of an unmounted unit succeeds", request.iotd_Req.io.io_Error == 0);
+    CHECK("eject clears that unit's saved mapping",
+          store_bytes[1] == 0 && store_bytes[2] == 0);
+    CHECK("eject leaves other units' mappings",
+          store_bytes[3] == 3 && store_bytes[4] == 9);
+
+    eject_unit(0, &request);
+    CHECK("second eject of the same unit is still fine",
+          request.iotd_Req.io.io_Error == 0);
+
+    /* With the FujiNet unreachable the mapping cannot be changed: that stays
+     * an error rather than pretending the entry was removed. */
+    fn_init_result = FN_ERR_NOT_READY;
+    eject_unit(1, &request);
+    CHECK("eject fails when the mapping cannot be stored",
+          request.iotd_Req.io.io_Error != 0);
+    CHECK("failed eject leaves the mapping", store_bytes[3] == 3);
+    fn_init_result = FN_ERR_NOT_READY;
+}
+
 int main(void)
 {
     test_dd_hd_geometry_and_unit_isolation();
+    test_eject_unmounted_unit_clears_saved_mapping();
     test_public_mount_abi_reaches_resident_dispatcher();
     test_legacy_td_remove_is_synchronous();
     test_ordinary_idle_does_not_close();
