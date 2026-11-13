@@ -38,7 +38,7 @@ parent-repository/
 Example:
 
 ```bash
-git submodule add https://github.com/markjfisher/fujinet-nio-lib.git fujinet-nio-lib
+git submodule add https://github.com/fujinet-nio/fujinet-nio-lib.git fujinet-nio-lib
 git submodule add https://github.com/fujinet-nio/fujinet-nio-driver.git fujinet-nio-driver
 git submodule update --init --recursive
 ```
